@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -33,9 +34,10 @@ namespace mPdf.App.ViewModels;
 /// `PdfViewerControl.Page_MouseLeftButtonDown`), mas a exclusividade mútua é a MESMA garantia de
 /// construção pros valores não-`None`. ImageStamp (Task 9, Plano 3a) é clique único como StickyNote/
 /// FreeText, mas sem diálogo — os bytes da imagem a colocar vêm da galeria (ver `ToggleStampTool`/
-/// `PlaceStampAtAsync`), não de um prompt de texto. SignatureStamp (Task 3, Plano 4) é clique único
-/// como ImageStamp (mesmo mecanismo de clamp/rotação), mas NÃO é uma anotação: o clique só decide ONDE
-/// o carimbo visível da assinatura entra; o commit em si (`PlaceSignatureStampAtAsync`) nunca passa por
+/// `PlaceStampAtAsync`), não de um prompt de texto. SignatureStamp (Task 3, Plano 4) ativa o modo de
+/// colocação do carimbo de assinatura, mas NÃO é uma anotação: o mouse-down na página só decide ONDE a
+/// caixa ajustável do carimbo começa a ser desenhada (Task 1/2, Plano 8 —
+/// `BeginStampBoxPlacementAsync`/`ConfirmSignatureStampAsync`); o commit em si nunca passa por
 /// `ApplyEdit`/`_editor`, vai direto pro motor de assinatura (`mPdf.Signing`) via `Session.CommitSigned`.
 public enum AnnotationTool
 {
@@ -49,6 +51,43 @@ public enum AnnotationTool
     ImageStamp,
     SignatureStamp,
 }
+
+/// Fase da caixa ajustável do carimbo de assinatura (Task 1, Plano 8) — máquina de estados PARALELA a
+/// `AnnotationTool`: `ActiveTool == SignatureStamp` continua sendo o gate de "modo de colocação". `None`
+/// = nenhuma caixa em andamento (o mouse ainda não desceu na página — ver `BeginStampBoxPlacementAsync`,
+/// Task 2). `Drawing` = usuário arrastando o retângulo inicial (mouse ainda pressionado). `Adjusting` =
+/// retângulo válido (≥ `MinStampBoxWidthPt`x`MinStampBoxHeightPt`) solto — alças de redimensionar/mover
+/// E os botões flutuantes "Assinar aqui"/"Cancelar" ficam disponíveis (Task 2: "Assinar aqui" dispara o
+/// motor de verdade via `ConfirmSignatureStampAsync`).
+public enum StampPlacementPhase
+{
+    None,
+    Drawing,
+    Adjusting,
+}
+
+/// As 8 alças de redimensionar da caixa ajustável (Task 1, Plano 8) — 4 cantos (redimensionam 2 eixos)
+/// + 4 bordas (redimensionam 1 eixo só). Ver `DocumentViewModel.ResizeBoxByHandle` pro mapeamento
+/// fixo alça->eixo bruto (nunca recalculado a partir do retângulo NORMALIZADO corrente — é exatamente
+/// esse mapeamento fixo que sustenta a inversão ao cruzar, ver doc XML de lá).
+public enum StampBoxHandle
+{
+    TopLeft,
+    Top,
+    TopRight,
+    Right,
+    BottomRight,
+    Bottom,
+    BottomLeft,
+    Left,
+}
+
+/// Resultado de `DocumentViewModel.ConfirmStampBox()` — página + retângulo final (em pontos de página,
+/// mesma convenção de `PdfQuad`/`VisibleStampSpec`) escolhidos pelo usuário. Task 1 (Plano 8) só expõe
+/// isto pra quem chamar `ConfirmStampBox()` diretamente (teste, ou a View no futuro); o consumo real
+/// (montar um `VisibleStampSpec` e disparar o motor de assinatura) é do Task 2 — ver doc XML de
+/// `ConfirmStampBox`.
+public readonly record struct StampBoxPlacement(int PageIndex, PdfQuad Rect);
 
 public sealed partial class DocumentViewModel : ObservableObject, IDisposable
 {
@@ -119,6 +158,11 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     private readonly IExportImageDialogService _exportImageDialog;
 
     private const double DefaultStampWidthPt = 180.0, DefaultStampHeightPt = 60.0;
+    /// Tamanho MÍNIMO da caixa ajustável do carimbo (Task 1, Plano 8, brief: "60×20pt — legibilidade do
+    /// carimbo"). Aplicado nas 2 fases: soltar o arrasto inicial (`EndStampDraw`) abaixo do mínimo NÃO
+    /// cancela (fica em Drawing, aviso sutil); redimensionar (`ResizeBoxByHandle`) abaixo do mínimo é
+    /// clampado (nunca produz uma caixa menor que isto).
+    private const double MinStampBoxWidthPt = 60.0, MinStampBoxHeightPt = 20.0;
 
     /// Capturado no construtor (exemplar: `PageViewModel._dispatcher`) — ACHADO real (revisão Opus, não
     /// hipotético): disparar `RefreshAnnotationsByPageAsync` como fire-and-forget CRU (`_ =
@@ -732,6 +776,20 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         // não refletir mais o documento vivo depois desta edição (qualquer edição, inclusive uma alheia
         // ao painel de Assinaturas — ou a PRÓPRIA assinatura que acabou de ser adicionada).
         SelectedSignature = null;
+        // Task 1 (Plano 8): mesma disciplina — a caixa ajustável do carimbo (Drawing/Adjusting) referencia
+        // um StampBoxPageIndex/rect que podem não existir/fazer sentido mais depois desta edição (o
+        // MESMO "placement-window mutation gap" já documentado em DocumentChangedDuringPlacementNotice —
+        // hoje sem funil armado durante Drawing/Adjusting, uma edição alheia PODE acontecer no meio;
+        // Task 2 cobre o cinto no Confirmar, mas isto aqui evita até um ArgumentOutOfRangeException se a
+        // CONTAGEM de página encolher). Chamado ANTES de Pages.Clear() abaixo de propósito — o overlay
+        // que este cancelamento limpa (RefreshStampBoxOverlay, via OnStampPlacementPhaseChanged) ainda
+        // precisa achar a PageViewModel antiga em Pages pra zerar HasStampBox/IsStampBoxAdjusting nela.
+        // `dueToDocumentMutation: true` (fix pós-revisão, achado real do coordenador): ESTE é o ÚNICO
+        // chamador de CancelStampBox onde o usuário NÃO iniciou o cancelamento — a mutação veio de
+        // outro lugar (Undo/Redo, outra anotação, um Flatten) enquanto ele estava desenhando/ajustando;
+        // sem aviso, a caixa some da tela sem explicação nenhuma. Ver doc XML do parâmetro em
+        // CancelStampBox.
+        CancelStampBox(dueToDocumentMutation: true);
 
         // Item 4 (revisão final pré-merge) — capturado ANTES do rebuild abaixo: Pages/Thumbnails trocam
         // TODAS as instâncias (nenhum PageViewModel sobrevive a um Apply), mas a CONTAGEM de página em
@@ -2375,11 +2433,13 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// (ver `ComposeSignFailureMessage`) — o caminho "doc já estava limpo" nunca precisa deste aviso.
     private const string SavedButNotSignedSuffix = " O documento foi salvo, mas NÃO está assinado.";
     /// BELT (revisão do coordenador, achado real: "placement-window mutation gap") — entre o OK do
-    /// diálogo "Assinar" e o clique que efetivamente posiciona o carimbo, o funil NÃO está armado (só
-    /// arma no clique, ver `PlaceSignatureStampAtAsync`) — TODO mutador deste VM (FlattenForm/
-    /// ApplyFormValues/ApplyMarkup/Undo/Redo/anotações) continua HABILITADO nessa janela. Uma edição ali
-    /// entraria SILENCIOSAMENTE no documento que está prestes a virar "certificado" pela assinatura, sem
-    /// nenhuma re-confirmação do usuário — ver `SignCoreAsync` (o cinto em si) e `ComposeSignFailureMessage`.
+    /// diálogo "Assinar" e o Confirmar da caixa ajustável, o funil NÃO está armado (só arma no
+    /// Confirmar, ver `ConfirmSignatureStampAsync`, Task 2/Plano 8 — cobre a janela INTEIRA de
+    /// Desenhar+Ajustar, não só o instante do clique como no fluxo antigo) — TODO mutador deste VM
+    /// (FlattenForm/ApplyFormValues/ApplyMarkup/Undo/Redo/anotações) continua HABILITADO nessa janela.
+    /// Uma edição ali entraria SILENCIOSAMENTE no documento que está prestes a virar "certificado" pela
+    /// assinatura, sem nenhuma re-confirmação do usuário — ver `SignCoreAsync` (o cinto em si) e
+    /// `ComposeSignFailureMessage`.
     private const string DocumentChangedDuringPlacementNotice =
         "O documento foi alterado durante o posicionamento do carimbo. A assinatura foi cancelada — assine novamente.";
 
@@ -2395,7 +2455,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// sempre produz uma referência NOVA via `Apply`, então a comparação nunca falha por engano.
     /// `DidForcedSave`: `true` quando `Sign()` salvou o documento sujo ANTES de mostrar o diálogo — vive
     /// aqui (não só numa variável local de `Sign()`) porque o caminho COM carimbo só alcança
-    /// `SignCoreAsync` bem depois, no clique.
+    /// `SignCoreAsync` bem depois, no Confirmar da caixa ajustável (Task 2, Plano 8).
     private sealed record PendingSignPlacement(SignDialogResult Result, byte[] SnapshotAtDialogOk, bool DidForcedSave);
     private PendingSignPlacement? _pendingSignPlacement;
 
@@ -2414,15 +2474,27 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// saída do modo de colocação do carimbo de assinatura (`CanSign` acima compõe `ActiveTool`). As
     /// outras ferramentas (StickyNote/ImageStamp/etc.) não precisam de um handler simétrico: nenhuma
     /// delas aparece na composição de `CanX` de comando nenhum deste VM, só `SignCommand`.
-    partial void OnActiveToolChanged(AnnotationTool value) => SignCommand.NotifyCanExecuteChanged();
+    partial void OnActiveToolChanged(AnnotationTool value)
+    {
+        SignCommand.NotifyCanExecuteChanged();
+        // Task 1 (Plano 8): "cancelamentos ... troca de ferramenta" — trocar PRA QUALQUER outra
+        // ferramenta (incl. None) enquanto uma caixa está em Drawing/Adjusting cancela a caixa (mesmo
+        // contrato de CancelStampBox chamado por Esc/botão — reseta TUDO, sem armar funil). Guard
+        // `value != SignatureStamp`: ativar/reativar a PRÓPRIA ferramenta (Sign() faz isso hoje) nunca
+        // deve se auto-cancelar.
+        if (value != AnnotationTool.SignatureStamp && StampPlacementPhase != StampPlacementPhase.None)
+            CancelStampBox();
+    }
 
     /// "Assinar" (Task 3, Plano 4): documento TEMP-BACKED (`NeedsSaveAs`, Task 2 Plano 7) -> relocaliza
     /// PRIMEIRO (ver `TryRelocateBeforeSign` abaixo — fix CRÍTICO pós-revisão) -> doc sujo -> confirma
     /// salvar ANTES (recusa aborta o fluxo inteiro, SEM armar o funil — mesma ordem de `FlattenForm`:
     /// diálogo síncrono ANTES de `TryBeginEdit`) -> diálogo de assinatura (certificado/motivo/local/
     /// DocMDP/carimbo) -> se o usuário escolheu carimbo visível, entra em modo de COLOCAÇÃO na página
-    /// (espelha `ToggleStampTool`/`PlaceStampAtAsync`) e devolve — o commit de verdade só acontece em
-    /// `PlaceSignatureStampAtAsync`, no CLIQUE; sem carimbo, assina direto aqui mesmo. Assinar NUNCA
+    /// (espelha `ToggleStampTool`/`PlaceStampAtAsync`) e devolve — o commit de verdade só acontece no
+    /// CONFIRMAR da caixa ajustável (`ConfirmSignatureStampAsync`, Task 2/Plano 8), depois de
+    /// desenhar+ajustar o retângulo (`BeginStampBoxPlacementAsync`/`UpdateDrawTo`/`EndStampDraw`/
+    /// `MoveBoxBy`/`ResizeBoxByHandle`, Task 1/Plano 8); sem carimbo, assina direto aqui mesmo. Assinar NUNCA
     /// passa por `ApplyEdit`/`_editor` (append mode, sempre resolvido dentro de `mPdf.Signing`) — o
     /// funil (`Session.TryBeginEdit`) é armado só DEPOIS do diálogo, imediatamente antes de
     /// `SignCoreAsync` (mesmo contrato "sincronamente antes do 1º await de verdade" de todo outro
@@ -2480,7 +2552,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (result.PlaceStamp)
         {
             // Modo de colocação (exemplar: ToggleStampTool/PlaceStampAtAsync) — o commit de verdade
-            // acontece em PlaceSignatureStampAtAsync, no clique. NADA de motor/funil ainda aqui.
+            // acontece no Confirmar da caixa ajustável (ConfirmSignatureStampAsync, Task 2/Plano 8).
+            // NADA de motor/funil ainda aqui.
             _pendingSignPlacement = new PendingSignPlacement(result, snapshotAtDialogOk, didForcedSave);
             ActiveTool = AnnotationTool.SignatureStamp;
             return;
@@ -2513,34 +2586,56 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         catch (Exception ex) { _notifyError(ex.Message); return false; }
     }
 
-    /// Chamado pela View no CLIQUE da página quando `ActiveTool == AnnotationTool.SignatureStamp`
-    /// (exemplar: `PlaceStampAtAsync`, mesmo one-shot/clamp/gate de rotação — mas o commit final vai pro
-    /// motor de assinatura, não pro `_editor`). O ponto clicado é o canto INFERIOR-ESQUERDO do carimbo
-    /// (mesma convenção de `PlaceAnnotationAtAsync`/`PlaceStampAtAsync`), tamanho fixo
-    /// `DefaultStampWidthPt`x`DefaultStampHeightPt`, clampado aos limites da página (`ClampToPage`,
-    /// mesmo helper). ONE-SHOT: `ActiveTool`/`_pendingSignPlacement` só desativam DEPOIS de um
-    /// `CommitSigned` bem-sucedido — cancelamento/falha do GATE DE ROTAÇÃO deixa a ferramenta ativa
-    /// (usuário pode tentar outra página, mesmo contrato de `PlaceStampAtAsync`); já uma falha do BELT
-    /// de mutação (`SignCoreAsync`) força o reset completo — ver doc XML lá (documento mudou por baixo,
-    /// não faz sentido "tentar outra página" com o MESMO `PendingSignPlacement` agora obsoleto).
-    public async Task PlaceSignatureStampAtAsync(int pageIndex, double xPt, double yPt)
+    /// Task 2 (Plano 8): gatilho REAL do arrasto-para-desenhar da caixa ajustável — chamado pela View no
+    /// MOUSE-DOWN da página (`PdfViewerControl.Page_MouseLeftButtonDown`) quando `ActiveTool ==
+    /// AnnotationTool.SignatureStamp` e a máquina ainda não está em Adjusting. Substitui
+    /// `PlaceSignatureStampAtAsync` (clique único, Task 3/Plano 4 — deletado nesta task) como o ponto de
+    /// entrada de produção: mesma guarda `ActiveTool != SignatureStamp -> no-op`, mesmo GATE DE ROTAÇÃO
+    /// (`EnsureRotationCacheFreshAsync`/`IsPageRotated`, mesmo aviso pt-BR, ferramenta continua ativa —
+    /// só que agora recusado ANTES de sequer entrar em Drawing, não mais no momento do commit). O CN do
+    /// certificado (prévia "fiel o suficiente" do carimbo, ver `StampBoxCertificateCn`) é resolvido AQUI
+    /// a partir do certificado ESCOLHIDO no diálogo "Assinar" (`_pendingSignPlacement.Result.Certificate`),
+    /// via `X509Certificate2.GetNameInfo(SimpleName, forIssuer: false)` — mesmo extrator já usado por
+    /// `CertificateCatalog`/`PadesSigningEngine`, sem depender de nenhum parsing novo — a View não
+    /// precisa saber nada sobre certificados. O commit de verdade (motor/funil) só acontece no
+    /// CONFIRMAR — ver `ConfirmSignatureStampAsync` abaixo.
+    public async Task BeginStampBoxPlacementAsync(int pageIndex, PdfPoint startPt)
     {
         if (ActiveTool != AnnotationTool.SignatureStamp) return;
         if (_pendingSignPlacement is not { } pending) return;
         if (pageIndex < 0 || pageIndex >= Pages.Count) return;
-        if (!Session.TryBeginEdit()) return; // mesmo funil sem-comando de PlaceStampAtAsync
+
+        // COSTURA DE ROTAÇÃO (exemplar: PlaceSignatureStampAtAsync original) — refresca o cache ANTES
+        // de confiar em IsPageRotated; no-op com aviso, ferramenta continua ativa (usuário tenta outra
+        // página). RefreshAnnotationsByPageAsync já engole qualquer exceção internamente (retry + desiste
+        // — ver doc XML lá), então este `await` nunca lança.
+        await EnsureRotationCacheFreshAsync();
+        if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
+
+        string cn = pending.Result.Certificate.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
+        BeginStampBoxPlacement(pageIndex, startPt, cn);
+    }
+
+    /// Task 2 (Plano 8): gatilho REAL do botão "✔ Assinar aqui" (`PdfViewerControl.StampBoxConfirm_Click`)
+    /// — troca `PlaceSignatureStampAtAsync` (clique único, deletado nesta task) como o ponto onde o
+    /// motor de assinatura de fato dispara. `ConfirmStampBox()` (Task 1) devolve o rect FINAL — já
+    /// ajustado (mover/redimensionar) pelo usuário, em pontos de página, mesma convenção de
+    /// `VisibleStampSpec`/`PdfQuad` — sem conversão nenhuma (não há matemática nova aqui, conforme o
+    /// brief). O CINTO (`ReferenceEquals(snapshotAtDialogOk, Session.Snapshot)`, dentro de
+    /// `SignCoreAsync`) agora é checado NO CONFIRMAR — cobre a janela INTEIRA de Desenhar+Ajustar, não
+    /// só entre o diálogo e o clique como antes. Mesmo funil/try-catch/finally de
+    /// `PlaceSignatureStampAtAsync` original (ver doc XML I2 removido daqui — mesma disciplina: exceção
+    /// não antecipada não pode escapar como Task não observada, já que este método também é invocado
+    /// fire-and-forget pela View).
+    public async Task ConfirmSignatureStampAsync()
+    {
+        if (_pendingSignPlacement is not { } pending) return;
+        if (ConfirmStampBox() is not { } placement) return; // fora de Adjusting -- nada a confirmar
+
+        if (!Session.TryBeginEdit()) return; // mesmo funil sem-comando de PlaceSignatureStampAtAsync original
         try
         {
-            // COSTURA DE ROTAÇÃO (exemplar: PlaceStampAtAsync) — refresca o cache ANTES de confiar em
-            // IsPageRotated; no-op com aviso, ferramenta continua ativa (usuário tenta outra página).
-            await EnsureRotationCacheFreshAsync();
-            if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
-
-            var page = Pages[pageIndex];
-            var (left, bottom, right, top) =
-                ClampToPage(xPt, yPt, DefaultStampWidthPt, DefaultStampHeightPt, page.WidthPt, page.HeightPt);
-            var stamp = new VisibleStampSpec(pageIndex, new PdfQuad(left, bottom, right, top));
-
+            var stamp = new VisibleStampSpec(placement.PageIndex, placement.Rect);
             bool committed = await SignCoreAsync(pending.Result, stamp, pending.SnapshotAtDialogOk, pending.DidForcedSave);
             if (committed)
             {
@@ -2550,23 +2645,12 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            // I2 (revisão final, rede de última linha): este método é invocado FIRE-AND-FORGET
-            // (`_ = doc.PlaceSignatureStampAtAsync(...)`, `PdfViewerControl.Page_MouseLeftButtonDown` —
-            // os 3 handlers de colocação de 1 clique deste app usam o MESMO `_ =`, nenhum tem um
-            // wrapper próprio na View). `SignCoreAsync` já trata tipadamente
-            // `PdfSigningException`/`ArgumentException`/`IOException` (ver lá) e NUNCA relança — mas
-            // qualquer outra falha não antecipada no restante deste método (ex.:
-            // `EnsureRotationCacheFreshAsync`) escaparia como Task NÃO OBSERVADA
-            // (`TaskScheduler.UnobservedTaskException`, App.xaml.cs, só REGISTRA em `CrashLog`, nunca
-            // mostra nada ao usuário) — silêncio total do ponto de vista de quem clicou. Mesma
-            // visibilidade que qualquer outro erro deste VM já tem, honrando `DidForcedSave` como os
-            // catches tipados de `SignCoreAsync`.
             _notifyError(ComposeSignFailureMessage(ex.Message, pending.DidForcedSave));
         }
         finally { Session.EndEdit(); }
     }
 
-    /// Assume o funil JÁ armado pelo chamador (`Sign` ou `PlaceSignatureStampAtAsync`) — roda o motor
+    /// Assume o funil JÁ armado pelo chamador (`Sign` ou `ConfirmSignatureStampAsync`) — roda o motor
     /// (`ISigningEngine.Sign`) em `Task.Run` e comita via `Session.CommitSigned` (NUNCA `ApplyEdit` —
     /// append mode). Devolve `true` em sucesso; o chamador decide o que fazer com `ActiveTool`/
     /// `_pendingSignPlacement` a partir disso (o caminho "sem carimbo" de `Sign` nem usa o retorno).
@@ -2574,11 +2658,18 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// BELT (revisão do coordenador — ver doc XML de `DocumentChangedDuringPlacementNotice`): primeira
     /// coisa que este método faz, ANTES de tocar o motor. `snapshotAtDialogOk` é o que `Sign()` capturou
     /// quando o diálogo devolveu; se `Session.Snapshot` mudou de REFERÊNCIA desde então, alguma edição
-    /// aconteceu na janela sem funil (entre o OK e o clique) — aborta, notifica em pt-BR, e força o
-    /// RESET completo do modo de colocação (`ActiveTool`/`_pendingSignPlacement`): o `PendingSignPlacement`
-    /// escolhido (cert/motivo/local/DocMDP) foi decidido contra o snapshot ANTIGO, continuar "tentando
-    /// outra página" com ele agora seria assinar por cima de um documento diferente do que o usuário viu
-    /// no diálogo.
+    /// aconteceu na janela sem funil (entre o OK e o Confirmar da caixa ajustável, Task 2/Plano 8 — cobre
+    /// Desenhar+Ajustar inteiros) — aborta, notifica em pt-BR, e força o RESET completo do modo de
+    /// colocação (`ActiveTool`/`_pendingSignPlacement`): o `PendingSignPlacement` escolhido (cert/motivo/
+    /// local/DocMDP) foi decidido contra o snapshot ANTIGO, continuar tentando desenhar OUTRA caixa com
+    /// ele agora seria assinar por cima de um documento diferente do que o usuário viu no diálogo. NA
+    /// PRÁTICA (Task 2): `OnSessionApplied`/`CancelStampBox(dueToDocumentMutation: true)` já reseta
+    /// `StampPlacementPhase` — E JÁ NOTIFICA (fix pós-revisão do coordenador, mesma mensagem
+    /// `DocumentChangedDuringPlacementNotice` deste belt) — ANTES desta checagem alcançar o caminho COM
+    /// carimbo (single-threaded, `Session.Applied` fires síncrono dentro do próprio
+    /// `Apply`/`ApplyEdit`/`CommitSigned`) — `ConfirmStampBox()` já devolve `null` nesse caso, então
+    /// `ConfirmSignatureStampAsync` nem chega a chamar este método. Este checagem continua aqui como
+    /// REDE DE SEGURANÇA estrutural (mesmo espírito do parágrafo seguinte, sobre o caminho sem carimbo).
     ///
     /// POLÍTICA (verificada, não hipotética): o caminho SEM carimbo (`Sign()`, `stamp: null`) chama este
     /// método SINCRONAMENTE logo após capturar `snapshotAtDialogOk` — sem NENHUM `await` de verdade no
@@ -2611,9 +2702,9 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         // (`ApplyEdit`/`FlattenForm`/etc. só mutam `Snapshot` em memória, gravação fica pra `Save`
         // manual). Uma falha de I/O aqui (arquivo travado por outro processo, disco cheio) é real e
         // ATÉ AGORA escapava SEM catch nenhum: no caminho SEM carimbo, virava uma exceção não tratada
-        // subindo pelo `AsyncRelayCommand`; no caminho COM carimbo (`PlaceSignatureStampAtAsync`,
-        // invocado fire-and-forget via `_ = doc.PlaceSignatureStampAtAsync(...)` em
-        // `PdfViewerControl.Page_MouseLeftButtonDown`), virava uma Task NÃO OBSERVADA —
+        // subindo pelo `AsyncRelayCommand`; no caminho COM carimbo (`ConfirmSignatureStampAsync`, Task 2/
+        // Plano 8, invocado fire-and-forget via `_ = doc.ConfirmSignatureStampAsync()` em
+        // `PdfViewerControl.StampBoxConfirm_Click`), virava uma Task NÃO OBSERVADA —
         // `TaskScheduler.UnobservedTaskException` (App.xaml.cs) só REGISTRA em `CrashLog`, nunca mostra
         // nada ao usuário: silêncio TOTAL do ponto de vista de quem assinou. Mesma disciplina de
         // `ComposeSignFailureMessage`/`didForcedSave` que os 2 catches acima já usam — se o salvamento
@@ -2632,6 +2723,426 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         catch (PdfSigningException) { /* leitura auxiliar best-effort — não desfaz a assinatura já commitada */ }
         _notifyInfo(SignedDocumentNotice);
         return true;
+    }
+
+    // ==== Task 1/2 (Plano 8): caixa ajustável do carimbo de assinatura ===============================
+    //
+    // Máquina de estados construída pela Task 1 (headless, testável sem UI) e conectada ao fluxo de
+    // assinar de verdade pela Task 2: `Sign()` continua ativando `ActiveTool = SignatureStamp` (Task 3,
+    // Plano 4) e devolvendo; a View (`PdfViewerControl.Page_MouseLeftButtonDown`) agora inicia um
+    // ARRASTO no mouse-down (`BeginStampBoxPlacementAsync`/`UpdateDrawTo`/`EndStampDraw`), e o botão
+    // "✔ Assinar aqui" chama `ConfirmSignatureStampAsync` (que usa `ConfirmStampBox` abaixo pra obter o
+    // rect final e dispara o motor de assinatura de verdade — ver doc XML de `ConfirmSignatureStampAsync`
+    // acima). Os métodos desta seção continuam public/testáveis direto (headless), como a Task 1 deixou.
+    //
+    // REPRESENTAÇÃO DO RETÂNGULO (a parte não-óbvia): 4 escalares BRUTOS e NÃO-ORDENADOS, não um
+    // left/bottom/right/top já normalizado — `_boxXa`/`_boxXb` (eixo X) e `_boxYa`/`_boxYb` (eixo Y).
+    // `StampBoxRect` (público, ObservableProperty) é SEMPRE `min/max` desses 4 valores — nunca escrito
+    // direto, só via `RecomputeStampBoxRect()`. Por quê brutos: durante Drawing, `_boxXa/_boxYa` é a
+    // ÂNCORA (ponto do mouse-down, fixo) e `_boxXb/_boxYb` é o ponto CORRENTE do arrasto — um arrasto
+    // pra CIMA-ESQUERDA deixa a âncora MAIOR que o corrente (min/max resolve a normalização de graça,
+    // mesmo truque de `new Rect(anchorPx, currentPx)` da ferramenta Retângulo, Task 8/Plano 3a). Ao
+    // entrar em Adjusting (`EndStampDraw`, quando o retângulo já é válido), os 4 brutos são
+    // CANONICALIZADOS (Xa=Left, Xb=Right, Ya=Bottom, Yb=Top) — a partir daí, cada ALÇA sempre move o
+    // MESMO escalar bruto pelo resto da fase Adjusting (mapeamento fixo, ver `ResizeBoxByHandle`),
+    // mesmo depois de um cruzamento inverter qual É o Left/Right visualmente: é essa PERMANÊNCIA do
+    // mapeamento (nunca re-derivada a partir do retângulo normalizado corrente, que já perdeu a
+    // informação de qual bruto é qual) que faz a alça continuar "grudada" no mesmo canto físico do
+    // mouse do usuário através de uma inversão, em vez de saltar pro canto errado no frame seguinte.
+
+    private double _boxXa, _boxXb, _boxYa, _boxYb;
+    /// Última página pra qual `RefreshStampBoxOverlay` empurrou HasStampBox=true — usada só pra saber
+    /// QUAL PageViewModel limpar quando a fase volta a None (ou a página muda, hipoteticamente). Mesmo
+    /// papel de `oldValue` em `UpdateFormFieldHighlightOverlay`, só que guardado como campo (esta
+    /// máquina não recebe old/new de um SetProperty — os OnXChanged aqui não carregam o valor antigo
+    /// preciso que precisaríamos, um índice de página).
+    private int _stampBoxOverlayPageIndex = -1;
+
+    [ObservableProperty] private StampPlacementPhase stampPlacementPhase = StampPlacementPhase.None;
+    [ObservableProperty] private PdfQuad stampBoxRect;
+    /// Aviso sutil de barra de status (brief: "soltar com rect < mínimo -> permanece Drawing, NÃO
+    /// cancela") — `null`/vazio quando não há nada a avisar. `HasStampBoxNotice` (abaixo) é derivado
+    /// automaticamente no OnChanged, mesmo padrão de bool+texto já usado por IsOpening/IsSaving na
+    /// StatusBar de MainWindow.xaml (ver doc XML de lá).
+    [ObservableProperty] private string? stampBoxNotice;
+    [ObservableProperty] private bool hasStampBoxNotice;
+
+    partial void OnStampBoxNoticeChanged(string? value) => HasStampBoxNotice = !string.IsNullOrEmpty(value);
+    partial void OnStampPlacementPhaseChanged(StampPlacementPhase value) => RefreshStampBoxOverlay();
+    partial void OnStampBoxRectChanged(PdfQuad value) => RefreshStampBoxOverlay();
+
+    /// Página dona da caixa corrente (-1 = nenhuma). `private set`: só os métodos desta seção mudam isto
+    /// — não é `[ObservableProperty]` de propósito (nada no XAML faz bind direto nele; só
+    /// `PageViewModel.ApplyZoom`, no mesmo assembly, lê pra saber se É a página dona antes de
+    /// reconverter — mesmo padrão de leitura direta que `SelectedFormField`/`SelectedSignature` já
+    /// expõem pro mesmo consumidor).
+    public int StampBoxPageIndex { get; private set; } = -1;
+    /// CN do certificado escolhido no diálogo "Assinar" (Task 2 vai passar `result.Certificate` — ver
+    /// `SignDialogResult.Certificate` — convertido via `X509Certificate2.GetNameInfo(SimpleName,
+    /// forIssuer: false)`, mesmo extrator já usado por `CertificateCatalog`/`PadesSigningEngine`, sem
+    /// depender de nenhum parsing novo). Só texto de PRÉVIA (brief: "fiel o suficiente, não idêntico ao
+    /// appearance do motor") — o motor decide o texto final de verdade.
+    public string? StampBoxCertificateCn { get; private set; }
+    public string? StampBoxDateLabel { get; private set; }
+
+    /// Chamado no mouse-down da página (via `BeginStampBoxPlacementAsync`, Task 2/Plano 8 — que resolve
+    /// o CN do certificado e aplica o gate de rotação antes de chegar aqui). Mesmo guard do clique único
+    /// original (`ActiveTool != SignatureStamp -> no-op`) — evita a máquina rodar fora do modo de
+    /// colocação de assinatura. `startPt`: ponto de PÁGINA do mouse-down (mesma
+    /// convenção pt de página de todo o resto do arquivo — conversão screen->page é responsabilidade da
+    /// View, via `TextSelection.ScreenToPagePoint`, nunca duplicada aqui). Retângulo inicial é
+    /// DEGENERADO (largura/altura zero, os 4 brutos = o mesmo ponto) — só vira algo visível no primeiro
+    /// `UpdateDrawTo`.
+    public void BeginStampBoxPlacement(int pageIndex, PdfPoint startPt, string certificateCn)
+    {
+        if (ActiveTool != AnnotationTool.SignatureStamp) return;
+        if (pageIndex < 0 || pageIndex >= Pages.Count) return;
+
+        var page = Pages[pageIndex];
+        double x = Math.Clamp(startPt.XPt, 0, page.WidthPt);
+        double y = Math.Clamp(startPt.YPt, 0, page.HeightPt);
+
+        StampBoxPageIndex = pageIndex;
+        StampBoxCertificateCn = certificateCn;
+        StampBoxDateLabel = DateTime.Now.ToString("dd/MM/yyyy HH:mm");
+        _boxXa = _boxXb = x;
+        _boxYa = _boxYb = y;
+        StampBoxNotice = null;
+        RecomputeStampBoxRect();
+        StampPlacementPhase = StampPlacementPhase.Drawing;
+    }
+
+    /// Atualiza o retângulo em curso durante Drawing pro ponto de página atual do arrasto (mouse-move) —
+    /// exemplar: `new Rect(anchorPx, currentPx)` da ferramenta Retângulo (Task 8, Plano 3a) — só que em
+    /// pontos de página (não px de tela transiente) porque este overlay PRECISA sobreviver a
+    /// zoom/reciclagem (ver doc XML da seção "caixa ajustável" acima). Clampa o ponto corrente à página
+    /// (nunca deixa a âncora — o lado que o usuário já soltou — sair da página; só o lado que ele ainda
+    /// está arrastando).
+    public void UpdateDrawTo(PdfPoint currentPt)
+    {
+        if (StampPlacementPhase != StampPlacementPhase.Drawing) return;
+        if (StampBoxPageIndex < 0 || StampBoxPageIndex >= Pages.Count) return;
+
+        var page = Pages[StampBoxPageIndex];
+        _boxXb = Math.Clamp(currentPt.XPt, 0, page.WidthPt);
+        _boxYb = Math.Clamp(currentPt.YPt, 0, page.HeightPt);
+        RecomputeStampBoxRect();
+    }
+
+    /// Solta o arrasto inicial (mouse-up durante Drawing). Retângulo abaixo do mínimo (brief: 60x20pt)
+    /// -> NÃO cancela, fica em Drawing com um aviso sutil (o usuário pode continuar arrastando a partir
+    /// de onde parou — próximos `UpdateDrawTo` continuam funcionando normalmente); retângulo válido ->
+    /// CANONICALIZA os 4 brutos (ver `CanonicalizeRawScalars`/doc XML da seção acima) e avança pra
+    /// Adjusting.
+    public void EndStampDraw()
+    {
+        if (StampPlacementPhase != StampPlacementPhase.Drawing) return;
+
+        double width = Math.Abs(_boxXb - _boxXa);
+        double height = Math.Abs(_boxYb - _boxYa);
+        if (width < MinStampBoxWidthPt || height < MinStampBoxHeightPt)
+        {
+            StampBoxNotice =
+                $"Caixa pequena demais — arraste uma área de ao menos {MinStampBoxWidthPt:0}×{MinStampBoxHeightPt:0}pt.";
+            return;
+        }
+
+        StampBoxNotice = null;
+        CanonicalizeRawScalars();
+        StampPlacementPhase = StampPlacementPhase.Adjusting;
+    }
+
+    /// FIX (revisão final da branch, achado real reproduzido pelo revisor — I1/I2, a mesma raiz): os 4
+    /// escalares brutos ficam LEGITIMAMENTE invertidos durante um cruzamento de `ResizeBoxByHandle`
+    /// (contrato da alça — ver doc XML de lá), mas só até o usuário SOLTAR o mouse. Sem re-canonicalizar
+    /// na FRONTEIRA do gesto, o PRÓXIMO gesto herdava os brutos invertidos assumindo ordem canônica — 2
+    /// bugs reais: (a) `MoveBoxBy` computava `width = Xb-Xa` NEGATIVA e passava pro `ClampToPage`
+    /// (que assume `w>=0`), colapsando a caixa a zero perto da borda (repro do revisor: Adjusting
+    /// 100,100–300,200 → Resize(Right,−280) [inverte] → MoveBoxBy(−200,0) → largura 0); (b) depois de um
+    /// cruzamento, um resize NOVO pela alça `Left` (que por CONTRATO sempre escreve em `_boxXa`) passava
+    /// a mover a borda DIREITA visual, porque `_boxXa` tinha parado de ser o lado esquerdo (repro: flip
+    /// pra [20,100] → Resize(Left,−10) → borda direita 100→90). Fix NA RAIZ: canonicalizar SEMPRE que um
+    /// GESTO termina (não só na entrada em Adjusting) — chamado pela View no mouse-up/LostMouseCapture
+    /// de QUALQUER gesto de mover/redimensionar (`Page_MouseLeftButtonUp`/`ResetGestureState`, ver
+    /// `PdfViewerControl.xaml.cs`). Dentro de um MESMO gesto contínuo (mouse pressionado, vários
+    /// MouseMove) a inversão continua permitida — é exatamente o que sustenta "a alça gruda no dedo do
+    /// usuário através do cruzamento" (ver `ResizeBoxByHandle`); só a FRONTEIRA entre gestos precisa
+    /// estar sempre canônica. Idempotente/seguro fora de Adjusting (no-op).
+    public void EndAdjustGesture()
+    {
+        if (StampPlacementPhase != StampPlacementPhase.Adjusting) return;
+        CanonicalizeRawScalars();
+    }
+
+    /// `_boxXa/_boxYa` = min, `_boxXb/_boxYb` = max — mesma normalização que `EndStampDraw` sempre
+    /// aplicou ao entrar em Adjusting, extraída pra ser reusada por `EndAdjustGesture` (fronteira de
+    /// CADA gesto, não só o primeiro) e pelo cinto defensivo de `MoveBoxBy` abaixo.
+    private void CanonicalizeRawScalars()
+    {
+        double left = Math.Min(_boxXa, _boxXb), right = Math.Max(_boxXa, _boxXb);
+        double bottom = Math.Min(_boxYa, _boxYb), top = Math.Max(_boxYa, _boxYb);
+        _boxXa = left; _boxXb = right; _boxYa = bottom; _boxYb = top;
+    }
+
+    /// Move a caixa inteira (delta em pontos de página) durante Adjusting, preservando o TAMANHO —
+    /// exemplar: `ClampToPage(x,y,w,h,...)` (o MESMO helper compartilhado por
+    /// PlaceStampAtAsync/CommitDrawingAsync) — desloca, nunca encolhe, salvo
+    /// se a própria página for menor que a caixa (mesmo limite físico que todo outro chamador de
+    /// ClampToPage já aceita).
+    public void MoveBoxBy(PdfPoint deltaPt)
+    {
+        if (StampPlacementPhase != StampPlacementPhase.Adjusting) return;
+        if (StampBoxPageIndex < 0 || StampBoxPageIndex >= Pages.Count) return;
+
+        // CINTO (revisão final, achado I1 do revisor — ver doc XML de EndAdjustGesture pro porquê):
+        // canonicaliza aqui TAMBÉM, defensivo — a View já chama EndAdjustGesture no fim de todo gesto de
+        // resize antes de um novo gesto de mover poder começar, mas MoveBoxBy nunca deve CONFIAR nisso
+        // silenciosamente: computar uma largura/altura NEGATIVA quebraria ClampToPage (que assume
+        // w/h>=0) mesmo que a causa fosse um caminho futuro que esqueça de canonicalizar.
+        CanonicalizeRawScalars();
+
+        var page = Pages[StampBoxPageIndex];
+        double width = _boxXb - _boxXa, height = _boxYb - _boxYa; // canônico pelo CINTO acima
+        var (left, bottom, right, top) = ClampToPage(
+            _boxXa + deltaPt.XPt, _boxYa + deltaPt.YPt, width, height, page.WidthPt, page.HeightPt);
+        _boxXa = left; _boxXb = right; _boxYa = bottom; _boxYb = top;
+        RecomputeStampBoxRect();
+    }
+
+    /// Redimensiona a partir de UMA alça (delta em pontos de página desde a última chamada — não desde
+    /// o início do gesto) durante Adjusting. Mapeamento alça->escalar bruto É FIXO (ver doc XML da seção
+    /// acima) — cada alça sempre escreve no MESMO campo (`_boxXa`/`_boxXb`/`_boxYa`/`_boxYb`) pelo resto
+    /// da fase Adjusting, nunca redescoberto a partir do retângulo NORMALIZADO corrente. `INVERSÃO AO
+    /// CRUZAR`: quando o escalar que a alça move ultrapassa o OPOSTO (ex.: arrastar a alça Right além da
+    /// borda Left), `RecomputeStampBoxRect` (min/max) automaticamente trata o cruzado como o novo
+    /// Left/Right/Bottom/Top — nenhum caso especial: é a MESMA normalização de sempre, só que agora um
+    /// valor que já foi "right" ficou numericamente menor que "left". A alça continua fisicamente presa
+    /// ao MESMO canto do mouse do usuário através do cruzamento (não salta pro canto errado), porque o
+    /// escalar que ela escreve nunca muda de identidade.
+    public void ResizeBoxByHandle(StampBoxHandle handle, PdfPoint deltaPt)
+    {
+        if (StampPlacementPhase != StampPlacementPhase.Adjusting) return;
+        if (StampBoxPageIndex < 0 || StampBoxPageIndex >= Pages.Count) return;
+
+        var page = Pages[StampBoxPageIndex];
+        bool movesXa = handle is StampBoxHandle.TopLeft or StampBoxHandle.Left or StampBoxHandle.BottomLeft;
+        bool movesXb = handle is StampBoxHandle.TopRight or StampBoxHandle.Right or StampBoxHandle.BottomRight;
+        bool movesYa = handle is StampBoxHandle.BottomLeft or StampBoxHandle.Bottom or StampBoxHandle.BottomRight;
+        bool movesYb = handle is StampBoxHandle.TopLeft or StampBoxHandle.Top or StampBoxHandle.TopRight;
+
+        if (movesXa) _boxXa = ResizeAxis(_boxXa, _boxXb, deltaPt.XPt, page.WidthPt, MinStampBoxWidthPt);
+        if (movesXb) _boxXb = ResizeAxis(_boxXb, _boxXa, deltaPt.XPt, page.WidthPt, MinStampBoxWidthPt);
+        if (movesYa) _boxYa = ResizeAxis(_boxYa, _boxYb, deltaPt.YPt, page.HeightPt, MinStampBoxHeightPt);
+        if (movesYb) _boxYb = ResizeAxis(_boxYb, _boxYa, deltaPt.YPt, page.HeightPt, MinStampBoxHeightPt);
+
+        RecomputeStampBoxRect();
+    }
+
+    /// FIX (revisão pós-Task-1, achado real reproduzido pelo revisor): a versão anterior clampava
+    /// `moving+delta` à PÁGINA primeiro e só DEPOIS tentava empurrar o resultado pra `fixedEdge ±
+    /// minSizePt` — quando esse alvo ideal também caía fora da página (o `fixedEdge` está a MENOS de
+    /// `minSizePt` da borda que a alça está sendo arrastada em direção), o 2º clamp reintroduzia o
+    /// próprio estouro de página que o alvo ideal existia pra evitar, produzindo silenciosamente uma
+    /// largura/altura ABAIXO do mínimo (reproduzido: caixa Left=10, arrastar a alça Right por -1000pt
+    /// dava largura 10pt; caixa Right=590 numa página ~595pt, arrastar Left por +1000pt dava largura
+    /// 5pt). Dois clamps sequenciais SEM verificar se as 2 restrições (mínimo, página) ainda cabem
+    /// JUNTAS é o defeito — a matemática certa precisa das 2 ao mesmo tempo, não em sequência.
+    ///
+    /// MATEMÁTICA (derivada explicitamente, não só corrigida por tentativa): a faixa de valores de
+    /// `next` que satisfaz o mínimo em relação a `fixedEdge` é a UNIÃO de 2 intervalos disjuntos (o
+    /// "vão morto" `(fixedEdge-minSizePt, fixedEdge+minSizePt)` nunca é válido pra nenhum lado) —
+    /// `NEG = [0, fixedEdge-minSizePt]` (lado onde `next <= fixedEdge-minSizePt`) e `POS =
+    /// [fixedEdge+minSizePt, pageMaxPt]` (lado onde `next >= fixedEdge+minSizePt`) — cada um só
+    /// NÃO-VAZIO se a página tiver espaço pro mínimo DAQUELE lado (`NEG` vazio se `fixedEdge <
+    /// minSizePt`; `POS` vazio se `fixedEdge + minSizePt > pageMaxPt` — exatamente o caso reproduzido:
+    /// `fixedEdge=10` deixa `NEG` vazio, `fixedEdge=590` numa página de ~595pt deixa `POS` vazio). O
+    /// alvo bruto (`moving+delta`, SEM clamp nenhum ainda) decide qual lado o usuário está pedindo; se
+    /// esse lado for válido, o resultado é o alvo bruto CLAMPADO DIRETO à faixa daquele lado (1 único
+    /// clamp, já respeitando as 2 restrições ao mesmo tempo — nunca um 2º clamp por cima de um 1º já
+    /// corrompido). Se o alvo bruto cair no vão morto OU mirar um lado sem espaço nenhum: usa o outro
+    /// lado se ele for válido (a alça "não consegue" cruzar pra um lado sem cabimento — gruda na
+    /// fronteira do mínimo do lado que ainda existe, ao invés de produzir uma largura abaixo do
+    /// mínimo); se NENHUM dos 2 lados cabe o mínimo (página menor que 2×minSizePt a partir de
+    /// `fixedEdge` — documento minúsculo, caso degenerado JÁ aceito em outro lugar, ver `MoveBoxBy`/
+    /// `ClampToPage`), clampa só à página, sem fingir que o mínimo foi respeitado (fisicamente
+    /// impossível ali).
+    private static double ResizeAxis(double moving, double fixedEdge, double delta, double pageMaxPt, double minSizePt)
+    {
+        double desired = moving + delta; // alvo BRUTO, sem clamp nenhum ainda -- decide o lado pedido
+
+        double negLo = 0, negHi = fixedEdge - minSizePt;
+        double posLo = fixedEdge + minSizePt, posHi = pageMaxPt;
+        bool negValid = negHi >= negLo; // NEG não-vazio: a página comporta o mínimo deste lado
+        bool posValid = posHi >= posLo; // POS não-vazio: idem, do outro lado
+
+        if (negValid && desired <= negHi) return Math.Clamp(desired, negLo, negHi);
+        if (posValid && desired >= posLo) return Math.Clamp(desired, posLo, posHi);
+
+        // `desired` caiu no vão morto (ou mirou um lado inválido) -- gruda na fronteira de mínimo mais
+        // perto do alvo pedido, entre as que existem (cobre tanto "só 1 lado cabe" -- os 2 casos
+        // reproduzidos pelo revisor -- quanto "nenhum delta chegou perto de nenhum lado de propósito").
+        if (negValid && posValid) return Math.Abs(desired - negHi) <= Math.Abs(desired - posLo) ? negHi : posLo;
+        if (negValid) return negHi;
+        if (posValid) return posLo;
+        return Math.Clamp(desired, 0, pageMaxPt); // nenhum lado cabe o mínimo -- caso degenerado aceito
+    }
+
+    private void RecomputeStampBoxRect() =>
+        StampBoxRect = new PdfQuad(Math.Min(_boxXa, _boxXb), Math.Min(_boxYa, _boxYb), Math.Max(_boxXa, _boxXb), Math.Max(_boxYa, _boxYb));
+
+    /// Cancela a caixa em QUALQUER fase (None incluído — idempotente/seguro de chamar sempre) — chamado
+    /// por Esc (`PdfViewerControl.OnPreviewKeyDown`), o botão "✖ Cancelar" do adorner, uma troca de
+    /// ferramenta (`OnActiveToolChanged` acima), uma troca/fechamento de documento
+    /// (`MainViewModel.OnSelectedDocumentChanged`) e QUALQUER edição aplicada por baixo
+    /// (`OnSessionApplied` acima — janela sem funil, mesmo "mutation gap" de
+    /// `DocumentChangedDuringPlacementNotice`). Reseta TUDO (brief: "sem armar o funil") — nunca toca
+    /// Session/`_editor`/motor de assinatura, só este VM. `wasActive` protege o caminho antigo de
+    /// clique único: só força `ActiveTool = None` se ESTA máquina de fato tinha algo em andamento —
+    /// chamar isto com a fase já None (ex.: o clique único de hoje, que nunca sai de None) nunca deve
+    /// mexer no `ActiveTool` de outro fluxo.
+    ///
+    /// `dueToDocumentMutation` (fix pós-revisão, achado real do coordenador — "silent path": um
+    /// Ctrl+Z/edição alheia acidental no MEIO de Drawing/Adjusting fazia a caixa sumir da tela SEM
+    /// NENHUMA explicação, achado que só o usuário não-técnico sentiria — "cadê meu carimbo?"): `true`
+    /// APENAS no chamador de `OnSessionApplied` (a MESMA notificação pt-BR que o cinto de
+    /// `SignCoreAsync` já usa pro caminho "entre o diálogo e o Confirmar" — `DocumentChangedDuringPlacementNotice`
+    /// — agora cobre TAMBÉM o caminho "durante Desenhar/Ajustar", que é justamente onde
+    /// `OnSessionApplied` intercepta ANTES do cinto de `SignCoreAsync` sequer ser alcançado, ver doc XML
+    /// de `SignCoreAsync`). Os outros 4 chamadores (Esc/botão/troca de ferramenta/troca de documento)
+    /// deixam o parâmetro no default `false` DE PROPÓSITO: o usuário INICIOU esses 4 caminhos, ele já
+    /// sabe que cancelou — um aviso ali seria ruído, não informação.
+    public void CancelStampBox(bool dueToDocumentMutation = false)
+    {
+        bool wasActive = StampPlacementPhase != StampPlacementPhase.None;
+        StampPlacementPhase = StampPlacementPhase.None; // dispara RefreshStampBoxOverlay -> limpa a página dona
+        StampBoxPageIndex = -1;
+        StampBoxCertificateCn = null;
+        StampBoxDateLabel = null;
+        StampBoxNotice = null;
+        _boxXa = _boxXb = _boxYa = _boxYb = 0;
+        StampBoxRect = default;
+        // Fix pós-revisão: notifica em pt-BR SÓ quando o cancelamento veio de uma mutação alheia (ver
+        // doc XML do parâmetro acima) — MESMA mensagem/seam do cinto de SignCoreAsync
+        // (DocumentChangedDuringPlacementNotice/_notifyError), gateado por wasActive (nunca notifica se
+        // não havia nada em andamento pra cancelar).
+        if (wasActive && dueToDocumentMutation) _notifyError(DocumentChangedDuringPlacementNotice);
+        // Task 2 (Plano 8): cancelar uma colocação REALMENTE em andamento (mesmo guard de ActiveTool
+        // acima) também limpa o PendingSignPlacement armado por Sign() -- todo caminho de cancelamento
+        // (Esc/botão/troca de ferramenta/troca de documento, ver PdfViewerControl.OnPreviewKeyDown,
+        // StampBoxCancel_Click, OnActiveToolChanged acima, MainViewModel.OnSelectedDocumentChanged) passa
+        // por aqui; sem isto, um ConfirmSignatureStampAsync tardio poderia reusar um contexto
+        // (certificado/motivo/local) obsoleto -- mesma disciplina de reset completo que a falha do BELT
+        // dentro de SignCoreAsync já aplica.
+        if (wasActive && ActiveTool == AnnotationTool.SignatureStamp)
+        {
+            ActiveTool = AnnotationTool.None;
+            _pendingSignPlacement = null;
+        }
+    }
+
+    /// Confirma a caixa (botão "✔ Assinar aqui") — só produz resultado partindo de Adjusting (não dá pra
+    /// confirmar um retângulo ainda sendo desenhado, sem alças pra saber que terminou). Este método só
+    /// expõe o rect final pra quem chamar; NÃO dispara o motor de assinatura nem arma o funil — isso é
+    /// `ConfirmSignatureStampAsync` (Task 2/Plano 8, acima), que consome este resultado pra montar o
+    /// `VisibleStampSpec` e disparar `SignCoreAsync`. Reseta a máquina pra None de qualquer forma
+    /// (sucesso "sai do modo").
+    public StampBoxPlacement? ConfirmStampBox()
+    {
+        if (StampPlacementPhase != StampPlacementPhase.Adjusting) return null;
+        var result = new StampBoxPlacement(StampBoxPageIndex, StampBoxRect);
+        StampPlacementPhase = StampPlacementPhase.None;
+        StampBoxPageIndex = -1;
+        StampBoxCertificateCn = null;
+        StampBoxDateLabel = null;
+        StampBoxNotice = null;
+        _boxXa = _boxXb = _boxYa = _boxYb = 0;
+        StampBoxRect = default;
+        return result;
+    }
+
+    /// Empurra o estado da caixa (bool + Rect de tela, mesma mecânica de
+    /// HasFormFieldHighlight/FormFieldHighlightRect — ver doc XML de PageViewModel) pra a PageViewModel
+    /// dona, e limpa a PageViewModel ANTERIOR se a fase voltou a None (ou, hipoteticamente, se a página
+    /// dona mudasse no meio — não acontece hoje, nenhum método reatribui StampBoxPageIndex fora de
+    /// Begin/Cancel/Confirm, mas o guard cobre o caso por simetria com o exemplar de FormField). Chamado
+    /// pelos OnXChanged de StampPlacementPhase/StampBoxRect acima — nunca direto por um dos métodos de
+    /// gesto (eles só mexem nos 4 brutos + StampBoxRect, que já dispara isto sozinho).
+    private void RefreshStampBoxOverlay()
+    {
+        int newPage = StampPlacementPhase == StampPlacementPhase.None ? -1 : StampBoxPageIndex;
+
+        if (_stampBoxOverlayPageIndex >= 0 && _stampBoxOverlayPageIndex != newPage && _stampBoxOverlayPageIndex < Pages.Count)
+        {
+            Pages[_stampBoxOverlayPageIndex].HasStampBox = false;
+            Pages[_stampBoxOverlayPageIndex].IsStampBoxAdjusting = false;
+            Pages[_stampBoxOverlayPageIndex].StampBoxHandlePoints.Clear();
+        }
+
+        if (newPage < 0 || newPage >= Pages.Count)
+        {
+            _stampBoxOverlayPageIndex = -1;
+            return;
+        }
+
+        var page = Pages[newPage];
+        bool isAdjusting = StampPlacementPhase == StampPlacementPhase.Adjusting;
+        page.HasStampBox = true;
+        page.IsStampBoxAdjusting = isAdjusting;
+        page.StampBoxPreviewText = BuildStampBoxPreviewText();
+        page.StampBoxScreenRect = PageViewModel.PointRectToScreenRect(
+            StampBoxRect.LeftPt, StampBoxRect.BottomPt, StampBoxRect.RightPt, StampBoxRect.TopPt, Zoom, page.HeightPt);
+        page.StampBoxButtonsPos = ComputeStampBoxButtonsPos(page.StampBoxScreenRect, page.DisplayWidth, page.DisplayHeight);
+        // FIX (revisão final da branch, achado I3 do revisor): as 8 alças só fazem sentido em Adjusting
+        // (a UX/o brief pede alças só depois de soltar um retângulo válido, nunca durante o arrasto
+        // inicial) — preenchê-las incondicionalmente aqui deixava 8 Rectangles hit-testáveis
+        // sobrepostos à página DURANTE Drawing, que engoliam o clique que deveria CONTINUAR o gesto de
+        // desenho (achado real: um clique que caísse sobre a posição de uma alça "fantasma" interceptava
+        // o mouse-down em vez de chegar em Page_MouseLeftButtonDown). Invariante mantido aqui em toda
+        // chamada (não só quando o estado MUDA): `StampBoxHandlePoints` só é não-vazio quando
+        // `IsStampBoxAdjusting` é `true` NESTA MESMA chamada — `Clear()` explícito no `else`, nunca
+        // "deixa como estava".
+        if (isAdjusting) FillStampBoxHandlePoints(page.StampBoxHandlePoints, page.StampBoxScreenRect);
+        else page.StampBoxHandlePoints.Clear();
+        _stampBoxOverlayPageIndex = newPage;
+    }
+
+    /// Preenche `target` com as 8 alças (posição + cursor) do retângulo de tela `r` — cantos primeiro
+    /// (diagonal), depois as 4 bordas (NS/WE), mesma ordem de `StampBoxHandle` (não que a ORDEM importe
+    /// pro binding, é só convenção de leitura). `internal` (não `private`): chamado tanto por
+    /// `RefreshStampBoxOverlay` (mudança de fase/rect) quanto por `PageViewModel.ApplyZoom` (mudança de
+    /// zoom) — os 2 únicos eventos que invalidam a posição das alças.
+    internal static void FillStampBoxHandlePoints(ObservableCollection<StampBoxHandlePoint> target, Rect r)
+    {
+        target.Clear();
+        double cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
+        target.Add(new StampBoxHandlePoint(new Point(r.Left, r.Top), Cursors.SizeNWSE, StampBoxHandle.TopLeft));
+        target.Add(new StampBoxHandlePoint(new Point(cx, r.Top), Cursors.SizeNS, StampBoxHandle.Top));
+        target.Add(new StampBoxHandlePoint(new Point(r.Right, r.Top), Cursors.SizeNESW, StampBoxHandle.TopRight));
+        target.Add(new StampBoxHandlePoint(new Point(r.Right, cy), Cursors.SizeWE, StampBoxHandle.Right));
+        target.Add(new StampBoxHandlePoint(new Point(r.Right, r.Bottom), Cursors.SizeNWSE, StampBoxHandle.BottomRight));
+        target.Add(new StampBoxHandlePoint(new Point(cx, r.Bottom), Cursors.SizeNS, StampBoxHandle.Bottom));
+        target.Add(new StampBoxHandlePoint(new Point(r.Left, r.Bottom), Cursors.SizeNESW, StampBoxHandle.BottomLeft));
+        target.Add(new StampBoxHandlePoint(new Point(r.Left, cy), Cursors.SizeWE, StampBoxHandle.Left));
+    }
+
+    private string BuildStampBoxPreviewText() =>
+        string.IsNullOrEmpty(StampBoxCertificateCn) ? StampBoxDateLabel ?? "" : $"{StampBoxCertificateCn}\n{StampBoxDateLabel}";
+
+    /// Posição (Canvas.Left/Top, px de tela local à página) do grupo de botões flutuantes "✔ Assinar
+    /// aqui"/"✖ Cancelar" — LOGO ABAIXO da caixa por padrão; se não couber (caixa encostada na borda de
+    /// baixo da página), sobe pra ACIMA da caixa (brief: "dentro da página se a caixa encostar na
+    /// borda"). Horizontal: alinhado à borda esquerda da caixa, clampado pra nunca vazar a largura da
+    /// página. `rowWidth`/`rowHeight` são um tamanho ASSUMIDO (o VM não mede o layout real dos 2
+    /// botões) — mesma tolerância que o brief já concede pro texto de prévia ("fiel o suficiente, não
+    /// idêntico"): o clamp fica aproximado, nunca pixel-perfeito, mas nunca deixa os botões viverem fora
+    /// da página visível.
+    internal static Point ComputeStampBoxButtonsPos(Rect boxScreenRect, double pageDisplayWidthPx, double pageDisplayHeightPx)
+    {
+        const double rowWidth = 190, rowHeight = 30, margin = 6;
+        double below = boxScreenRect.Bottom + margin;
+        double top = below + rowHeight <= pageDisplayHeightPx ? below : Math.Max(0, boxScreenRect.Top - rowHeight - margin);
+        double left = Math.Clamp(boxScreenRect.Left, 0, Math.Max(0, pageDisplayWidthPx - rowWidth));
+        return new Point(left, top);
     }
 
     // ==== Task 4 (Plano 4): painel de Assinaturas (validação) ========================================

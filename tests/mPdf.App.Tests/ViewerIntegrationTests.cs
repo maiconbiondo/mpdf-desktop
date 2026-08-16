@@ -6,6 +6,7 @@ using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using mPdf.App.Services;
 using mPdf.App.ViewModels;
@@ -14,6 +15,9 @@ using mPdf.Documents;
 using mPdf.Editing;
 using mPdf.Signing;
 using Xunit;
+// Rectangle (não System.Windows.Shapes inteiro, que colide com System.IO.Path via Shapes.Path) -- usado
+// só pelo Task 2 (Plano 8) STA de mouse real, pra achar a alça de redimensionar por DataContext.
+using Rectangle = System.Windows.Shapes.Rectangle;
 
 namespace mPdf.App.Tests;
 
@@ -153,6 +157,479 @@ public class ViewerIntegrationTests
             Assert.True(scrollViewer.VerticalOffset > before,
                 $"PageDown não rolou o ScrollViewer (antes={before}, depois={scrollViewer.VerticalOffset}) " +
                 "— regressão da Task 8 (ListBox engolindo a tecla sem delegar pro ScrollViewer)");
+        }
+        finally
+        {
+            window?.Close();
+            doc?.Dispose();
+            try { PendingDisposals.WaitAll(TimeSpan.FromSeconds(5)); }
+            catch (AggregateException) { /* descarte faltoso não pode mascarar o encerramento/falha real; já estamos desligando */ }
+            Dispatcher.CurrentDispatcher.InvokeShutdown();
+        }
+    }
+
+    /// Task 1 (Plano 8): a caixa ajustável do carimbo em Adjusting mostra o adorner (retângulo + alças +
+    /// botões flutuantes) na árvore visual DE VERDADE, e o estado (HasStampBox/StampBoxScreenRect, no
+    /// PageViewModel — não no container reciclável) sobrevive a rolar a página dona pra fora do
+    /// viewport (desrealização, CacheLength="1,1" Page) e voltar (reciclagem) — mesma prova ponta a
+    /// ponta que `Viewer_RendersFirstPageAndLastPageAfterScroll` já faz pro bitmap, aplicada ao overlay
+    /// desta task. Também prova que Cancelar (botão) limpa o adorner na hora. NADA disto é alcançável
+    /// hoje pelo clique único de produção (Task 2 troca o gatilho) — os métodos da máquina são chamados
+    /// DIRETO, exatamente como a View fará depois de Task 2.
+    [Fact]
+    public void Viewer_StampBoxAdorner_AppearsWhileAdjusting_SurvivesScrollAndVirtualization_ClearsOnCancel()
+    {
+        Exception? threadEx = null;
+        var thread = new Thread(() =>
+        {
+            try { RunStampBoxAdornerScenario(); }
+            catch (Exception ex) { threadEx = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+
+        bool joined = thread.Join(TimeSpan.FromSeconds(30));
+        Assert.True(joined, "thread STA não terminou dentro de 30s (BLOCKED: possível deadlock/hang do WPF)");
+
+        if (threadEx is not null) ExceptionDispatchInfo.Capture(threadEx).Throw();
+    }
+
+    private static void RunStampBoxAdornerScenario()
+    {
+        DocumentViewModel? doc = null;
+        PdfViewerControl? control = null;
+        Window? window = null;
+        try
+        {
+            doc = new DocumentViewModel(
+                DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-30p.pdf")));
+            control = new PdfViewerControl { DataContext = doc };
+            window = new Window { Width = 1000, Height = 800, Content = control };
+            window.Show();
+
+            Pump(() => doc.Pages[0].ImageSource is not null, TimeSpan.FromSeconds(20));
+            Assert.True(doc.Pages[0].ImageSource is not null, "primeira página não renderizou a tempo");
+
+            // Aciona a máquina DIRETO (mesma nota de doc XML acima) — chega a Adjusting numa caixa
+            // válida (200x50pt, acima do mínimo 60x20pt).
+            doc.ActiveTool = AnnotationTool.SignatureStamp;
+            doc.BeginStampBoxPlacement(0, new PdfPoint(100, 700), "CN=Assinante STA");
+            doc.UpdateDrawTo(new PdfPoint(300, 750));
+            doc.EndStampDraw();
+            Assert.Equal(StampPlacementPhase.Adjusting, doc.StampPlacementPhase);
+
+            Pump(() => FindVisualChildren<Button>(window).Any(IsConfirmButtonVisible), TimeSpan.FromSeconds(5));
+            var buttons = FindVisualChildren<Button>(window).ToList();
+            var confirmButton = buttons.FirstOrDefault(b => Equals(b.Content, "✔ Assinar aqui"));
+            var cancelButton = buttons.FirstOrDefault(b => Equals(b.Content, "✖ Cancelar"));
+            Assert.True(confirmButton is { IsVisible: true }, "botão Confirmar não apareceu (Adjusting)");
+            Assert.True(cancelButton is { IsVisible: true }, "botão Cancelar não apareceu (Adjusting)");
+
+            Assert.True(doc.Pages[0].HasStampBox);
+            var rectBefore = doc.Pages[0].StampBoxScreenRect;
+
+            // Rola até o fim (desrealiza a página 0, fora do CacheLength="1,1") e volta (recicla o
+            // container) — mesma mecânica do smoke de virtualização acima.
+            var scrollViewer = control.FindPageListScrollViewer();
+            Assert.NotNull(scrollViewer);
+            scrollViewer!.ScrollToEnd();
+            Pump(() => doc.Pages[29].ImageSource is not null, TimeSpan.FromSeconds(20));
+            Assert.True(doc.Pages[29].ImageSource is not null, "última página não realizou após rolar");
+
+            scrollViewer.ScrollToHome();
+            Pump(() => doc.Pages[0].ImageSource is not null, TimeSpan.FromSeconds(20));
+            Assert.True(doc.Pages[0].ImageSource is not null, "primeira página não re-realizou ao voltar ao topo");
+
+            // O estado sobreviveu à reciclagem (vive no PageViewModel, não no container visual descartado)
+            Assert.True(doc.Pages[0].HasStampBox, "HasStampBox não sobreviveu à desrealização+reciclagem");
+            Assert.Equal(rectBefore, doc.Pages[0].StampBoxScreenRect);
+
+            Pump(() => FindVisualChildren<Button>(window).Any(IsConfirmButtonVisible), TimeSpan.FromSeconds(5));
+            Assert.Contains(FindVisualChildren<Button>(window), IsConfirmButtonVisible);
+
+            // Cancelar limpa o adorner na hora (binding reage à mudança de HasStampBox/IsStampBoxAdjusting)
+            doc.CancelStampBox();
+            Pump(() => !doc.Pages[0].HasStampBox, TimeSpan.FromSeconds(5));
+            Assert.False(doc.Pages[0].HasStampBox);
+            Assert.DoesNotContain(FindVisualChildren<Button>(window), IsConfirmButtonVisible);
+        }
+        finally
+        {
+            window?.Close();
+            doc?.Dispose();
+            try { PendingDisposals.WaitAll(TimeSpan.FromSeconds(5)); }
+            catch (AggregateException) { /* descarte faltoso não pode mascarar o encerramento/falha real; já estamos desligando */ }
+            Dispatcher.CurrentDispatcher.InvokeShutdown();
+        }
+    }
+
+    // IsVisible (efetiva, considerando ancestrais — inclui o StackPanel do adorner que carrega o
+    // binding de verdade), NÃO Visibility (propriedade LOCAL do próprio Button, nunca setada aqui —
+    // fica sempre no default Visible independente do ancestral estar Collapsed; achado ao vivo: a 1ª
+    // versão deste teste usava Visibility e falhava com falso-positivo em containers reciclados fora
+    // de tela, cujo StackPanel pai já estava Collapsed corretamente).
+    private static bool IsConfirmButtonVisible(Button b) => Equals(b.Content, "✔ Assinar aqui") && b.IsVisible;
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject root) where T : DependencyObject
+    {
+        int count = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match) yield return match;
+            foreach (var descendant in FindVisualChildren<T>(child)) yield return descendant;
+        }
+    }
+
+    /// Task 1 (Plano 8): Esc cancela a caixa em curso pelo pipeline de teclado REAL (PreviewKeyDown do
+    /// PdfViewerControl, mesmo caminho já provado pra PageDown acima) — não só a chamada direta de
+    /// CancelStampBox (já coberta headless em StampBoxPlacementTests).
+    [Fact]
+    public void Viewer_EscapeKey_CancelsStampBoxPlacement()
+    {
+        Exception? threadEx = null;
+        var thread = new Thread(() =>
+        {
+            try { RunEscapeCancelsStampBoxScenario(); }
+            catch (Exception ex) { threadEx = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+
+        bool joined = thread.Join(TimeSpan.FromSeconds(30));
+        Assert.True(joined, "thread STA não terminou dentro de 30s (BLOCKED: possível deadlock/hang do WPF)");
+
+        if (threadEx is not null) ExceptionDispatchInfo.Capture(threadEx).Throw();
+    }
+
+    private static void RunEscapeCancelsStampBoxScenario()
+    {
+        DocumentViewModel? doc = null;
+        PdfViewerControl? control = null;
+        Window? window = null;
+        try
+        {
+            doc = new DocumentViewModel(
+                DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-30p.pdf")));
+            control = new PdfViewerControl { DataContext = doc };
+            window = new Window { Width = 1000, Height = 800, Content = control };
+            window.Show();
+
+            Pump(() => doc.Pages[0].ImageSource is not null, TimeSpan.FromSeconds(20));
+
+            control.PageList.Focus();
+            Pump(() => control.PageList.IsKeyboardFocusWithin, TimeSpan.FromSeconds(5));
+            Assert.True(control.PageList.IsKeyboardFocusWithin, "PageList não obteve foco de teclado");
+
+            doc.ActiveTool = AnnotationTool.SignatureStamp;
+            doc.BeginStampBoxPlacement(0, new PdfPoint(100, 700), "CN=Assinante STA");
+            doc.UpdateDrawTo(new PdfPoint(300, 750));
+            doc.EndStampDraw();
+            Assert.Equal(StampPlacementPhase.Adjusting, doc.StampPlacementPhase);
+
+            var args = new KeyEventArgs(Keyboard.PrimaryDevice,
+                PresentationSource.FromVisual(control.PageList), 0, Key.Escape)
+            {
+                RoutedEvent = Keyboard.PreviewKeyDownEvent
+            };
+            control.PageList.RaiseEvent(args);
+
+            Pump(() => doc.StampPlacementPhase == StampPlacementPhase.None, TimeSpan.FromSeconds(5));
+
+            Assert.Equal(StampPlacementPhase.None, doc.StampPlacementPhase);
+            Assert.Equal(AnnotationTool.None, doc.ActiveTool);
+            Assert.True(args.Handled, "Esc não marcou e.Handled=true");
+        }
+        finally
+        {
+            window?.Close();
+            doc?.Dispose();
+            try { PendingDisposals.WaitAll(TimeSpan.FromSeconds(5)); }
+            catch (AggregateException) { /* descarte faltoso não pode mascarar o encerramento/falha real; já estamos desligando */ }
+            Dispatcher.CurrentDispatcher.InvokeShutdown();
+        }
+    }
+
+    /// Task 2 (Plano 8): fiação REAL de mouse da caixa ajustável, numa `MainWindow` REAL (não um
+    /// `Window`/`PdfViewerControl` avulso como os testes acima) — prova que: (a) mouse-down REAL na
+    /// página, com `ActiveTool == SignatureStamp`, entra em Drawing e CAPTURA o mouse no Border da
+    /// página (mesmo exemplar de mouse-capture da ferramenta Retângulo, Task 8/Plano 3a); (b) mouse-down
+    /// REAL numa ALÇA (Adjusting) e no CORPO da caixa capturam o mouse no Border ANCESTRAL — não no
+    /// elemento fisicamente clicado (Rectangle da alça / Grid do corpo) — e marcam `e.Handled`
+    /// (`StampBoxHandle_MouseLeftButtonDown`/`StampBox_MouseLeftButtonDown`, ver doc XML de
+    /// `PdfViewerControl`); (c) o botão "✔ Assinar aqui" REAL, clicado via `RaiseEvent` no
+    /// `ButtonBase.ClickEvent` (não um clique de mouse posicionado), dispara `ConfirmSignatureStampAsync`
+    /// ponta a ponta até o motor (fake), recebendo o rect da caixa corrente.
+    ///
+    /// POSIÇÃO exata do mouse NÃO é controlável em teste sem mover o cursor real do SO — medido ao vivo
+    /// escrevendo este teste: `MouseButtonEventArgs.GetPosition` lê o `MouseDevice` de verdade (a
+    /// posição REAL do cursor no momento do teste), nunca um valor injetável via `RaiseEvent`; por isso
+    /// o rect em si (pra provar o motor recebe o valor CORRETO) é estabelecido por chamada DIRETA à
+    /// máquina (mesmo exemplar/justificativa de `Viewer_StampBoxAdorner_...`, Task 1) — a precisão em
+    /// PIXELS do rect final é responsabilidade da aceitação por pixel
+    /// (`SignCommandTests.Sign_Integration_StampBoxDrawAdjustConfirm_RendersExactlyInsideFinalRect`);
+    /// este teste foca no que É observável deterministicamente com mouse REAL: `Mouse.Captured` (QUEM
+    /// capturou) e `e.Handled`.
+    [Fact]
+    public void Viewer_StampBoxRealMouseWiring_CapturesOnPageBorder_ConfirmButtonSignsWithCurrentRect()
+    {
+        Exception? threadEx = null;
+        var thread = new Thread(() =>
+        {
+            try { RunStampBoxRealMouseWiringScenario(); }
+            catch (Exception ex) { threadEx = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+
+        bool joined = thread.Join(TimeSpan.FromSeconds(30));
+        Assert.True(joined, "thread STA não terminou dentro de 30s (BLOCKED: possível deadlock/hang do WPF)");
+
+        if (threadEx is not null) ExceptionDispatchInfo.Capture(threadEx).Throw();
+    }
+
+    private static void RunStampBoxRealMouseWiringScenario()
+    {
+        // Exemplar: RunCamposTabScenario (doc XML lá) — ConfirmSignatureStampAsync é um AsyncRelayCommand
+        // acionado por um Button REAL; sem este SynchronizationContext explícito o `await` retomaria numa
+        // thread do POOL (não a STA desta thread), derrubando o processo ao tentar notificar
+        // CanExecuteChanged/mexer num DependencyObject fora da thread dona.
+        SynchronizationContext.SetSynchronizationContext(
+            new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
+
+        mPdf.App.MainWindow? window = null;
+        DocumentViewModel? doc = null;
+        string? tmp = null;
+        try
+        {
+            // CRÍTICO (exemplar: SignCommandTests.CopyFixtureToTemp): este teste alcança um Confirmar
+            // BEM-SUCEDIDO -> Session.CommitSigned grava em disco de verdade. NUNCA abrir a fixture
+            // COMPARTILHADA direto aqui — copiar pra um arquivo descartável primeiro.
+            tmp = Path.Combine(Path.GetTempPath(), $"mpdf-stampbox-mouse-{Guid.NewGuid():N}.pdf");
+            File.Copy(Path.Combine(Fixtures.Root, "fixture-a4.pdf"), tmp);
+
+            var engine = new FakeSigningEngine();
+            using var cert = SignCommandTests.CreateEphemeralRsaCertificate();
+            var dialog = new FakeSignDialogService(new SignDialogResult(cert, null, null, ApplyDocMdp: false, PlaceStamp: true));
+            doc = new DocumentViewModel(
+                DocumentSession.Open(tmp),
+                notifyError: _ => { }, notifyInfo: _ => { },
+                signDialog: dialog, signingEngine: engine,
+                confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
+                listSigningCertificates: () => Array.Empty<SigningCertificateInfo>());
+
+            window = new mPdf.App.MainWindow();
+            window.Show();
+            window.ViewModel.Documents.Add(doc);
+            window.ViewModel.SelectedDocument = doc;
+
+            Pump(() => doc.Pages[0].ImageSource is not null, TimeSpan.FromSeconds(20));
+
+            // Re-achado a cada uso (não cacheado uma única vez) -- o container do ListBox por trás da
+            // página PODE ser reciclado/regenerado por baixo (virtualização) entre passos; comparar por
+            // IDENTIDADE de referência a uma captura ANTIGA seria frágil. A prova que IMPORTA aqui (quem
+            // capturou o mouse é o Border ANCESTRAL da página, não o sub-elemento clicado) é feita
+            // comparando o DataContext do capturado contra `doc.Pages[0]` — estável mesmo que a
+            // INSTÂNCIA do Border mude por baixo.
+            Border PageBorder() => FindDescendantByDataContext<Border>(window!, doc!.Pages[0])
+                ?? throw new InvalidOperationException("Border da página 0 não encontrado na árvore visual.");
+            Assert.NotNull(PageBorder()); // exemplar: RunAssinaturasTabScenario -- Border é a raiz do DataTemplate por página
+
+            // ---- (a) Sign() com PlaceStamp -> ativa o modo de colocação ------------------------------
+            _ = doc.SignCommand.ExecuteAsync(null);
+            Pump(() => doc.ActiveTool == AnnotationTool.SignatureStamp, TimeSpan.FromSeconds(5));
+            Assert.Equal(AnnotationTool.SignatureStamp, doc.ActiveTool);
+
+            // ---- (b) Mouse-down REAL na página -- entra em Drawing e CAPTURA o mouse no Border -------
+            var down = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent };
+            PageBorder().RaiseEvent(down);
+
+            Assert.True(down.Handled, "mouse-down na página não foi marcado Handled");
+            Assert.Same(doc.Pages[0], (Mouse.Captured as FrameworkElement)?.DataContext);
+            Assert.Equal(StampPlacementPhase.Drawing, doc.StampPlacementPhase);
+
+            // Mouse-up REAL -- solta a captura (EndStampDraw decide sozinho Drawing-permanece vs Adjusting).
+            var up = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonUpEvent };
+            PageBorder().RaiseEvent(up);
+            Assert.Null(Mouse.Captured);
+
+            // ---- (c) Estabelece um rect CONHECIDO por chamada direta (posição de mouse real não é
+            // controlável, ver doc XML acima) -- reseta o que quer que (b) tenha desenhado e recomeça. --
+            doc.CancelStampBox();
+            _ = doc.SignCommand.ExecuteAsync(null); // CancelStampBox desligou ActiveTool -- reativa o modo
+            Pump(() => doc.ActiveTool == AnnotationTool.SignatureStamp, TimeSpan.FromSeconds(5));
+            doc.BeginStampBoxPlacementAsync(0, new PdfPoint(100, 100)).GetAwaiter().GetResult();
+            doc.UpdateDrawTo(new PdfPoint(300, 200));
+            doc.EndStampDraw();
+            Assert.Equal(StampPlacementPhase.Adjusting, doc.StampPlacementPhase); // sanity
+
+            // ---- (d) Mouse-down REAL numa ALÇA -- captura no Border ANCESTRAL (não no Rectangle da
+            // alça), marca Handled (StampBoxHandle_MouseLeftButtonDown) ------------------------------
+            var handlePoint = doc.Pages[0].StampBoxHandlePoints[3]; // índice 3 = Right (FillStampBoxHandlePoints)
+            Assert.Equal(StampBoxHandle.Right, handlePoint.Handle);
+            // O ItemsControl precisa de um passe de LAYOUT (Dispatcher) pra gerar o container do item
+            // recém-adicionado à ObservableCollection -- mesmo cuidado de RunStampBoxAdornerScenario
+            // (Pump antes de achar os botões flutuantes pela 1ª vez).
+            Pump(() => FindDescendantByDataContext<Rectangle>(window, handlePoint) is not null, TimeSpan.FromSeconds(5));
+            var handleRect = FindDescendantByDataContext<Rectangle>(window, handlePoint);
+            Assert.NotNull(handleRect); // ItemsControl/DataTemplate da alça resolveram de verdade
+
+            var handleDown = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent };
+            handleRect!.RaiseEvent(handleDown);
+
+            Assert.True(handleDown.Handled, "mouse-down na alça não foi marcado Handled");
+            // capturado no BORDER ancestral (a PÁGINA), não no Rectangle da alça fisicamente clicado.
+            Assert.IsType<Border>(Mouse.Captured);
+            Assert.Same(doc.Pages[0], (Mouse.Captured as FrameworkElement)?.DataContext);
+
+            var handleUp = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonUpEvent };
+            ((Border)Mouse.Captured!).RaiseEvent(handleUp);
+            Assert.Null(Mouse.Captured);
+            Assert.Equal(StampPlacementPhase.Adjusting, doc.StampPlacementPhase); // redimensionar não muda a fase
+
+            // ---- (e) Mouse-down REAL no CORPO da caixa -- mesma disciplina (StampBox_MouseLeftButtonDown) --
+            var bodyGrid = FindDescendants<Grid>(window).FirstOrDefault(g => g.Name == "StampBoxAdornerGrid");
+            Assert.NotNull(bodyGrid); // Grid do adorner (x:Name pra teste) resolveu de verdade
+
+            var bodyDown = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent };
+            bodyGrid!.RaiseEvent(bodyDown);
+
+            Assert.True(bodyDown.Handled, "mouse-down no corpo da caixa não foi marcado Handled");
+            // capturado no BORDER ancestral (a PÁGINA), não no Grid do corpo fisicamente clicado.
+            Assert.IsType<Border>(Mouse.Captured);
+            Assert.Same(doc.Pages[0], (Mouse.Captured as FrameworkElement)?.DataContext);
+
+            var bodyUp = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonUpEvent };
+            ((Border)Mouse.Captured!).RaiseEvent(bodyUp);
+            Assert.Null(Mouse.Captured);
+
+            var rectBeforeConfirm = doc.StampBoxRect;
+
+            // ---- (f) Botão "✔ Assinar aqui" REAL -- clique via RaiseEvent no ButtonBase.ClickEvent
+            // (posição-independente, mesmo padrão de clique já usado por outros testes desta classe) --
+            // dispara ConfirmSignatureStampAsync ponta a ponta até o motor (fake). ---------------------
+            var confirmButton = FindVisualChildren<Button>(window).FirstOrDefault(b => Equals(b.Content, "✔ Assinar aqui"));
+            Assert.NotNull(confirmButton); // botão REAL do adorner, dentro da MainWindow REAL
+
+            confirmButton!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, confirmButton));
+
+            Pump(() => engine.SignCallCount > 0, TimeSpan.FromSeconds(10));
+            Assert.Equal(1, engine.SignCallCount);
+            var stamp = engine.LastRequest!.Stamp;
+            Assert.NotNull(stamp);
+            Assert.Equal(0, stamp!.PageIndex);
+            Assert.Equal(rectBeforeConfirm.LeftPt, stamp.Rect.LeftPt, 0.01);
+            Assert.Equal(rectBeforeConfirm.BottomPt, stamp.Rect.BottomPt, 0.01);
+            Assert.Equal(rectBeforeConfirm.RightPt, stamp.Rect.RightPt, 0.01);
+            Assert.Equal(rectBeforeConfirm.TopPt, stamp.Rect.TopPt, 0.01);
+            Pump(() => doc.IsSignedDocument, TimeSpan.FromSeconds(10));
+            Assert.True(doc.IsSignedDocument);
+            Assert.Equal(StampPlacementPhase.None, doc.StampPlacementPhase);
+            Assert.Equal(AnnotationTool.None, doc.ActiveTool);
+        }
+        finally
+        {
+            if (window is not null) window.ViewModel.Documents.Clear(); // doc fica sujo/assinado -- mesmo cinto de RunAssinaturasTabScenario
+            window?.Close();
+            doc?.Dispose();
+            try { PendingDisposals.WaitAll(TimeSpan.FromSeconds(5)); }
+            catch (AggregateException) { /* descarte faltoso não pode mascarar o encerramento/falha real; já estamos desligando */ }
+            Dispatcher.CurrentDispatcher.InvokeShutdown();
+            if (tmp is not null)
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                try { if (File.Exists(tmp + ".bak")) File.Delete(tmp + ".bak"); } catch { }
+            }
+        }
+    }
+
+    /// I3 (revisão final da branch, achado real do revisor): as 8 alças só podem existir na árvore
+    /// visual em Adjusting — em Drawing (incl. o estado "pequeno demais, permanece Drawing com aviso
+    /// sutil") elas precisam ficar em ZERO, senão um clique que caia sobre a posição de uma alça
+    /// "fantasma" intercepta o mouse-down (StampBoxHandle_MouseLeftButtonDown marca `e.Handled`) que
+    /// deveria CONTINUAR o gesto de desenho em Page_MouseLeftButtonDown. Conta Rectangles pelo
+    /// DataContext (`StampBoxHandlePoint`, mesma técnica de RunStampBoxRealMouseWiringScenario). Prova o
+    /// RESULTADO OBSERVÁVEL final (0 containers renderizados) — os 2 fixes (VM: RefreshStampBoxOverlay/
+    /// ApplyZoom só preenchem em Adjusting; XAML: Visibility no ItemsControl) atuam JUNTOS aqui: achado
+    /// ao vivo escrevendo este teste — com o `Visibility` do ItemsControl Collapsed (o cinto XAML),
+    /// o WPF nem chega a gerar os containers do item mesmo que a COLEÇÃO tenha 8 itens (verificado
+    /// injetando uma mutação só no VM: a coleção tinha 8, a árvore visual continuava com 0) — então este
+    /// teste sozinho NÃO isola qual dos 2 fixes está segurando a barra. `StampBoxPlacementTests.
+    /// HandlePoints_PopulatedOnlyInAdjusting_EmptyDuringDrawing` (headless, sem XAML) prova o fix do VM
+    /// isoladamente, contando a COLEÇÃO direto.
+    [Fact]
+    public void Viewer_StampBoxHandles_HiddenDuringDrawing_ExactlyEightDuringAdjusting()
+    {
+        Exception? threadEx = null;
+        var thread = new Thread(() =>
+        {
+            try { RunStampBoxHandlesVisibilityScenario(); }
+            catch (Exception ex) { threadEx = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+
+        bool joined = thread.Join(TimeSpan.FromSeconds(30));
+        Assert.True(joined, "thread STA não terminou dentro de 30s (BLOCKED: possível deadlock/hang do WPF)");
+
+        if (threadEx is not null) ExceptionDispatchInfo.Capture(threadEx).Throw();
+    }
+
+    private static void RunStampBoxHandlesVisibilityScenario()
+    {
+        DocumentViewModel? doc = null;
+        PdfViewerControl? control = null;
+        Window? window = null;
+        try
+        {
+            doc = new DocumentViewModel(
+                DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")));
+            control = new PdfViewerControl { DataContext = doc };
+            window = new Window { Width = 1000, Height = 800, Content = control };
+            window.Show();
+
+            Pump(() => doc.Pages[0].ImageSource is not null, TimeSpan.FromSeconds(20));
+
+            int HandleCount() => FindDescendants<Rectangle>(window!).Count(r => r.DataContext is StampBoxHandlePoint);
+            // ACHADO ao vivo (escrevendo este teste): Pump(condition, timeout) só bombeia o dispatcher
+            // ENQUANTO a condição for falsa -- pedir uma condição já VERDADEIRA (ex.: HasStampBox, que
+            // já é true de imediato) devolve na hora, SEM processar a fila de layout nenhuma vez. Sem
+            // isto, uma alça "fantasma" adicionada à ObservableCollection (o bug) NUNCA teria a chance
+            // de virar um Rectangle de verdade na árvore visual antes da asserção rodar -- o teste
+            // passaria por engano tanto no código certo quanto no código com bug (verificado: o mutante
+            // que preenche as alças incondicionalmente ainda passava neste teste até este fix). Força
+            // um número FIXO de ciclos do dispatcher, sempre, antes de cada checagem de HandleCount.
+            void FlushDispatcher()
+            {
+                for (int i = 0; i < 10; i++) Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Background);
+            }
+
+            doc.ActiveTool = AnnotationTool.SignatureStamp;
+            doc.BeginStampBoxPlacement(0, new PdfPoint(100, 700), "CN=Teste I3");
+            doc.UpdateDrawTo(new PdfPoint(130, 710)); // 30x10pt -- abaixo do mínimo 60x20pt
+            doc.EndStampDraw();
+            Assert.Equal(StampPlacementPhase.Drawing, doc.StampPlacementPhase); // ficou em Drawing (aviso sutil)
+            FlushDispatcher();
+            Assert.True(doc.Pages[0].HasStampBox);
+            Assert.Equal(0, HandleCount()); // achado EXATO do revisor: nem no estado "pequeno demais"
+
+            doc.UpdateDrawTo(new PdfPoint(300, 750)); // continua o MESMO gesto até um tamanho válido
+            Assert.Equal(StampPlacementPhase.Drawing, doc.StampPlacementPhase); // ainda Drawing (não soltou)
+            FlushDispatcher();
+            Assert.Equal(0, HandleCount());
+
+            doc.EndStampDraw();
+            Assert.Equal(StampPlacementPhase.Adjusting, doc.StampPlacementPhase);
+            Pump(() => HandleCount() == 8, TimeSpan.FromSeconds(5));
+            Assert.Equal(8, HandleCount());
+
+            doc.CancelStampBox();
+            Pump(() => HandleCount() == 0, TimeSpan.FromSeconds(5));
+            Assert.Equal(0, HandleCount());
         }
         finally
         {

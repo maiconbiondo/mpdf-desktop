@@ -41,7 +41,15 @@
         </ListBox.ItemContainerStyle>
         <ListBox.ItemTemplate>
             <DataTemplate DataType="{x:Type vm:PageViewModel}">
-                <Border Width="{Binding DisplayWidth}" Height="{Binding DisplayHeight}"
+                <!-- x:Name="PageBorder" (Task 2, Plano 8): identifica ESTE Border especificamente pra
+                     StampBox_MouseLeftButtonDown/StampBoxHandle_MouseLeftButtonDown (PdfViewerControl.xaml.cs)
+                     acharem o Border DA PÁGINA subindo a árvore a partir de um sub-elemento do adorner —
+                     um FindAncestor<Border> GENÉRICO acharia primeiro o Border de CHROME do tema padrão
+                     do ItemsControl das alças (nenhum Template customizado neste XAML pro ItemsControl),
+                     que fica MAIS PRÓXIMO na árvore e herda o MESMO DataContext (PageViewModel) por
+                     propagação normal — sem o nome, capturar/soltar o mouse acertaria o Border ERRADO
+                     (achado ao vivo escrevendo o teste STA de mouse real). -->
+                <Border x:Name="PageBorder" Width="{Binding DisplayWidth}" Height="{Binding DisplayHeight}"
                         Background="White" Margin="0,6" SnapsToDevicePixels="True"
                         Loaded="Page_Loaded" Unloaded="Page_Unloaded"
                         DataContextChanged="Page_DataContextChanged"
@@ -174,6 +182,79 @@
                                   Stroke="#FF2196F3" StrokeThickness="2"
                                   Visibility="{Binding HasLinePreview, Converter={StaticResource BoolToVis}}"/>
                         </Canvas>
+                        <!-- Caixa ajustável do carimbo de assinatura (Task 1, Plano 8) — adorner FINO:
+                             toda a geometria (StampBoxScreenRect/StampBoxButtonsPos/StampBoxPreviewText)
+                             já vem PRONTA do DocumentViewModel (RefreshStampBoxOverlay), este XAML só
+                             faz bind — nenhuma aritmética aqui. IsHitTestVisible ligado a
+                             IsStampBoxAdjusting (Task 2, Plano 8): SÓ o corpo em Adjusting responde a
+                             mouse-down (arrastar = MOVER, StampBox_MouseLeftButtonDown) — em Drawing a
+                             caixa fica hit-test-TRANSPARENTE de propósito, senão um 2º clique dentro do
+                             retângulo ainda pequeno (aviso "caixa pequena demais") interceptaria o
+                             gesto que deveria continuar o desenho em Page_MouseLeftButtonDown. -->
+                        <Grid x:Name="StampBoxAdornerGrid"
+                              Canvas.Left="{Binding StampBoxScreenRect.X}" Canvas.Top="{Binding StampBoxScreenRect.Y}"
+                              Width="{Binding StampBoxScreenRect.Width}" Height="{Binding StampBoxScreenRect.Height}"
+                              IsHitTestVisible="{Binding IsStampBoxAdjusting}"
+                              Background="Transparent"
+                              MouseLeftButtonDown="StampBox_MouseLeftButtonDown"
+                              Visibility="{Binding HasStampBox, Converter={StaticResource BoolToVis}}">
+                            <Rectangle Stroke="#FFFF9800" StrokeThickness="2" StrokeDashArray="4 2" Fill="#33FF9800"/>
+                            <TextBlock Text="{Binding StampBoxPreviewText}" TextAlignment="Center"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis" TextWrapping="Wrap" Padding="4"
+                                       FontSize="10" Foreground="#FF5D4200"/>
+                        </Grid>
+                        <!-- 8 alças de redimensionar (só visíveis em Adjusting — brief: handles só depois
+                             de soltar um retângulo válido, não durante o arrasto inicial; StampBoxHandlePoints
+                             fica VAZIO fora de Adjusting — ver DocumentViewModel.RefreshStampBoxOverlay/
+                             PageViewModel.ApplyZoom, achado I3 da revisão final: os 2 lugares que
+                             preenchem esta coleção agora GARANTEM o invariante). Posições calculadas no VM
+                             (DocumentViewModel.RefreshStampBoxOverlay/PageViewModel.ApplyZoom via
+                             StampBoxHandlePoints) — cada item já carrega seu próprio Cursor (canto =
+                             diagonal, borda = NS/WE) E sua identidade StampBoxHandle (Task 2), sem
+                             converter/decidir nada no XAML. Margin negativo centraliza o quadrado 8x8
+                             sobre o ponto (Canvas.Left/Top posicionam o canto SUPERIOR-ESQUERDO do
+                             elemento, não o centro). Mouse-down numa alça arrasta REDIMENSIONANDO
+                             (StampBoxHandle_MouseLeftButtonDown, Task 2). Visibility em IsStampBoxAdjusting
+                             (revisão final, I3): CINTO redundante com a coleção vazia acima — mesmo
+                             espírito defensivo do cinto de MoveBoxBy no VM, nunca depende de UM ÚNICO
+                             mecanismo pra garantir "nenhuma alça fora de Adjusting". -->
+                        <ItemsControl ItemsSource="{Binding StampBoxHandlePoints}"
+                                      Visibility="{Binding IsStampBoxAdjusting, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <Canvas/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="Canvas.Left" Value="{Binding Position.X}"/>
+                                    <Setter Property="Canvas.Top" Value="{Binding Position.Y}"/>
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Rectangle Width="8" Height="8" Margin="-4,-4,0,0"
+                                               Fill="White" Stroke="#FFFF9800" StrokeThickness="1"
+                                               Cursor="{Binding Cursor}"
+                                               MouseLeftButtonDown="StampBoxHandle_MouseLeftButtonDown"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <!-- Botões flutuantes "✔ Assinar aqui"/"✖ Cancelar" (Task 1, Plano 8) — únicos
+                             elementos INTERATIVOS deste adorner (IsHitTestVisible=True, o default —
+                             precisam receber clique). Posição já clampada dentro da página pelo VM
+                             (ComputeStampBoxButtonsPos) — some acima da caixa se ela encostar na borda
+                             de baixo. Click (não Command): mesmo precedente de código-behind já usado
+                             por todo gesto de mouse deste arquivo — ConfirmStampBox/CancelStampBox não
+                             precisam de CanExecute (a visibilidade já é o gate: só aparecem em
+                             Adjusting). -->
+                        <StackPanel Orientation="Horizontal"
+                                    Canvas.Left="{Binding StampBoxButtonsPos.X}" Canvas.Top="{Binding StampBoxButtonsPos.Y}"
+                                    Visibility="{Binding IsStampBoxAdjusting, Converter={StaticResource BoolToVis}}">
+                            <Button Content="✔ Assinar aqui" Padding="8,4" Margin="0,0,4,0" Click="StampBoxConfirm_Click"/>
+                            <Button Content="✖ Cancelar" Padding="8,4" Click="StampBoxCancel_Click"/>
+                        </StackPanel>
                     </Grid>
                 </Border>
             </DataTemplate>

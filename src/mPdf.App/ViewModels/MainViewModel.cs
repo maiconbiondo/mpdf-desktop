@@ -113,6 +113,14 @@ public sealed partial class MainViewModel : ObservableObject
             // ATIVA precisa desabilitar Save/SaveAs aqui tanto quanto `OnSessionEditInFlightChanged` já
             // desabilita os comandos mutadores do próprio DocumentViewModel.
             oldValue.Session.EditInFlightChanged -= OnSelectedSessionEditInFlightChanged;
+            // Task 2 (Plano 8): trocar de aba (ou fechar a aba ATIVA — CloseDocument reatribui
+            // SelectedDocument, disparando este MESMO handler) com a caixa ajustável do carimbo em
+            // Drawing/Adjusting na aba ANTIGA cancela a colocação — mesmo contrato de Esc/botão/troca de
+            // ferramenta (CancelStampBox, Task 1/2); Task 1 deixou "troca de documento" registrado como
+            // escopo futuro (o gesto de mouse só é alcançável na aba VISÍVEL, então uma colocação nunca
+            // fica "presa" numa aba em segundo plano — reseta ANTES de a aba sair de vista, não depois).
+            // CancelStampBox() é idempotente/seguro mesmo quando não há nada em andamento.
+            oldValue.CancelStampBox();
         }
         if (newValue is not null)
         {
@@ -556,7 +564,7 @@ public sealed partial class MainViewModel : ObservableObject
     // por segundos inteiros (ledger: gate #3 pré-rollout, medido em 525 MB). O pipeline atômico em si
     // (`DocumentSession.Save`, temp+`File.Replace`+`.bak`) continua INTOCADO — só passou a rodar fora da
     // UI thread. `TryBeginEdit()` arma o funil SÍNCRONO, ANTES do primeiro `await` (mesmo contrato de
-    // `Sign`/`PlaceSignatureStampAtAsync` em `DocumentViewModel` — ver doc XML de
+    // `Sign`/`ConfirmSignatureStampAsync` em `DocumentViewModel` — ver doc XML de
     // `DocumentSession.TryBeginEdit`): salvar agora É uma operação exclusiva de sessão, então NENHUMA
     // edição (organizador OU leitor, o pino é compartilhado) pode aterrissar entre a leitura de
     // `Session.Snapshot` (dentro de `Save`, no Task.Run) e a escrita em disco — sem isso, um Rotate

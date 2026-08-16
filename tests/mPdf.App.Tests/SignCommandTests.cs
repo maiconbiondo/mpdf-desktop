@@ -6,6 +6,7 @@ using mPdf.App.Services;
 using mPdf.App.ViewModels;
 using mPdf.Documents;
 using mPdf.Editing;
+using mPdf.Rendering;
 using mPdf.Signing;
 using Xunit;
 
@@ -593,9 +594,10 @@ public class SignCommandTests : IDisposable
         }
     }
 
-    // ---- com carimbo: modo de colocação -----------------------------------------------------------
+    // ---- com carimbo: caixa ajustável (Task 2, Plano 8) -- o gatilho agora é o ARRASTO, não o clique --
 
-    [Fact]
+    [Fact] // Sign() em si NÃO muda (a troca de gatilho vive inteiramente em BeginStampBoxPlacementAsync/
+    // ConfirmSignatureStampAsync, abaixo) -- entra em modo de colocação, funil continua desarmado.
     public async Task Sign_WithStamp_EntersPlacementMode_EngineNotCalledYet()
     {
         var (doc, _, engine, dialog, _, _, _, cert) = BuildForSigning();
@@ -608,41 +610,59 @@ public class SignCommandTests : IDisposable
 
             Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool);
             Assert.Equal(0, engine.SignCallCount);
-            Assert.False(d.Session.IsEditInFlight); // funil só arma no CLIQUE (PlaceSignatureStampAtAsync)
+            Assert.False(d.Session.IsEditInFlight); // funil só arma no CONFIRMAR (ConfirmSignatureStampAsync)
         }
     }
 
-    [Fact]
-    public async Task PlaceSignatureStampAtAsync_CommitsWithClampedStampRect()
+    /// Task 2 (Plano 8): desenha + ajusta (move + redimensiona) a caixa a partir de um retângulo
+    /// conhecido -- exemplar pros testes de confirmação abaixo, mesmo padrão de
+    /// StampBoxPlacementTests.BeginAdjusting, mas passando pelo gatilho REAL (BeginStampBoxPlacementAsync).
+    private static DocumentViewModel DrawBox(DocumentViewModel d,
+        double left, double bottom, double right, double top)
     {
-        var (doc, _, engine, dialog, _, errors, infos, cert) = BuildForSigning();
+        d.BeginStampBoxPlacementAsync(0, new PdfPoint(left, bottom)).GetAwaiter().GetResult();
+        d.UpdateDrawTo(new PdfPoint(right, top));
+        d.EndStampDraw();
+        return d;
+    }
+
+    [Fact] // Task 2: BeginStampBoxPlacementAsync é o gatilho REAL (chamado pela View no mouse-down) --
+    // entra em Drawing com o CN resolvido do certificado ESCOLHIDO no diálogo (X509Certificate2.
+    // GetNameInfo, SimpleName -- mesmo extrator já usado por CertificateCatalog/PadesSigningEngine).
+    public async Task BeginStampBoxPlacementAsync_AfterSignWithStamp_EntersDrawingWithCertificateCn()
+    {
+        var (doc, _, _, dialog, _, _, _, cert) = BuildForSigning();
         using var d = doc;
         using (cert)
         {
-            dialog.Result = new SignDialogResult(cert, "Motivo", "Local", ApplyDocMdp: true, PlaceStamp: true);
+            dialog.Result = new SignDialogResult(cert, null, null, ApplyDocMdp: false, PlaceStamp: true);
             await d.SignCommand.ExecuteAsync(null);
-            Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool);
 
-            await d.PlaceSignatureStampAtAsync(0, 100, 100); // bem dentro da página A4 -- sem clamp
+            await d.BeginStampBoxPlacementAsync(0, new PdfPoint(100, 100));
 
-            Assert.Empty(errors);
-            Assert.Equal(1, engine.SignCallCount);
-            var stamp = engine.LastRequest!.Stamp;
-            Assert.NotNull(stamp);
-            Assert.Equal(0, stamp!.PageIndex);
-            Assert.Equal(100, stamp.Rect.LeftPt);
-            Assert.Equal(100, stamp.Rect.BottomPt);
-            Assert.Equal(280, stamp.Rect.RightPt); // 100 + DefaultStampWidthPt (180)
-            Assert.Equal(160, stamp.Rect.TopPt);   // 100 + DefaultStampHeightPt (60)
-            Assert.True(d.IsSignedDocument);
-            Assert.Equal(AnnotationTool.None, d.ActiveTool); // one-shot: desativa após commit
-            Assert.Single(infos);
+            Assert.Equal(StampPlacementPhase.Drawing, d.StampPlacementPhase);
+            Assert.Equal(cert.GetNameInfo(X509NameType.SimpleName, forIssuer: false), d.StampBoxCertificateCn);
         }
     }
 
-    [Fact] // gate de rotação (exemplar: PlaceStampAtAsync) -- recusa com o MESMO aviso pt-BR, ferramenta
-    // continua ativa (usuário pode tentar outra página), motor NUNCA alcançado.
-    public async Task PlaceSignatureStampAtAsync_RotatedPage_RefusesWithNotice_ToolStaysActive()
+    [Fact] // mesma guarda do clique único antigo -- a máquina nunca roda fora do modo de colocação.
+    public async Task BeginStampBoxPlacementAsync_WrongActiveTool_NoOp()
+    {
+        var (doc, _, engine, _, _, _, _, cert) = BuildForSigning();
+        using var d = doc;
+        using (cert)
+        {
+            Assert.Equal(AnnotationTool.None, d.ActiveTool);
+            await d.BeginStampBoxPlacementAsync(0, new PdfPoint(100, 100));
+            Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase);
+            Assert.Equal(0, engine.SignCallCount);
+        }
+    }
+
+    [Fact] // gate de rotação (exemplar: PlaceSignatureStampAtAsync original, migrado pro INÍCIO do
+    // arrasto) -- recusa com o MESMO aviso pt-BR, ferramenta continua ativa (usuário pode tentar outra
+    // página), a máquina NUNCA entra em Drawing.
+    public async Task BeginStampBoxPlacementAsync_RotatedPage_RefusesWithNotice_ToolStaysActive()
     {
         var (doc, editor, engine, dialog, _, errors, _, cert) = BuildForSigning();
         using var d = doc;
@@ -656,44 +676,108 @@ public class SignCommandTests : IDisposable
             await d.SignCommand.ExecuteAsync(null);
             Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool);
 
-            await d.PlaceSignatureStampAtAsync(0, 100, 100);
+            await d.BeginStampBoxPlacementAsync(0, new PdfPoint(100, 100));
 
             Assert.Equal(0, engine.SignCallCount);
             Assert.Contains(errors, e => e.Contains("Página girada"));
             Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool); // continua ativa
+            Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase); // NUNCA entrou em Drawing
             Assert.False(d.IsSignedDocument);
             Assert.False(d.Session.IsEditInFlight); // funil solto -- pode tentar outra página
         }
     }
 
-    [Fact] // clique chega com a ferramenta ERRADA ativa (ex.: cancelou e ligou outra coisa) -> no-op.
-    public async Task PlaceSignatureStampAtAsync_WrongActiveTool_NoOp()
+    // ---- ConfirmSignatureStampAsync: confirma a caixa AJUSTADA -> motor recebe o rect FINAL ----------
+
+    [Fact] // CONTRATO CENTRAL do Task 2: o motor recebe o rect AJUSTADO (mover + redimensionar), não
+    // mais o tamanho fixo 180x60 do clique único antigo (DefaultStampWidthPt/DefaultStampHeightPt).
+    public async Task ConfirmSignatureStampAsync_CommitsWithAdjustedRect_NotTheOldFixedSize()
+    {
+        var (doc, _, engine, dialog, _, errors, infos, cert) = BuildForSigning();
+        using var d = doc;
+        using (cert)
+        {
+            dialog.Result = new SignDialogResult(cert, "Motivo", "Local", ApplyDocMdp: true, PlaceStamp: true);
+            await d.SignCommand.ExecuteAsync(null);
+
+            DrawBox(d, 100, 100, 300, 200); // 200x100pt -- bem diferente do fixo 180x60
+            d.MoveBoxBy(new PdfPoint(20, -10));                          // 120,90 - 320,190
+            d.ResizeBoxByHandle(StampBoxHandle.Right, new PdfPoint(50, 0)); // 120,90 - 370,190
+
+            await d.ConfirmSignatureStampAsync();
+
+            Assert.Empty(errors);
+            Assert.Equal(1, engine.SignCallCount);
+            var stamp = engine.LastRequest!.Stamp;
+            Assert.NotNull(stamp);
+            Assert.Equal(0, stamp!.PageIndex);
+            Assert.Equal(120, stamp.Rect.LeftPt, 0.01);
+            Assert.Equal(90, stamp.Rect.BottomPt, 0.01);
+            Assert.Equal(370, stamp.Rect.RightPt, 0.01);
+            Assert.Equal(190, stamp.Rect.TopPt, 0.01);
+            Assert.True(d.IsSignedDocument);
+            Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase);
+            Assert.Equal(AnnotationTool.None, d.ActiveTool); // one-shot: desativa após commit
+            Assert.Single(infos);
+        }
+    }
+
+    [Fact] // Confirmar sem antes chegar em Adjusting (nunca desenhou, ou ainda Drawing) -> no-op --
+    // ConfirmStampBox() (Task 1) já devolve null fora de Adjusting; este teste prova que o wrapper de
+    // Task 2 propaga esse null sem tentar alcançar o motor.
+    public async Task ConfirmSignatureStampAsync_NotAdjusting_NoOp()
+    {
+        var (doc, _, engine, dialog, _, _, _, cert) = BuildForSigning();
+        using var d = doc;
+        using (cert)
+        {
+            dialog.Result = new SignDialogResult(cert, null, null, ApplyDocMdp: false, PlaceStamp: true);
+            await d.SignCommand.ExecuteAsync(null);
+
+            await d.ConfirmSignatureStampAsync(); // nunca desenhou nada
+
+            Assert.Equal(0, engine.SignCallCount);
+            Assert.False(d.Session.IsEditInFlight);
+        }
+    }
+
+    [Fact] // sem NENHUM PendingSignPlacement (ex.: chamado fora do fluxo "Assinar") -> no-op defensivo,
+    // mesmo padrão de guarda de PlaceSignatureStampAtAsync original.
+    public async Task ConfirmSignatureStampAsync_NoPendingSignPlacement_NoOp()
     {
         var (doc, _, engine, _, _, _, _, cert) = BuildForSigning();
         using var d = doc;
         using (cert)
         {
-            Assert.Equal(AnnotationTool.None, d.ActiveTool);
-            await d.PlaceSignatureStampAtAsync(0, 100, 100);
+            await d.ConfirmSignatureStampAsync();
             Assert.Equal(0, engine.SignCallCount);
         }
     }
 
-    // ---- BELT: mutação durante a janela de colocação (revisão do coordenador, achado real) ----------
+    // ---- BELT relocado pro Confirmar (Task 2) -- cobre TODA a janela Desenhar+Ajustar --------------
 
-    private static void SelectSomeText(PageViewModel page)
+    internal static void SelectSomeText(PageViewModel page)
     {
         page.BeginSelection(new Point(10, 10));
         page.UpdateSelection(new Point(300, 20));
     }
 
-    [Fact] // "placement-window mutation gap": entre o OK do diálogo e o clique, o funil NÃO está armado
-    // -- QUALQUER mutador (aqui, ApplyMarkup, um comando REAL de produção, não um stub) continua
-    // habilitado e PODE rodar nessa janela. O cinto estrutural em SignCoreAsync (comparação de
-    // referência de Session.Snapshot) tem que pegar isso e recusar, mesmo sem nenhuma lista de comandos
-    // a desabilitar -- cobre ApplyMarkup/FlattenForm/ApplyFormValues/Undo/Redo/anotações igualmente,
-    // porque TODOS trocam a referência de Snapshot da mesma forma (Session.Apply).
-    public async Task PlaceSignatureStampAtAsync_DocumentMutatedDuringPlacementWindow_RefusesAndResetsPlacement()
+    [Fact] // "placement-window mutation gap" agora cobre a janela INTEIRA de Desenhar+Ajustar (não só
+    // entre o diálogo e o clique). Mutação REAL (ApplyMarkup, comando de produção) durante Adjusting --
+    // OnSessionApplied/CancelStampBox(dueToDocumentMutation: true) reseta a caixa E NOTIFICA (fix
+    // pós-revisão do coordenador -- achado real: sem aviso, a caixa simplesmente SOME da tela no meio
+    // de um Ctrl+Z acidental, usuário não-técnico sem explicação nenhuma) -- mesma disciplina de
+    // SelectedAnnotation/SelectedFormField/SelectedSignature quanto ao RESET, mas com o aviso pt-BR que
+    // essas 3 outras propriedades nunca precisaram (nenhuma delas tem um gesto de vários passos em
+    // andamento que pudesse "sumir sem explicação"). Este teste prova a CONSEQUÊNCIA completa através
+    // do Confirmar: aviso disparado EXATAMENTE 1 vez com a mensagem estabelecida, funil nunca arma,
+    // motor nunca alcançado, ActiveTool resetado -- mesmo contrato de "abort+reset COM aviso" que o
+    // clique único antigo garantia (o cinto estrutural de SignCoreAsync,
+    // ReferenceEquals(snapshotAtDialogOk, Session.Snapshot), continua ali como rede de segurança --
+    // neste app single-threaded ele nunca é o que pega a mutação de fato nem o que notifica, porque
+    // OnSessionApplied já chega primeiro E já notifica, mas a checagem permanece a MESMA garantia
+    // estrutural que já protege o caminho sem carimbo, ver doc XML de SignCoreAsync).
+    public async Task ConfirmSignatureStampAsync_DocumentMutatedDuringAdjust_NeverReachesEngine_ResetsPlacement()
     {
         var (doc, editor, engine, dialog, _, errors, infos, cert) = BuildForSigning();
         using var d = doc;
@@ -701,27 +785,103 @@ public class SignCommandTests : IDisposable
         {
             dialog.Result = new SignDialogResult(cert, null, null, ApplyDocMdp: false, PlaceStamp: true);
             await d.SignCommand.ExecuteAsync(null);
-            Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool);
 
-            // Mutação REAL na janela sem funil -- mesmo caminho de produção de
-            // ApplyMarkupCommand_Highlight_AppliesEdit... em DocumentViewModelTests (seleção real +
-            // comando real), NÃO uma troca manual de Session.Snapshot.
+            DrawBox(d, 100, 100, 300, 200);
+            Assert.Equal(StampPlacementPhase.Adjusting, d.StampPlacementPhase); // sanity
+
             SelectSomeText(d.Pages[0]);
             Assert.True(d.HasActiveSelection); // sanity
             await d.ApplyMarkupCommand.ExecuteAsync(AnnotationKind.Highlight);
             Assert.Equal(1, editor.AddAnnotationCallCount); // sanity: a mutação REALMENTE aconteceu
 
-            await d.PlaceSignatureStampAtAsync(0, 100, 100);
-
-            Assert.Equal(0, engine.SignCallCount); // motor NUNCA alcançado
-            var msg = Assert.Single(errors);
+            Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase); // já resetado (COM aviso, fix pós-revisão)
+            // o aviso já disparou AQUI (dentro de OnSessionApplied, síncrono com ApplyMarkupCommand acima)
+            // -- exatamente 1 vez, com a MESMA mensagem que o cinto de SignCoreAsync usa.
+            var noticeFromMutation = Assert.Single(errors);
             Assert.Equal(
                 "O documento foi alterado durante o posicionamento do carimbo. A assinatura foi cancelada — assine novamente.",
-                msg);
+                noticeFromMutation);
+
+            await d.ConfirmSignatureStampAsync();
+
+            Assert.Equal(0, engine.SignCallCount); // motor NUNCA alcançado
+            Assert.Single(errors); // NENHUM aviso duplicado no Confirmar -- continua sendo só o de OnSessionApplied
             Assert.Empty(infos);
             Assert.False(d.IsSignedDocument);
-            Assert.Equal(AnnotationTool.None, d.ActiveTool); // RESET completo -- não "tente outra página"
-            Assert.False(d.Session.IsEditInFlight); // funil solto (armado só durante o clique em si)
+            Assert.Equal(AnnotationTool.None, d.ActiveTool); // RESET completo -- não "tente de novo" com o pending antigo
+            Assert.False(d.Session.IsEditInFlight); // funil nunca armou
+        }
+    }
+
+    // ---- CancelStampBox agora também limpa _pendingSignPlacement (Task 2) --------------------------
+
+    [Fact] // Task 2: CancelStampBox (Esc/botão/troca de ferramenta/troca de documento -- todos passam
+    // por aqui) agora TAMBÉM limpa o PendingSignPlacement armado por Sign() -- sem isto, uma tentativa
+    // de Confirmar tardia poderia reusar um contexto (certificado/motivo/local) obsoleto. Prova indireta
+    // (o campo é privado): depois de cancelar em Adjusting, Confirmar vira no-op completo.
+    public async Task CancelStampBox_FromAdjusting_ClearsPendingSignPlacement_ConfirmBecomesNoOp()
+    {
+        var (doc, _, engine, dialog, _, _, _, cert) = BuildForSigning();
+        using var d = doc;
+        using (cert)
+        {
+            dialog.Result = new SignDialogResult(cert, null, null, ApplyDocMdp: false, PlaceStamp: true);
+            await d.SignCommand.ExecuteAsync(null);
+            DrawBox(d, 100, 100, 300, 200);
+
+            d.CancelStampBox();
+
+            await d.ConfirmSignatureStampAsync();
+            Assert.Equal(0, engine.SignCallCount);
+            Assert.Equal(AnnotationTool.None, d.ActiveTool);
+        }
+    }
+
+    // ---- Negative controls (fix pós-revisão do coordenador): cancelamento INICIADO PELO USUÁRIO
+    // continua SILENCIOSO -- só a mutação alheia (OnSessionApplied) notifica. O usuário que aperta Esc/
+    // o botão "✖ Cancelar"/troca de ferramenta JÁ SABE que cancelou; um aviso ali seria ruído.
+
+    [Fact] // CancelStampBox() sem argumento (default dueToDocumentMutation=false) é EXATAMENTE a
+    // chamada que PdfViewerControl.OnPreviewKeyDown (Esc) e StampBoxCancel_Click (botão) fazem -- os
+    // 2 caminhos são mecanicamente IDÊNTICOS na fronteira do VM (mesma assinatura, mesmo default),
+    // então uma chamada direta aqui cobre os 2 sem precisar de uma janela WPF real por caminho.
+    public async Task CancelStampBox_UserInitiated_Direct_StaysSilent_NoNotice()
+    {
+        var (doc, _, engine, dialog, _, errors, infos, cert) = BuildForSigning();
+        using var d = doc;
+        using (cert)
+        {
+            dialog.Result = new SignDialogResult(cert, null, null, ApplyDocMdp: false, PlaceStamp: true);
+            await d.SignCommand.ExecuteAsync(null);
+            DrawBox(d, 100, 100, 300, 200);
+
+            d.CancelStampBox(); // mesmo caminho de Esc/botão -- default silencioso
+
+            Assert.Empty(errors); // NENHUM aviso -- o usuário cancelou de propósito
+            Assert.Empty(infos);
+            Assert.Equal(0, engine.SignCallCount);
+        }
+    }
+
+    [Fact] // troca de ferramenta (OnActiveToolChanged) chama CancelStampBox() SEM o argumento novo --
+    // mesmo default silencioso, negative control específico pra esse call site (distinto de
+    // OnSessionApplied, que É o único que passa dueToDocumentMutation: true).
+    public async Task SwitchingActiveTool_WhilePlacementActive_StaysSilent_NoNotice()
+    {
+        var (doc, _, engine, dialog, _, errors, infos, cert) = BuildForSigning();
+        using var d = doc;
+        using (cert)
+        {
+            dialog.Result = new SignDialogResult(cert, null, null, ApplyDocMdp: false, PlaceStamp: true);
+            await d.SignCommand.ExecuteAsync(null);
+            DrawBox(d, 100, 100, 300, 200);
+
+            d.ActiveTool = AnnotationTool.Rectangle; // troca de ferramenta -- cancela via OnActiveToolChanged
+
+            Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase); // sanity: realmente cancelou
+            Assert.Empty(errors); // NENHUM aviso -- o usuário trocou de ferramenta de propósito
+            Assert.Empty(infos);
+            Assert.Equal(0, engine.SignCallCount);
         }
     }
 
@@ -900,5 +1060,112 @@ public class SignCommandTests : IDisposable
         // histórico de desfazer/refazer limpo pelas DUAS assinaturas (decisão registrada).
         Assert.False(d.CanUndo);
         Assert.False(d.CanRedo);
+    }
+
+    // ---- ACEITAÇÃO POR PIXEL (Task 2, Plano 8 -- O PONTO DO PLANO) -----------------------------------
+    //
+    // "o rect DESENHADO/AJUSTADO == rect onde o carimbo RENDE (px na região exata; tolerância zero de
+    // deslocamento — é o ponto do pedido)" (plano). Exemplar EXATO de
+    // PadesSigningEngineTests.Sign_WithVisibleStamp_PaintsOnlyInsideStampRegion (P4, mPdf.Signing.Tests)
+    // -- mesma janela de tolerância de borda (antialiasing), mesmo par núcleo/fora-com-folga -- mas
+    // desta vez pelo FLUXO COMPLETO do VM (motor de PRODUÇÃO + certificado efêmero REAL, nunca um fake):
+    // Sign() -> BeginStampBoxPlacementAsync (desenha um rect CONHECIDO) -> UpdateDrawTo -> EndStampDraw
+    // -> MoveBoxBy + ResizeBoxByHandle (AJUSTA pra um rect FINAL diferente do desenhado) -> Confirmar
+    // (ConfirmSignatureStampAsync) -> renderiza a página assinada -> carimbo aparece EXATAMENTE no rect
+    // FINAL (o AJUSTADO, não o desenhado originalmente) -- prova que o motor recebeu o rect que o
+    // usuário viu na tela, não um valor intermediário.
+
+    [Fact]
+    public async Task Sign_Integration_StampBoxDrawAdjustConfirm_RendersExactlyInsideFinalRect()
+    {
+        var tmp = CopyFixtureToTemp();
+        using var cert = CreateEphemeralRsaCertificate();
+        var realEngine = SigningEngineFactory.Create();
+        var dialog = new FakeSignDialogService(new SignDialogResult(cert, "Aprovação", "Escritório", ApplyDocMdp: true, PlaceStamp: true));
+
+        using var d = new DocumentViewModel(
+            DocumentSession.Open(tmp),
+            editor: PdfEditorFactory.Create(), // real -- HasSignatures precisa ler o PDF de verdade
+            config: new AppConfig(NewConfigDir()),
+            notifyError: _ => { }, notifyInfo: _ => { },
+            signDialog: dialog, signingEngine: realEngine,
+            confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
+            listSigningCertificates: () => new[] { FakeCertificateInfo(cert) });
+
+        await d.SignCommand.ExecuteAsync(null);
+        Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool);
+
+        // Desenha um rect CONHECIDO -- longe de qualquer conteúdo pré-existente da fixture, mesmo canto
+        // do roteiro de validação manual do Marco 0 (docs/superpowers/marco0-protocolo.md).
+        await d.BeginStampBoxPlacementAsync(0, new PdfPoint(300, 50));
+        d.UpdateDrawTo(new PdfPoint(500, 150)); // 200x100pt -- bem acima do mínimo 60x20pt
+        d.EndStampDraw();
+        Assert.Equal(StampPlacementPhase.Adjusting, d.StampPlacementPhase);
+
+        // AJUSTA (mover + redimensionar) pra um rect FINAL DIFERENTE do desenhado -- é isto que a
+        // aceitação por pixel precisa provar: o motor recebe o AJUSTADO, não o desenhado original.
+        d.MoveBoxBy(new PdfPoint(20, -10));                          // 320,40 - 520,140
+        d.ResizeBoxByHandle(StampBoxHandle.Right, new PdfPoint(30, 0)); // 320,40 - 550,140
+        var finalRect = d.StampBoxRect;
+        Assert.NotEqual(300, finalRect.LeftPt, 0.01); // sanity: realmente é DIFERENTE do desenhado
+
+        var originalBytes = File.ReadAllBytes(tmp); // ANTES de confirmar -- baseline pro diff de pixels
+
+        await d.ConfirmSignatureStampAsync();
+
+        Assert.True(d.IsSignedDocument);
+        Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase);
+        Assert.Equal(AnnotationTool.None, d.ActiveTool);
+        var signedBytes = d.Session.Snapshot;
+        Assert.NotEqual(originalBytes, signedBytes);
+
+        var afterSign = realEngine.ReadSignatures(signedBytes);
+        Assert.Single(afterSign);
+        Assert.True(afterSign[0].IntegrityValid);
+
+        using var rendererBefore = new PdfDocumentRenderer(originalBytes);
+        using var rendererAfter = new PdfDocumentRenderer(signedBytes);
+        var pageBefore = rendererBefore.RenderPage(0, 1.0);
+        var pageAfter = rendererAfter.RenderPage(0, 1.0);
+        Assert.Equal(pageBefore.WidthPx, pageAfter.WidthPx);
+        Assert.Equal(pageBefore.HeightPx, pageAfter.HeightPx);
+        int w = pageBefore.WidthPx, h = pageBefore.HeightPx;
+
+        // Mesmo padrão de PadesSigningEngineTests.Sign_WithVisibleStamp_PaintsOnlyInsideStampRegion (P4):
+        // banda de Margin px na BORDA do retângulo é ignorada (antialiasing), núcleo interior precisa
+        // ter pixels diferentes (o carimbo em si), ZERO pixels diferentes fora do retângulo com folga.
+        const int Margin = 4;
+        int stampLeft = (int)finalRect.LeftPt, stampRight = (int)finalRect.RightPt;
+        int stampTop = h - (int)finalRect.TopPt, stampBottom = h - (int)finalRect.BottomPt; // Y invertido
+
+        int diffOutsidePadded = 0, diffInsideCore = 0;
+        for (int y = 0; y < h; y++)
+        {
+            for (int x = 0; x < w; x++)
+            {
+                int i = (y * w + x) * 4;
+                bool differs = pageBefore.Bgra[i] != pageAfter.Bgra[i]
+                    || pageBefore.Bgra[i + 1] != pageAfter.Bgra[i + 1]
+                    || pageBefore.Bgra[i + 2] != pageAfter.Bgra[i + 2];
+                if (!differs) continue;
+
+                bool insideCore = x >= stampLeft + Margin && x < stampRight - Margin
+                    && y >= stampTop + Margin && y < stampBottom - Margin;
+                bool outsidePadded = x < stampLeft - Margin || x >= stampRight + Margin
+                    || y < stampTop - Margin || y >= stampBottom + Margin;
+
+                if (insideCore) diffInsideCore++;
+                else if (outsidePadded) diffOutsidePadded++;
+                // pixels na faixa de borda (nem núcleo nem fora-com-folga) são IGNORADOS de propósito
+            }
+        }
+
+        // Medido ao vivo (ver task-2-report.md): página A4 renderizada 595x842 px; rect final AJUSTADO
+        // (320,40)-(550,140)pt (o desenhado original era 300,50-500,150 -- MoveBoxBy+ResizeBoxByHandle
+        // realmente mudaram o resultado); diffInsideCore=4350, diffOutsidePadded=0 -- limiar 100 folgado
+        // abaixo do valor real, ainda longe o bastante de 0 pra não confundir com ruído de antialiasing.
+        Assert.Equal(0, diffOutsidePadded); // CONTRATO CENTRAL: 0 px fora do rect FINAL AJUSTADO
+        Assert.True(diffInsideCore > 100,
+            $"carimbo não visível no rect ajustado: só {diffInsideCore} pixels diferentes no núcleo da região");
     }
 }

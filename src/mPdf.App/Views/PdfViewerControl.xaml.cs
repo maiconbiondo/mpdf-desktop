@@ -58,6 +58,26 @@ public partial class PdfViewerControl : UserControl
     private readonly List<Point> _drawingPointsPx = new();
     private const double InkThrottlePx = 4.0; // brief: "throttle to every N px moved"
 
+    // Estado dos gestos de mouse da caixa ajustável do carimbo de assinatura (Task 2, Plano 8) — 3
+    // grupos distintos, mutuamente exclusivos (só 1 pode estar em curso por vez, mesmo espírito dos 3
+    // grupos acima): arrastar-para-DESENHAR (Drawing, mouse-down na página via
+    // Page_MouseLeftButtonDown), MOVER o corpo inteiro (Adjusting, mouse-down no Grid do adorner via
+    // StampBox_MouseLeftButtonDown) e REDIMENSIONAR por uma alça (Adjusting, mouse-down num Rectangle
+    // de alça via StampBoxHandle_MouseLeftButtonDown). Os 3 capturam o mouse no BORDER da página
+    // (achado via FindPageBorder abaixo, não no elemento fisicamente clicado) de propósito: assim
+    // Page_MouseMove/Page_MouseLeftButtonUp (registrados no Border) continuam sendo o ÚNICO lugar que
+    // trata Move/Up pra qualquer gesto deste arquivo — o evento SOBE (bubbling) do elemento capturado
+    // até o Border independente de QUEM chamou CaptureMouse, mas só o Border tem os handlers ligados.
+    private PageViewModel? _stampBoxDrawPage;
+    private PageViewModel? _stampBoxMovePage;
+    private PageViewModel? _stampBoxResizePage;
+    private StampBoxHandle _stampBoxResizeHandle;
+    // Ponto de PÁGINA (pt) do último MouseMove processado pro gesto de mover/redimensionar em curso —
+    // MoveBoxBy/ResizeBoxByHandle esperam um DELTA desde a ÚLTIMA chamada (não desde o mouse-down, ver
+    // doc XML de ResizeBoxByHandle em DocumentViewModel), por isso este ponto é atualizado a CADA
+    // MouseMove processado, não só uma vez no mouse-down.
+    private Point _stampBoxLastPagePt;
+
     public PdfViewerControl()
     {
         InitializeComponent();
@@ -119,6 +139,21 @@ public partial class PdfViewerControl : UserControl
         if (e.Key == Key.Delete && doc.SelectedAnnotation is not null && doc.DeleteSelectedAnnotationCommand.CanExecute(null))
         {
             doc.DeleteSelectedAnnotationCommand.Execute(null);
+            e.Handled = true;
+            return;
+        }
+
+        // Task 1/2 (Plano 8): Esc cancela a caixa ajustável do carimbo em curso (Drawing OU Adjusting) —
+        // mesmo formato do Del acima (guard por estado antes de marcar Handled; CancelStampBox já é
+        // idempotente/seguro fora dessas fases, mas o guard aqui evita "comer" um Esc que não fazia
+        // nada, mesmo espírito do "minor rider" documentado no Del). COMENTÁRIO CORRIGIDO (revisão final
+        // da branch — a versão anterior estava desatualizada): desde a Task 2, o mouse-down na página com
+        // SignatureStamp ativo já chama BeginStampBoxPlacementAsync de verdade (ver
+        // Page_MouseLeftButtonDown) — esta fase FICA != None em produção real, este branch está ATIVO no
+        // fluxo ao vivo, não mais dormente esperando um gatilho futuro.
+        if (e.Key == Key.Escape && doc.StampPlacementPhase != StampPlacementPhase.None)
+        {
+            doc.CancelStampBox();
             e.Handled = true;
             return;
         }
@@ -451,14 +486,22 @@ public partial class PdfViewerControl : UserControl
             return;
         }
 
-        // Task 3 (Plano 4): carimbo visível de assinatura — mesmo mecanismo de clique único do
-        // ImageStamp acima, mas o commit final vai pro motor de assinatura (Session.CommitSigned),
-        // nunca pro _editor/ApplyEdit — ver DocumentViewModel.PlaceSignatureStampAtAsync.
+        // Task 2 (Plano 8): carimbo visível de assinatura — o mouse-down agora inicia um ARRASTO
+        // (desenhar a caixa ajustável), não mais um clique único; o commit final vai pro motor de
+        // assinatura (Session.CommitSigned) só no Confirmar — ver
+        // DocumentViewModel.BeginStampBoxPlacementAsync/ConfirmSignatureStampAsync. Em Adjusting, o
+        // corpo/as alças do adorner já têm handlers PRÓPRIOS (StampBox_MouseLeftButtonDown/
+        // StampBoxHandle_MouseLeftButtonDown, ambos marcam e.Handled=true) — um clique que chega ATÉ
+        // AQUI com a fase já Adjusting caiu FORA da caixa (o usuário clicou noutro lugar da página); não
+        // inicia nada (mesmo "no-op fora do alvo" de qualquer ferramenta deste app).
         if (doc.ActiveTool == AnnotationTool.SignatureStamp)
         {
             e.Handled = true;
             doc.SelectedAnnotation = null;
-            _ = doc.PlaceSignatureStampAtAsync(page.Index, pagePt.X, pagePt.Y);
+            if (doc.StampPlacementPhase == StampPlacementPhase.Adjusting) return;
+            fe.CaptureMouse();
+            _stampBoxDrawPage = page;
+            _ = doc.BeginStampBoxPlacementAsync(page.Index, new PdfPoint(pagePt.X, pagePt.Y));
             return;
         }
 
@@ -506,6 +549,51 @@ public partial class PdfViewerControl : UserControl
 
     private void Page_MouseMove(object sender, MouseEventArgs e)
     {
+        // Task 2 (Plano 8): arrasto de DESENHO da caixa do carimbo (Drawing) -- feed UpdateDrawTo com o
+        // ponto de página do mouse-move (o overlay já bindado no VM se atualiza sozinho, nenhuma prévia
+        // separada precisa ser mantida aqui, ao contrário do gesto de DESENHO de Ink/Rectangle/etc. logo
+        // abaixo -- StampBoxRect JÁ É a fonte de verdade que o adorner desenha).
+        if (_stampBoxDrawPage is { } stampDrawPage)
+        {
+            if (e.LeftButton != MouseButtonState.Pressed) return;
+            if (DataContext is not DocumentViewModel doc) return;
+            if (sender is not FrameworkElement fe) return;
+            var pos = e.GetPosition(fe);
+            var pagePt = TextSelection.ScreenToPagePoint(pos, doc.Zoom, stampDrawPage.HeightPt);
+            doc.UpdateDrawTo(new PdfPoint(pagePt.X, pagePt.Y));
+            return;
+        }
+
+        // Task 2 (Plano 8): arrasto de MOVER a caixa inteira (Adjusting, corpo) -- delta INCREMENTAL
+        // desde a ÚLTIMA chamada (MoveBoxBy espera delta desde a ÚLTIMA chamada, não desde o mouse-down
+        // -- mesmo contrato de ResizeBoxByHandle abaixo, ver doc XML de lá).
+        if (_stampBoxMovePage is { } stampMovePage)
+        {
+            if (e.LeftButton != MouseButtonState.Pressed) return;
+            if (DataContext is not DocumentViewModel doc) return;
+            if (sender is not FrameworkElement fe) return;
+            var pos = e.GetPosition(fe);
+            var pagePt = TextSelection.ScreenToPagePoint(pos, doc.Zoom, stampMovePage.HeightPt);
+            doc.MoveBoxBy(new PdfPoint(pagePt.X - _stampBoxLastPagePt.X, pagePt.Y - _stampBoxLastPagePt.Y));
+            _stampBoxLastPagePt = pagePt;
+            return;
+        }
+
+        // Task 2 (Plano 8): arrasto de REDIMENSIONAR por uma alça (Adjusting) -- mesmo delta
+        // incremental do move acima, aplicado à alça capturada no mouse-down.
+        if (_stampBoxResizePage is { } stampResizePage)
+        {
+            if (e.LeftButton != MouseButtonState.Pressed) return;
+            if (DataContext is not DocumentViewModel doc) return;
+            if (sender is not FrameworkElement fe) return;
+            var pos = e.GetPosition(fe);
+            var pagePt = TextSelection.ScreenToPagePoint(pos, doc.Zoom, stampResizePage.HeightPt);
+            doc.ResizeBoxByHandle(_stampBoxResizeHandle,
+                new PdfPoint(pagePt.X - _stampBoxLastPagePt.X, pagePt.Y - _stampBoxLastPagePt.Y));
+            _stampBoxLastPagePt = pagePt;
+            return;
+        }
+
         // Gesto de DESENHO em curso (Task 8): atualiza a prévia ao vivo no overlay da própria página
         // (nunca toca Session/ApplyEdit — isso só acontece no commit, no mouse-up).
         if (_drawingPage is { } drawPage)
@@ -569,6 +657,40 @@ public partial class PdfViewerControl : UserControl
 
     private void Page_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        // Task 2 (Plano 8): solta o arrasto de DESENHO -- EndStampDraw decide sozinho se o retângulo já
+        // é válido (Adjusting) ou se ficou pequeno demais (permanece Drawing, aviso sutil, ver doc XML
+        // de EndStampDraw); a View não precisa saber qual dos 2 aconteceu.
+        if (_stampBoxDrawPage is not null)
+        {
+            (sender as FrameworkElement)?.ReleaseMouseCapture();
+            _stampBoxDrawPage = null;
+            if (DataContext is DocumentViewModel doc) doc.EndStampDraw();
+            return;
+        }
+
+        // Task 2 (Plano 8): solta o arrasto de MOVER/REDIMENSIONAR -- StampBoxRect já foi atualizado ao
+        // VIVO a cada MouseMove (MoveBoxBy/ResizeBoxByHandle mutam o retângulo bindado diretamente,
+        // nenhum "commit" separado precisa acontecer aqui, ao contrário do gesto de anotação abaixo).
+        // FIX (revisão final da branch, achado I1/I2 do revisor): EndAdjustGesture() SEMPRE na fronteira
+        // do gesto -- ResizeBoxByHandle pode legitimamente deixar os 4 escalares brutos INVERTIDOS (um
+        // cruzamento, ver doc XML de lá), e sem canonicalizar aqui o PRÓXIMO gesto (um novo mouse-down,
+        // possivelmente MoveBoxBy ou uma alça diferente) herdava essa inversão -- ver doc XML de
+        // EndAdjustGesture em DocumentViewModel pros 2 bugs reais que isso causava.
+        if (_stampBoxMovePage is not null)
+        {
+            (sender as FrameworkElement)?.ReleaseMouseCapture();
+            _stampBoxMovePage = null;
+            if (DataContext is DocumentViewModel doc) doc.EndAdjustGesture();
+            return;
+        }
+        if (_stampBoxResizePage is not null)
+        {
+            (sender as FrameworkElement)?.ReleaseMouseCapture();
+            _stampBoxResizePage = null;
+            if (DataContext is DocumentViewModel doc) doc.EndAdjustGesture();
+            return;
+        }
+
         if (_drawingPage is { } drawPage)
         {
             // Mesma ordem "captura pra locais ANTES de liberar a captura" do arrasto de anotação abaixo
@@ -664,6 +786,78 @@ public partial class PdfViewerControl : UserControl
         }
     }
 
+    // Botões flutuantes do adorner da caixa ajustável do carimbo — Click (não Command/RelayCommand):
+    // mesmo precedente de todo gesto de mouse já tratado em código-behind neste arquivo;
+    // ConfirmSignatureStampAsync/CancelStampBox não precisam de CanExecute próprio porque a Visibility
+    // do StackPanel (IsStampBoxAdjusting) já é o gate — um botão invisível nunca recebe clique. Task 2
+    // (Plano 8): "✔ Assinar aqui" agora dispara o motor de verdade (ConfirmSignatureStampAsync arma o
+    // funil e chama SignCoreAsync com o rect AJUSTADO) — fire-and-forget, mesmo padrão de
+    // PlaceSignatureStampAtAsync original (o próprio método trata/notifica qualquer falha).
+    private void StampBoxConfirm_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is DocumentViewModel doc) _ = doc.ConfirmSignatureStampAsync();
+    }
+
+    private void StampBoxCancel_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is DocumentViewModel doc) doc.CancelStampBox();
+    }
+
+    /// Mouse-down no CORPO da caixa (Adjusting) — inicia o arrasto de MOVER (Task 2, Plano 8). Captura
+    /// no BORDER DA PÁGINA (achado via FindPageBorder, não no Grid clicado) — ver doc XML dos campos
+    /// `_stampBoxDrawPage`/`_stampBoxMovePage`/`_stampBoxResizePage` acima pro porquê (Page_MouseMove/Up
+    /// centralizados no Border continuam sendo o único lugar que processa o resto do gesto). Marca
+    /// Handled ANTES do evento poder bubblear até Page_MouseLeftButtonDown (que trataria um clique
+    /// dentro da caixa como "começar a desenhar de novo" se não fosse interceptado aqui).
+    private void StampBox_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement fe) return;
+        if (DataContext is not DocumentViewModel doc) return;
+        if (doc.StampBoxPageIndex < 0 || doc.StampBoxPageIndex >= doc.Pages.Count) return;
+        if (FindPageBorder(fe) is not { } pageBorder) return;
+
+        e.Handled = true;
+        var page = doc.Pages[doc.StampBoxPageIndex];
+        pageBorder.CaptureMouse();
+        _stampBoxMovePage = page;
+        _stampBoxLastPagePt = TextSelection.ScreenToPagePoint(e.GetPosition(pageBorder), doc.Zoom, page.HeightPt);
+    }
+
+    /// Mouse-down numa ALÇA de redimensionar (Adjusting) — inicia o arrasto de REDIMENSIONAR (Task 2,
+    /// Plano 8). `hp.Handle` já vem pronto do DataContext do item (StampBoxHandlePoint, preenchido por
+    /// DocumentViewModel.FillStampBoxHandlePoints) — nenhuma dedução por índice/posição na View. Mesmo
+    /// padrão de captura-no-Border/Handled de StampBox_MouseLeftButtonDown acima.
+    private void StampBoxHandle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: StampBoxHandlePoint hp } fe) return;
+        if (DataContext is not DocumentViewModel doc) return;
+        if (doc.StampBoxPageIndex < 0 || doc.StampBoxPageIndex >= doc.Pages.Count) return;
+        if (FindPageBorder(fe) is not { } pageBorder) return;
+
+        e.Handled = true;
+        var page = doc.Pages[doc.StampBoxPageIndex];
+        pageBorder.CaptureMouse();
+        _stampBoxResizePage = page;
+        _stampBoxResizeHandle = hp.Handle;
+        _stampBoxLastPagePt = TextSelection.ScreenToPagePoint(e.GetPosition(pageBorder), doc.Zoom, page.HeightPt);
+    }
+
+    /// Sobe a árvore visual a partir de `start` até achar o Border DA PÁGINA (`x:Name="PageBorder"`, raiz
+    /// do DataTemplate por página — ver PdfViewerControl.xaml) — usado pelos 2 handlers acima pra achar o
+    /// Border a partir de um elemento filho do adorner (alça ou corpo da caixa). NÃO um
+    /// `FindAncestor&lt;Border&gt;` genérico de propósito (achado ao vivo, revisão pós-implementação): o
+    /// ItemsControl das alças usa o TEMA PADRÃO (nenhum Template customizado neste XAML), que embrulha
+    /// seu conteúdo num Border PRÓPRIO (chrome do tema) — um Border mais PRÓXIMO na árvore que o da
+    /// página, e que HERDA o MESMO DataContext (PageViewModel) por propagação normal do WPF; filtrar só
+    /// por tipo (`is Border`) OU por DataContext teria capturado/soltado o mouse no Border ERRADO (o
+    /// chrome do ItemsControl, sem `Page_MouseLeftButtonUp` nenhum ligado — a captura nunca soltava).
+    private static Border? FindPageBorder(DependencyObject start)
+    {
+        for (var current = start; current is not null; current = VisualTreeHelper.GetParent(current))
+            if (current is Border { Name: "PageBorder" } border) return border;
+        return null;
+    }
+
     // Minor rider (revisão final): captura pode ser perdida SEM um MouseLeftButtonUp correspondente —
     // ex.: janela desativa (Alt+Tab, outro app ganha foco) no meio de um arrasto de seleção. Sem este
     // handler, o estado de arrasto ficava "preso" até o próximo clique do usuário, que então herdava um
@@ -695,5 +889,19 @@ public partial class PdfViewerControl : UserControl
         _drawingPage?.ClearDrawingPreview();
         _drawingPage = null;
         _drawingPointsPx.Clear();
+        // Task 2 (Plano 8): mesmo reset defensivo pros 3 gestos da caixa ajustável do carimbo -- captura
+        // perdida no meio de um arrasto (Alt+Tab etc.) só para de alimentar UpdateDrawTo/MoveBoxBy/
+        // ResizeBoxByHandle; a caixa fica exatamente onde estava no último MouseMove processado (nenhum
+        // "desfazer" precisa acontecer -- StampBoxRect já É o estado real, não uma prévia separada).
+        // FIX (revisão final da branch, achado I1/I2 do revisor): EndAdjustGesture() TAMBÉM aqui -- perder
+        // a captura no meio de um MOVER/REDIMENSIONAR (Alt+Tab etc.) é uma fronteira de gesto igual a um
+        // MouseLeftButtonUp normal (ver Page_MouseLeftButtonUp) -- sem canonicalizar aqui também, um
+        // cruzamento interrompido por Alt+Tab deixaria os 4 escalares brutos invertidos até o PRÓXIMO
+        // gesto, o mesmo bug que o fix em Page_MouseLeftButtonUp resolve pro caminho normal.
+        bool wasMovingOrResizing = _stampBoxMovePage is not null || _stampBoxResizePage is not null;
+        _stampBoxDrawPage = null;
+        _stampBoxMovePage = null;
+        _stampBoxResizePage = null;
+        if (wasMovingOrResizing && DataContext is DocumentViewModel doc) doc.EndAdjustGesture();
     }
 }

@@ -138,6 +138,72 @@ public class MainViewModelTests : IDisposable
         Assert.Empty(vm.Documents);
     }
 
+    [Fact] // Task 2 (Plano 8): trocar de aba com a caixa ajustável do carimbo em Drawing/Adjusting na
+    // aba ANTIGA cancela a colocação -- mesmo contrato de Esc/botão/troca de ferramenta (CancelStampBox,
+    // Task 1/2); Task 1 deixou "troca de documento" registrado como escopo futuro. Aciona a máquina
+    // DIRETO (mesmo exemplar de StampBoxPlacementTests -- não precisa passar pelo diálogo "Assinar" pra
+    // provar a fiação de MainViewModel.OnSelectedDocumentChanged).
+    public void SwitchingSelectedDocument_CancelsStampBoxPlacementOnOldDocument()
+    {
+        var vm = VmFull();
+        using var doc1 = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")), notifyError: _ => { });
+        using var doc2 = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")), notifyError: _ => { });
+        vm.Documents.Add(doc1);
+        vm.Documents.Add(doc2);
+        vm.SelectedDocument = doc1;
+
+        doc1.ActiveTool = AnnotationTool.SignatureStamp;
+        doc1.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "CN=X");
+        doc1.UpdateDrawTo(new PdfPoint(300, 200));
+        doc1.EndStampDraw();
+        Assert.Equal(StampPlacementPhase.Adjusting, doc1.StampPlacementPhase); // sanity
+
+        vm.SelectedDocument = doc2;
+
+        Assert.Equal(StampPlacementPhase.None, doc1.StampPlacementPhase);
+        Assert.Equal(AnnotationTool.None, doc1.ActiveTool);
+        Assert.False(doc1.Pages[0].HasStampBox);
+        // a aba NOVA nunca foi tocada
+        Assert.Equal(StampPlacementPhase.None, doc2.StampPlacementPhase);
+    }
+
+    [Fact] // Rider (fix pós-revisão, achado da revisão do coordenador -- "close-tab-mid-adjust" faltava):
+    // FECHAR a aba ATIVA (CloseDocumentCommand, não só trocar de SelectedDocument) enquanto ela está em
+    // Adjusting -- CloseDocument reatribui SelectedDocument (LastOrDefault) ANTES de Dispose(), então
+    // passa pelo MESMO OnSelectedDocumentChanged que o teste acima já prova, mas este teste isola o
+    // caminho REAL do usuário (botão "✕" da aba/CloseDocumentCommand) e garante que não há CRASH nem
+    // exceção ao fechar com uma caixa em andamento -- doc1 não está sujo (desenhar/ajustar a caixa nunca
+    // toca Session), então TryResolveDirtyDocument não pede confirmação nenhuma, o fechamento é direto.
+    public void CloseDocumentCommand_WhileAdjusting_CancelsPlacement_NoCrash()
+    {
+        var vm = Vm();
+        // doc1 SEM `using`: CloseDocumentCommand já chama doc.Dispose() internamente (ver
+        // MainViewModel.CloseDocument) -- um `using` aqui faria DOUBLE-DISPOSE no fim do teste.
+        var doc1 = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")), notifyError: _ => { });
+        using var doc2 = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")), notifyError: _ => { });
+        vm.Documents.Add(doc1);
+        vm.Documents.Add(doc2);
+        vm.SelectedDocument = doc1;
+
+        doc1.ActiveTool = AnnotationTool.SignatureStamp;
+        doc1.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "CN=X");
+        doc1.UpdateDrawTo(new PdfPoint(300, 200));
+        doc1.EndStampDraw();
+        Assert.Equal(StampPlacementPhase.Adjusting, doc1.StampPlacementPhase); // sanity
+        Assert.False(doc1.IsDirty); // sanity: desenhar/ajustar a caixa nunca suja a Session
+
+        var ex = Record.Exception(() => vm.CloseDocumentCommand.Execute(doc1)); // caminho REAL do "✕" da aba
+
+        Assert.Null(ex); // nenhum crash
+        Assert.DoesNotContain(doc1, vm.Documents); // fechou de verdade
+        Assert.Same(doc2, vm.SelectedDocument); // a aba remanescente assumiu
+        Assert.Equal(StampPlacementPhase.None, doc2.StampPlacementPhase); // a NOVA aba nunca foi tocada
+    }
+
     [Fact] // fechar aba LIMPA remove e faz dispose da sessão
     public async Task CloseDocument_RemovesFromCollection()
     {

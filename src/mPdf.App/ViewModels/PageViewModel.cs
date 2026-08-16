@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -8,6 +9,15 @@ using mPdf.App.Services;
 using mPdf.Rendering;
 
 namespace mPdf.App.ViewModels;
+
+/// 1 alça de redimensionar da caixa ajustável do carimbo (Task 1, Plano 8) já pronta pra bind — posição
+/// em px de tela (Canvas.Left/Top do adorner) + o Cursor certo pro tipo de alça (diagonal nos cantos,
+/// NS/WE nas bordas). Calculado por `DocumentViewModel.FillStampBoxHandlePoints` — mesma disciplina do
+/// resto do arquivo: a VIEW só faz bind, nenhuma aritmética de posição/decisão de cursor no XAML.
+/// `Handle` (Task 2, Plano 8): a identidade `StampBoxHandle` desta alça — o DataTemplate do Rectangle
+/// (PdfViewerControl.xaml) usa este campo pra saber QUAL alça o mouse-down atingiu
+/// (`PdfViewerControl.StampBoxHandle_MouseLeftButtonDown`), sem depender da ORDEM do ItemsControl.
+public sealed record StampBoxHandlePoint(Point Position, Cursor Cursor, StampBoxHandle Handle);
 
 public sealed partial class PageViewModel : ObservableObject
 {
@@ -109,6 +119,32 @@ public sealed partial class PageViewModel : ObservableObject
     [ObservableProperty] private bool hasRectPreview;
     [ObservableProperty] private Rect rectPreviewRect; // rubber-band do Rectangle, em px de tela
 
+    // ---- Task 1 (Plano 8): caixa ajustável do carimbo de assinatura ---------------------------------
+    // Exemplar EXATO de HasSignatureStampHighlight/SignatureStampHighlightRect acima (bool + Rect,
+    // reconvertido em ApplyZoom) — a fonte é DocumentViewModel.StampBoxRect/StampBoxPageIndex (Task 1,
+    // Plano 8) em vez de SelectedSignature.Data.StampRect. `HasStampBox`: true nas 2 fases (Drawing E
+    // Adjusting) — a caixa em si é visível assim que há algo pra desenhar. `IsStampBoxAdjusting`:
+    // separado (não redundante) porque só Adjusting mostra alças/botões (Drawing só mostra a caixa
+    // sendo arrastada, sem alças ainda — mesma UX do Acrobat). Empurrados por
+    // DocumentViewModel.RefreshStampBoxOverlay — este VM só expõe pro binding, mesma separação de
+    // responsabilidade dos outros overlays.
+    [ObservableProperty] private bool hasStampBox;
+    [ObservableProperty] private bool isStampBoxAdjusting;
+    [ObservableProperty] private Rect stampBoxScreenRect;
+    /// Texto de prévia (CN do certificado + data, "fiel o suficiente" — brief) mostrado DENTRO da
+    /// caixa. Também empurrado por RefreshStampBoxOverlay (não recalculado aqui): a fonte
+    /// (StampBoxCertificateCn/StampBoxDateLabel) não muda com o zoom, só a GEOMETRIA precisa reconverter
+    /// em ApplyZoom — o texto fica parado.
+    [ObservableProperty] private string? stampBoxPreviewText;
+    /// Canvas.Left/Top do grupo de botões flutuantes "✔ Assinar aqui"/"✖ Cancelar" — ver
+    /// DocumentViewModel.ComputeStampBoxButtonsPos pro cálculo (clamp dentro da página).
+    [ObservableProperty] private Point stampBoxButtonsPos;
+    /// As 8 alças, já posicionadas + com o Cursor certo — ver DocumentViewModel.FillStampBoxHandlePoints.
+    /// Vazio (não só invisível) fora de Adjusting — o ItemsControl não tem nada pra desenhar de qualquer
+    /// forma (IsStampBoxAdjusting controla a Visibility), mas zerar a coleção evita 8 alças "fantasma"
+    /// coladas na última posição de Adjusting sobreviverem visualmente escondidas até a próxima edição.
+    public ObservableCollection<StampBoxHandlePoint> StampBoxHandlePoints { get; } = [];
+
     [ObservableProperty] private bool hasLinePreview; // cobre Line E Arrow — mesma prévia "rubber-band"
     [ObservableProperty] private Point linePreviewStart;
     [ObservableProperty] private Point linePreviewEnd;
@@ -178,6 +214,24 @@ public sealed partial class PageViewModel : ObservableObject
         // Task 4 (Plano 4): mesma reconversão, fonte = DocumentViewModel.SelectedSignature.Data.StampRect.
         if (HasSignatureStampHighlight && _owner.SelectedSignature?.Data is { StampPageIndex: int sigPage, StampRect: { } sigRect } && sigPage == Index)
             SignatureStampHighlightRect = PointRectToScreenRect(sigRect.LeftPt, sigRect.BottomPt, sigRect.RightPt, sigRect.TopPt, zoom, HeightPt);
+
+        // Task 1 (Plano 8): mesma reconversão, fonte = DocumentViewModel.StampBoxRect/StampBoxPageIndex
+        // — é ESTA linha que garante o adorner sobreviver a um zoom no meio do ajuste (risco declarado
+        // no plano): o retângulo vive em pontos de página (zoom-invariante), só a projeção em px de tela
+        // precisa recalcular, exatamente como os 3 overlays acima. Também recalcula a posição dos botões
+        // flutuantes (DisplayWidth/DisplayHeight já refletem o zoom NOVO nesta altura do método).
+        if (HasStampBox && _owner.StampBoxPageIndex == Index)
+        {
+            StampBoxScreenRect = PointRectToScreenRect(
+                _owner.StampBoxRect.LeftPt, _owner.StampBoxRect.BottomPt, _owner.StampBoxRect.RightPt, _owner.StampBoxRect.TopPt, zoom, HeightPt);
+            StampBoxButtonsPos = DocumentViewModel.ComputeStampBoxButtonsPos(StampBoxScreenRect, DisplayWidth, DisplayHeight);
+            // FIX (revisão final da branch, achado I3 do revisor — mesmo espelho de
+            // DocumentViewModel.RefreshStampBoxOverlay): só reprojeta as alças se ESTA página está em
+            // Adjusting (nunca durante Drawing, onde a coleção deve ficar vazia) — um zoom no meio do
+            // arrasto inicial (Ctrl+scroll) não pode reencher alças "fantasma".
+            if (IsStampBoxAdjusting) DocumentViewModel.FillStampBoxHandlePoints(StampBoxHandlePoints, StampBoxScreenRect);
+            else StampBoxHandlePoints.Clear();
+        }
     }
 
     /// Converte um retângulo EM PONTOS (origem PDF, Y cresce pra cima) pra PX DE TELA (Y cresce pra

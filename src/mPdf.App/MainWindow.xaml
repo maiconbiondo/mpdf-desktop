@@ -291,6 +291,14 @@
             <StatusBarItem Visibility="{Binding SelectedDocument.IsSaving, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
                 <TextBlock Text="Salvando…"/>
             </StatusBarItem>
+            <!-- Task 1 (Plano 8): aviso sutil quando o usuário solta o arrasto inicial da caixa do
+                 carimbo abaixo do tamanho mínimo (60x20pt); a ferramenta continua em Drawing (NÃO
+                 cancela, ver DocumentViewModel.EndStampDraw), só avisa. Mesmo padrão bool+texto/
+                 FallbackValue=Collapsed dos itens acima (HasStampBoxNotice é derivado automaticamente
+                 de StampBoxNotice, ver OnStampBoxNoticeChanged). -->
+            <StatusBarItem Visibility="{Binding SelectedDocument.HasStampBoxNotice, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
+                <TextBlock Text="{Binding SelectedDocument.StampBoxNotice}" Foreground="#FFB71C1C"/>
+            </StatusBarItem>
         </StatusBar>
         <!-- Task 5 (Plano 3a): banner de modo restrito — visível só quando a aba ATIVA está assinada
              (SelectedDocument.IsSignedDocument). "Editar uma cópia" dispara EditCopyCommand do
