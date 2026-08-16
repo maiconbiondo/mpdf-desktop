@@ -1916,4 +1916,604 @@ public class PdfEditorTests
         Assert.True(totalDiff < 100,
             $"flatten mudou a aparência mais do que a tolerância esperada: {totalDiff} pixels diferentes (página0={diffPage0}, página1={diffPage1})");
     }
+
+    // --- Task 1 (Plano 7): IsSupportedImage --------------------------------------------------
+
+    [Theory]
+    [InlineData(new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 })]                                     // JPEG (SOI + APP0/JFIF)
+    [InlineData(new byte[] { 0xFF, 0xD8, 0xFF, 0xE1 })]                                     // JPEG (SOI + APP1/EXIF)
+    [InlineData(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A })]              // PNG (assinatura completa de 8 bytes)
+    public void IsSupportedImage_JpegOrPngMagicBytes_IsTrue(byte[] bytes)
+    {
+        Assert.True(Editor.IsSupportedImage(bytes));
+    }
+
+    [Theory]
+    [InlineData(new byte[] { 0x42, 0x4D, 0x00, 0x00 })]                     // BMP ("BM")
+    [InlineData(new byte[] { 0x47, 0x49, 0x46, 0x38 })]                     // GIF ("GIF8")
+    [InlineData(new byte[] { 0x25, 0x50, 0x44, 0x46 })]                     // PDF ("%PDF") — não é imagem
+    public void IsSupportedImage_OtherFormats_IsFalse(byte[] bytes)
+    {
+        Assert.False(Editor.IsSupportedImage(bytes));
+    }
+
+    [Fact] // nulo/vazio/curto demais pra ter magic bytes — nunca lança, só devolve false
+    public void IsSupportedImage_NullOrEmptyOrTooShort_IsFalse()
+    {
+        Assert.False(Editor.IsSupportedImage(null));
+        Assert.False(Editor.IsSupportedImage(Array.Empty<byte>()));
+        Assert.False(Editor.IsSupportedImage(new byte[] { 0xFF }));
+    }
+
+    [Fact]
+    public void IsSupportedImage_RealJpegFixture_IsTrue() => Assert.True(Editor.IsSupportedImage(Fixtures.Foto()));
+
+    [Fact]
+    public void IsSupportedImage_RealPngFixture_IsTrue() => Assert.True(Editor.IsSupportedImage(Fixtures.Transparente()));
+
+    // --- Task 1 (Plano 7): ImageToPdf --------------------------------------------------------
+    //
+    // Cores de canto conhecidas das fixtures (ver Fixtures.Foto()/FotoExif90(), geradas via probe —
+    // task-1-report.md): TL=vermelho puro, TR=verde/lime puro, BL=azul puro, BR=amarelo puro.
+    // Tolerância MEDIDA (probe, JPEG qualidade 90): desvio real de 0-1 por canal nos cantos — 30 é
+    // uma margem folgada (~12x o desvio real) que ainda reprova um bug real de canal trocado (~255).
+    private const int JpegColorTolerance = 30;
+    private static readonly (byte R, byte G, byte B) Red = (255, 0, 0);
+    private static readonly (byte R, byte G, byte B) Lime = (0, 255, 0);
+    private static readonly (byte R, byte G, byte B) Blue = (0, 0, 255);
+    private static readonly (byte R, byte G, byte B) Yellow = (255, 255, 0);
+
+    private static void AssertCornerColor(RenderedPage page, int x, int y, (byte R, byte G, byte B) expected, int tolerance)
+    {
+        x = Math.Clamp(x, 0, page.WidthPx - 1); y = Math.Clamp(y, 0, page.HeightPx - 1);
+        int i = (y * page.WidthPx + x) * 4;
+        byte b = page.Bgra[i], g = page.Bgra[i + 1], r = page.Bgra[i + 2];
+        Assert.True(Math.Abs(r - expected.R) <= tolerance && Math.Abs(g - expected.G) <= tolerance && Math.Abs(b - expected.B) <= tolerance,
+            $"cor em ({x},{y}) fora da tolerância: esperado ~({expected.R},{expected.G},{expected.B}), obtido ({r},{g},{b})");
+    }
+
+    [Fact] // 200x150px @ 96dpi -> pt = px*72/96 = 150x112.5pt (mesma fórmula documentada em IPdfEditor.ImageToPdf)
+    public void ImageToPdf_Jpeg_ProducesOnePageOfCorrectSize()
+    {
+        var pdf = Editor.ImageToPdf(Fixtures.Foto());
+        using var r = new PdfDocumentRenderer(pdf);
+        Assert.Equal(1, r.PageCount);
+        var size = r.GetPageSize(0);
+        Assert.Equal(150.0, size.WidthPt, 0.5);
+        Assert.Equal(112.5, size.HeightPt, 0.5);
+    }
+
+    [Fact] // px oracle: canto renderizado bate com a cor CONHECIDA da fixture (motor de render
+    // INDEPENDENTE do iText que escreveu — mesmo padrão de AddAnnotation_ImageStamp_RendersNonBlankInStampRegion).
+    public void ImageToPdf_Jpeg_RendersMatchingKnownCornerColors()
+    {
+        var pdf = Editor.ImageToPdf(Fixtures.Foto());
+        using var r = new PdfDocumentRenderer(pdf);
+        var page = r.RenderPage(0, 1.0);
+        AssertCornerColor(page, 5, 5, Red, JpegColorTolerance);
+        AssertCornerColor(page, page.WidthPx - 5, 5, Lime, JpegColorTolerance);
+        AssertCornerColor(page, 5, page.HeightPx - 5, Blue, JpegColorTolerance);
+        AssertCornerColor(page, page.WidthPx - 5, page.HeightPx - 5, Yellow, JpegColorTolerance);
+    }
+
+    [Fact] // TESTE CENTRAL DA ARMADILHA (brief, Plano 7 Task 1): fixture-foto-exif90 tem os MESMOS
+    // pixels de fixture-foto, só que pré-rotacionados 90° CCW + EXIF Orientation=6. iText NÃO honra
+    // o tag (achado empírico, ver task-1-report.md) — ImageToPdf precisa ler o tag e corrigir via
+    // MATRIZ DE TRANSFORMAÇÃO no desenho da imagem (revisão pré-merge, I3 — NUNCA via
+    // `PdfPage.SetRotation`, ver comentário de `GetPageRotations` abaixo), senão a foto abre DE LADO.
+    // Cores de canto esperadas são as MESMAS de ImageToPdf_Jpeg_RendersMatchingKnownCornerColors
+    // (TL=vermelho etc.) — provando que abriu EM PÉ.
+    public void ImageToPdf_JpegWithExifOrientation6_OpensUpright()
+    {
+        var pdf = Editor.ImageToPdf(Fixtures.FotoExif90());
+        using var r = new PdfDocumentRenderer(pdf);
+        var page = r.RenderPage(0, 1.0);
+        AssertCornerColor(page, 5, 5, Red, JpegColorTolerance);
+        AssertCornerColor(page, page.WidthPx - 5, 5, Lime, JpegColorTolerance);
+        AssertCornerColor(page, 5, page.HeightPx - 5, Blue, JpegColorTolerance);
+        AssertCornerColor(page, page.WidthPx - 5, page.HeightPx - 5, Yellow, JpegColorTolerance);
+    }
+
+    [Fact] // dimensões finais (pós-correção) devem bater com a foto "em pé" (150x112.5pt), NÃO com os
+    // pixels crus armazenados (que seriam 112.5x150pt, de lado) — a página NASCE direto no tamanho
+    // corrigido (ver GetPageRotations abaixo: /Rotate nunca é usado pra chegar nesse tamanho).
+    public void ImageToPdf_JpegWithExifOrientation6_FinalPageSizeMatchesUprightOrientation()
+    {
+        var pdf = Editor.ImageToPdf(Fixtures.FotoExif90());
+        using var r = new PdfDocumentRenderer(pdf);
+        var size = r.GetPageSize(0);
+        Assert.Equal(150.0, size.WidthPt, 0.5);
+        Assert.Equal(112.5, size.HeightPt, 0.5);
+    }
+
+    [Fact] // I3 CRÍTICO da revisão pré-merge (task-1-report.md "## Fix" — "o /Rotate collision", o
+    // "flagship-breaking landmine"): a versão anterior corrigia o EXIF via `PdfPage.SetRotation`, o
+    // que fazia CADA foto de celular convertida com Orientation != 1 nascer como "página girada" — e
+    // o gate de rotação do Plano 3b (`GetPageRotations`/interação de anotação, ver Contract.cs)
+    // DESLIGA anotação/assinatura em qualquer página girada. Isso quebraria o fluxo real "foto do
+    // WhatsApp -> assinar". Fix por construção (matriz de transformação, não `/Rotate`): asserção
+    // LOAD-BEARING — `GetPageRotations(convertido)[0] == 0` MESMO numa foto com EXIF Orientation=6,
+    // provando que o gate do Plano 3b continua ABERTO (anotação/assinatura permanecem possíveis).
+    public void ImageToPdf_JpegWithExifOrientation6_PageRotationStaysZero_AnnotationGateStaysOpen()
+    {
+        var pdf = Editor.ImageToPdf(Fixtures.FotoExif90());
+        var rotations = Editor.GetPageRotations(pdf);
+        Assert.Equal(0, Assert.Single(rotations));
+    }
+
+    [Fact] // 100x100px @ 96dpi -> 75x75pt
+    public void ImageToPdf_Png_ProducesOnePageOfCorrectSize()
+    {
+        var pdf = Editor.ImageToPdf(Fixtures.Transparente());
+        using var r = new PdfDocumentRenderer(pdf);
+        Assert.Equal(1, r.PageCount);
+        var size = r.GetPageSize(0);
+        Assert.Equal(75.0, size.WidthPt, 0.5);
+        Assert.Equal(75.0, size.HeightPt, 0.5);
+    }
+
+    [Fact] // fixture-transparente: "buraco" alpha=0 sobre RGB preto deliberado (0,0)-(50,50) — se o
+    // SMask não fosse honrado, renderizaria PRETO; quadrado opaco verde-escuro (50,0)-(100,50) prova
+    // que a imagem FOI desenhada (não é só "página em branco passando por acidente").
+    public void ImageToPdf_TransparentPng_HoleShowsWhiteBackground_OpaqueRegionShowsColor()
+    {
+        var pdf = Editor.ImageToPdf(Fixtures.Transparente());
+        using var r = new PdfDocumentRenderer(pdf);
+        var page = r.RenderPage(0, 1.0);
+        // buraco transparente: amostra em torno do centro da região (25,25) do PNG 100x100 -> mesma
+        // escala 0.75 (96dpi->72pt) da página 75x75pt, então (25,25)px da imagem cai em ~(19,19)pt/px
+        // renderizado — usar um ponto interno (18,18) evita a borda de antialiasing do quadrado.
+        AssertCornerColor(page, 18, 18, (255, 255, 255), 5); // branco = fundo da página, SMask honrado
+        // quadrado opaco verde-escuro (era (50,0)-(100,50) na imagem 100x100) -> ~(56,18) na página 75x75
+        int i = (18 * page.WidthPx + 56) * 4;
+        byte b = page.Bgra[i], g = page.Bgra[i + 1], red = page.Bgra[i + 2];
+        Assert.True(g > red && g > b, $"região do quadrado opaco não saiu esverdeada: R={red} G={g} B={b}");
+    }
+
+    [Theory]
+    [InlineData(new byte[] { 0x42, 0x4D, 0x00, 0x00 })] // BMP
+    [InlineData(new byte[] { 0x47, 0x49, 0x46, 0x38 })] // GIF
+    public void ImageToPdf_UnsupportedFormat_ThrowsNamingSupportedFormats(byte[] bytes)
+    {
+        var ex = Assert.Throws<PdfEditingException>(() => Editor.ImageToPdf(bytes));
+        Assert.Contains("JPG", ex.Message);
+        Assert.Contains("PNG", ex.Message);
+    }
+
+    [Fact]
+    public void ImageToPdf_NullOrEmptyBytes_ThrowsNamingSupportedFormats()
+    {
+        var exNull = Assert.Throws<PdfEditingException>(() => Editor.ImageToPdf(null!));
+        Assert.Contains("JPG", exNull.Message);
+        var exEmpty = Assert.Throws<PdfEditingException>(() => Editor.ImageToPdf(Array.Empty<byte>()));
+        Assert.Contains("JPG", exEmpty.Message);
+    }
+
+    [Fact] // magic bytes OK (JPEG SOI+APP0 válidos), mas o resto é lixo/truncado — iText não decodifica.
+    // Mesma mensagem de "formato não suportado" (decisão do brief: corrupto/BMP/GIF convergem na
+    // MESMA mensagem nomeando os formatos suportados — o usuário não precisa saber a causa exata).
+    public void ImageToPdf_CorruptJpegBytes_ThrowsNamingSupportedFormats()
+    {
+        var truncated = Fixtures.Foto().Take(30).ToArray(); // header válido, sem SOF/SOS/dados de scan
+        var ex = Assert.Throws<PdfEditingException>(() => Editor.ImageToPdf(truncated));
+        Assert.Contains("JPG", ex.Message);
+        Assert.Contains("PNG", ex.Message);
+    }
+
+    // --- CMYK JPEG: recusa defensiva (brief, Plano 7 Task 1 — fail-closed, não construível sinteticamente) ---
+    //
+    // `BuildMinimalSofJpeg` monta só o header SOF (SOI+SOF0+EOI, sem dados de scan reais) — achado
+    // empírico: iText lê largura/altura/nº de componentes de cor DIRETO do SOF pra fins de embutir
+    // (JPEG é passthrough do stream DCT, não precisa decodificar pixels), então este header mínimo
+    // basta pra exercitar tanto o detector de CMYK quanto o teto de pixels abaixo — SEM precisar
+    // construir um bitmap real (rápido, sem custo de memória de imagem gigante no teste).
+    private static byte[] BuildMinimalSofJpeg(int numComponents, int width = 10, int height = 10)
+    {
+        var bytes = new List<byte> { 0xFF, 0xD8 }; // SOI
+        bytes.AddRange(new byte[] { 0xFF, 0xC0 }); // SOF0 (baseline)
+        int len = 8 + 3 * numComponents; // 2(len)+1(precisão)+2(altura)+2(largura)+1(nComp)+3*nComp
+        bytes.Add((byte)(len >> 8)); bytes.Add((byte)(len & 0xFF));
+        bytes.Add(8); // precisão
+        bytes.Add((byte)(height >> 8)); bytes.Add((byte)(height & 0xFF));
+        bytes.Add((byte)(width >> 8)); bytes.Add((byte)(width & 0xFF));
+        bytes.Add((byte)numComponents);
+        for (int c = 0; c < numComponents; c++) { bytes.Add((byte)(c + 1)); bytes.Add(0x11); bytes.Add(0); }
+        bytes.AddRange(new byte[] { 0xFF, 0xD9 }); // EOI
+        return bytes.ToArray();
+    }
+
+    [Fact] // 4 componentes de cor no SOF = CMYK/YCCK -> recusa TIPADA nomeando o motivo, ANTES mesmo
+    // de tentar decodificar via iText (varredura crua do marcador SOF, independente).
+    public void ImageToPdf_CmykJpeg_ThrowsTypedRefusalNamingCmyk()
+    {
+        var ex = Assert.Throws<PdfEditingException>(() => Editor.ImageToPdf(BuildMinimalSofJpeg(4)));
+        Assert.Contains("CMYK", ex.Message);
+    }
+
+    [Theory] // 1 (grayscale) e 3 (RGB/YCbCr) componentes NÃO disparam a recusa de CMYK — a conversão
+    // segue adiante normalmente, provando que o detector é PRECISO (só dispara em ==4), não um
+    // "recusa qualquer coisa que pareça estranha".
+    [InlineData(1)]
+    [InlineData(3)]
+    public void ImageToPdf_NonCmykComponentCounts_DoesNotThrow(int numComponents)
+    {
+        var pdf = Editor.ImageToPdf(BuildMinimalSofJpeg(numComponents));
+        Assert.NotEmpty(pdf);
+    }
+
+    // --- Teto de pixels: recusa de imagem "gigante" (brief, Plano 7 Task 1 — teto MEDIDO, ver task-1-report.md) ---
+
+    [Fact] // header SOF declarando 10000x10000 (100MP, > teto de 50MP) — mesma técnica de BuildMinimalSofJpeg
+    // acima: a varredura de header (TryReadJpegSofInfo) lê W/H direto do SOF, SEM precisar de
+    // ImageDataFactory.Create nem de dados de scan reais.
+    public void ImageToPdf_ImageAbovePixelCeiling_ThrowsNamingMegapixelLimit()
+    {
+        var huge = BuildMinimalSofJpeg(numComponents: 3, width: 10000, height: 10000);
+        var ex = Assert.Throws<PdfEditingException>(() => Editor.ImageToPdf(huge));
+        Assert.Contains("50", ex.Message);
+        Assert.Contains("MP", ex.Message);
+    }
+
+    // --- C2 CRÍTICO (revisão pré-merge, task-1-report.md "## Fix"): teto ANTES do decode caro ---
+
+    /// Constrói um PNG grayscale (1 byte/pixel — mantém o array gerenciado do teste pequeno, ~50MB pra
+    /// 51MP em vez de ~200MB que RGBA exigiria) REAL e VÁLIDO — IDAT genuíno, zlib/deflate correto via
+    /// `System.IO.Compression.DeflateStream` (SEM pacote novo, `System.IO.Compression` é BCL) — grande
+    /// o bastante pra exigir trabalho de decodificação de verdade SE `ImageDataFactory.Create`
+    /// chegasse a ser chamado. Achado empírico (ver task-1-report.md "## Fix", C2): PNG com IDAT
+    /// AUSENTE ou com bytes zlib inválidos NÃO faz o iText lançar (decodificador tolerante — trata
+    /// como imagem vazia/degenerada sem reclamar), então "a mensagem seria outra se Create() tivesse
+    /// rodado" NÃO é uma prova confiável pra PNG (ao contrário de JPEG truncado, que falha cedo — ver
+    /// ImageToPdf_CorruptJpegBytes_ThrowsNamingSupportedFormats). Por isso este PNG é REAL/decodificável
+    /// de propósito — a prova de que o teto recusa ANTES de Create() vira TEMPO de execução (ver
+    /// teste abaixo), comparado contra os números medidos do benchmark real (task-1-report.md: PNG com
+    /// alpha em 36-64MP levou 1-1.8s pelo pipeline INTEIRO Create+desenho+escrita).
+    private static byte[] BuildRealGrayscalePng(int width, int height)
+    {
+        var bytes = new List<byte> { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }; // assinatura
+        void WriteChunk(string type, byte[] data)
+        {
+            bytes.Add((byte)(data.Length >> 24)); bytes.Add((byte)(data.Length >> 16));
+            bytes.Add((byte)(data.Length >> 8)); bytes.Add((byte)data.Length);
+            var typeAndData = new List<byte>(System.Text.Encoding.ASCII.GetBytes(type));
+            typeAndData.AddRange(data);
+            bytes.AddRange(typeAndData);
+            bytes.AddRange(Crc32(typeAndData.ToArray()));
+        }
+
+        var ihdr = new List<byte>();
+        ihdr.AddRange(new byte[] { (byte)(width >> 24), (byte)(width >> 16), (byte)(width >> 8), (byte)width });
+        ihdr.AddRange(new byte[] { (byte)(height >> 24), (byte)(height >> 16), (byte)(height >> 8), (byte)height });
+        ihdr.AddRange(new byte[] { 8, 0, 0, 0, 0 }); // bitdepth=8, colortype=0 (grayscale, 1 byte/pixel)
+        WriteChunk("IHDR", ihdr.ToArray());
+
+        // scanlines cruas: 1 byte de filtro (0=None) + width bytes de pixel, por linha — padrão
+        // repetitivo (barato de gerar/comprimir), mas GENUÍNO: se Create() decodificasse de verdade,
+        // precisaria processar TODOS os width*height pixels, não um atalho de dado ausente.
+        int rowStride = 1 + width;
+        byte[] raw = new byte[(long)height * rowStride > int.MaxValue
+            ? throw new InvalidOperationException("dimensão de teste grande demais pro array gerenciado")
+            : height * rowStride];
+        for (int y = 0; y < height; y++)
+        {
+            int rowStart = y * rowStride;
+            raw[rowStart] = 0; // filtro None
+            for (int x = 0; x < width; x++) raw[rowStart + 1 + x] = (byte)((x ^ y) & 0xFF);
+        }
+        byte[] zlibStream = ZlibCompress(raw);
+        WriteChunk("IDAT", zlibStream);
+        WriteChunk("IEND", Array.Empty<byte>());
+        return bytes.ToArray();
+    }
+
+    private static byte[] ZlibCompress(byte[] raw)
+    {
+        using var ms = new MemoryStream();
+        ms.WriteByte(0x78); ms.WriteByte(0x9C); // zlib header (compressão default)
+        using (var deflate = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
+            deflate.Write(raw, 0, raw.Length);
+        uint adler = Adler32(raw);
+        ms.WriteByte((byte)(adler >> 24)); ms.WriteByte((byte)(adler >> 16));
+        ms.WriteByte((byte)(adler >> 8)); ms.WriteByte((byte)adler);
+        return ms.ToArray();
+    }
+
+    private static uint Adler32(byte[] data)
+    {
+        const uint MOD = 65521;
+        uint a = 1, b = 0;
+        foreach (byte d in data) { a = (a + d) % MOD; b = (b + a) % MOD; }
+        return (b << 16) | a;
+    }
+
+    private static readonly uint[] Crc32Table = BuildCrc32Table();
+    private static uint[] BuildCrc32Table()
+    {
+        var table = new uint[256];
+        for (uint i = 0; i < 256; i++)
+        {
+            uint c = i;
+            for (int k = 0; k < 8; k++) c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
+            table[i] = c;
+        }
+        return table;
+    }
+
+    private static byte[] Crc32(byte[] data)
+    {
+        uint crc = 0xFFFFFFFF;
+        foreach (byte d in data) crc = Crc32Table[(crc ^ d) & 0xFF] ^ (crc >> 8);
+        crc ^= 0xFFFFFFFF;
+        return new byte[] { (byte)(crc >> 24), (byte)(crc >> 16), (byte)(crc >> 8), (byte)crc };
+    }
+
+    [Fact] // sanity check ANTES do teste principal: confirma que este PNG é REALMENTE decodificável
+    // (não degenerado) — abaixo do teto, então o teto não pode interferir aqui. Prova que
+    // BuildRealGrayscalePng produz um IDAT genuíno que o iText consegue ler (dimensão pequena só
+    // pra este check ficar rápido; o teste de timing abaixo usa uma versão grande da MESMA construção).
+    public void ImageToPdf_RealGrayscalePng_SmallDimensions_DecodesSuccessfully()
+    {
+        var png = BuildRealGrayscalePng(50, 50);
+        var pdf = Editor.ImageToPdf(png);
+        Assert.NotEmpty(pdf);
+    }
+
+    [Fact] // C2 CRÍTICO — prova por TEMPO DE EXECUÇÃO (achado empírico: PNG "sem dado real" não força
+    // o iText a lançar — ver doc XML de BuildRealGrayscalePng acima, "mensagem discriminante" não é
+    // confiável pra PNG) que o teto recusa ANTES de ImageDataFactory.Create. Este PNG (51MP, > teto de
+    // 50MP) tem um IDAT REAL/válido (confirmado pelo teste anterior que a mesma construção decodifica
+    // de verdade) — se Create() tivesse sido alcançado, precisaria decodificar 51 milhões de pixels
+    // (medido no benchmark real, task-1-report.md: dezenas a centenas de ms só pra decodificar nessa
+    // faixa, chegando a ~1-2s com o pipeline completo em 36-100MP). O teste passa com folga larga
+    // (< 300ms) porque a checagem de header nunca deixa `Create()` ser chamado — só lê 24 bytes fixos
+    // do IHDR.
+    public void ImageToPdf_OversizedRealPng_RefusesFastBeforeReachingDecode()
+    {
+        var png = BuildRealGrayscalePng(7200, 7200); // 51.84MP > teto de 50MP, IDAT REAL e válido
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var ex = Assert.Throws<PdfEditingException>(() => Editor.ImageToPdf(png));
+        sw.Stop();
+        Assert.Contains("50", ex.Message);
+        Assert.Contains("MP", ex.Message);
+        Assert.True(sw.ElapsedMilliseconds < 300,
+            $"recusa levou {sw.ElapsedMilliseconds}ms — tempo alto demais pra uma checagem de HEADER " +
+            "(24 bytes fixos do IHDR); sugere que ImageDataFactory.Create foi alcançado antes da recusa.");
+    }
+
+    // --- C3 CRÍTICO (revisão pós-merge, task-1-report.md "## Fix"): overflow no teto de pixels PNG ---
+
+    /// Monta um PNG com IHDR customizado (width/height ATÉ 0xFFFFFFFF cada) e NENHUM chunk IDAT —
+    /// mesma forma do probe EXATO do revisor. `long` nos parâmetros de propósito: precisa aceitar o
+    /// valor MÁXIMO de 32 bits sem truncar (0xFFFFFFFF não cabe num `int`).
+    private static byte[] BuildPngIhdrOnly(long width, long height)
+    {
+        var bytes = new List<byte> { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }; // assinatura
+        void WriteChunk(string type, byte[] data)
+        {
+            bytes.Add((byte)(data.Length >> 24)); bytes.Add((byte)(data.Length >> 16));
+            bytes.Add((byte)(data.Length >> 8)); bytes.Add((byte)data.Length);
+            var typeAndData = new List<byte>(System.Text.Encoding.ASCII.GetBytes(type));
+            typeAndData.AddRange(data);
+            bytes.AddRange(typeAndData);
+            bytes.AddRange(Crc32(typeAndData.ToArray()));
+        }
+
+        var ihdr = new List<byte>();
+        ihdr.Add((byte)(width >> 24)); ihdr.Add((byte)(width >> 16)); ihdr.Add((byte)(width >> 8)); ihdr.Add((byte)width);
+        ihdr.Add((byte)(height >> 24)); ihdr.Add((byte)(height >> 16)); ihdr.Add((byte)(height >> 8)); ihdr.Add((byte)height);
+        ihdr.AddRange(new byte[] { 8, 6, 0, 0, 0 }); // bitdepth=8, colortype=6(RGBA)
+        WriteChunk("IHDR", ihdr.ToArray());
+        // SEM IDAT — mesma forma do probe do revisor.
+        WriteChunk("IEND", Array.Empty<byte>());
+        return bytes.ToArray();
+    }
+
+    [Fact] // C3 CRÍTICO — probe EXATO do revisor: IHDR 0xFFFFFFFF x 0xFFFFFFFF (o produto, ~1.84e19,
+    // overflowa `long` e volta NEGATIVO — `> MaxImagePixels` contra um número negativo nunca dispara,
+    // então SEM o fix de C3 esse PNG atravessava o teto de header inteiro; a rede pós-Create também
+    // era enganada, já que o iText devolve GetWidth()/GetHeight() == -1 pra essa imagem degenerada, e
+    // (-1)*(-1)=1 também passaria pelo teto). Com o fix, qualquer uma das 2 camadas recusa — o
+    // resultado observável é sempre PdfEditingException, NUNCA um PDF com MediaBox negativo.
+    public void ImageToPdf_PngIhdrMaxUint32BothDimensions_ThrowsTypedRefusal_NoPdfProduced()
+    {
+        var png = BuildPngIhdrOnly(0xFFFFFFFFL, 0xFFFFFFFFL);
+        var ex = Assert.Throws<PdfEditingException>(() => Editor.ImageToPdf(png));
+        Assert.NotNull(ex.Message); // recusa TIPADA — nunca uma exceção crua (IndexOutOfRange, etc.)
+    }
+
+    [Fact] // caso extremo POR DIMENSÃO (não os dois iguais): uma dimensão no máximo de 32 bits, a
+    // outra mínima (1) — o PRODUTO em si (0xFFFFFFFF*1 ≈ 4.29e9) NÃO overflowaria `long`, mas already
+    // excede o teto (50M) MUITO antes de chegar perto do limite de overflow — prova que o check
+    // individual por dimensão (`pngWidth > MaxImagePixels || pngHeight > MaxImagePixels`) pega esse
+    // caso de qualquer forma, sem depender do produto.
+    public void ImageToPdf_PngIhdrMaxUint32OneDimension_ThrowsTypedRefusal()
+    {
+        var png = BuildPngIhdrOnly(0xFFFFFFFFL, 1L);
+        var ex = Assert.Throws<PdfEditingException>(() => Editor.ImageToPdf(png));
+        Assert.Contains("MP", ex.Message); // pega na checagem de HEADER (dimensão individual), mensagem de teto
+    }
+
+    // --- C1 CRÍTICO (revisão pré-merge, task-1-report.md "## Fix"): parser EXIF blindado contra overflow ---
+
+    /// Monta um JPEG DECODIFICÁVEL (SOF0 10x10, 3 componentes — mesmo formato de BuildMinimalSofJpeg,
+    /// achado empírico de que iText decodifica sem dados de scan reais) com um segmento APP1/EXIF
+    /// CUSTOMIZADO inserido ANTES do SOF — permite exercitar o parser de Orientation com payloads
+    /// hostis/truncados através da API PÚBLICA (ImageToPdf), já que o parser é privado (sem
+    /// InternalsVisibleTo, mesmo padrão do resto da suíte).
+    private static byte[] BuildJpegWithCustomExifPayload(byte[] exifPayloadAfterSignature)
+    {
+        var bytes = new List<byte> { 0xFF, 0xD8 }; // SOI
+        var app1Payload = new List<byte> { (byte)'E', (byte)'x', (byte)'i', (byte)'f', 0, 0 }; // "Exif\0\0"
+        app1Payload.AddRange(exifPayloadAfterSignature);
+        int app1Len = 2 + app1Payload.Count;
+        bytes.AddRange(new byte[] { 0xFF, 0xE1, (byte)(app1Len >> 8), (byte)(app1Len & 0xFF) });
+        bytes.AddRange(app1Payload);
+        bytes.AddRange(new byte[] { 0xFF, 0xC0, 0x00, 0x11, 8, 0, 10, 0, 10, 3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1 }); // SOF0 10x10, 3 comp.
+        bytes.AddRange(new byte[] { 0xFF, 0xD9 }); // EOI
+        return bytes.ToArray();
+    }
+
+    [Fact] // C1 CRÍTICO da revisão pré-merge (achado REAL de fuzzing, reproduzido pelo revisor com um
+    // JPEG hostil artesanal): offset de IFD0 craftado perto de int.MaxValue fazia a checagem de
+    // limite ANTIGA (aritmética `int`) overflowar DUAS VEZES em sequência — a soma
+    // `tiffStart+ifd0Offset` ficava positiva-mas-enorme (não caía no guard `<0`), então somar `+2`
+    // overflowava DE NOVO pra um número bem negativo (`negativo > jpeg.Length` é sempre falso,
+    // derrotando o segundo guard também) — `jpeg[ifd0Start]` lançava IndexOutOfRangeException CRUA,
+    // escapando de ImageToPdf sem nunca virar PdfEditingException. Fix: aritmética em `long` (ver
+    // ParseTiffOrientationRotation). Este teste usa o offset EXATO (0x7FFFFFE0) que provocava o duplo
+    // overflow: a conversão precisa SUCEDER, com a orientação tratada como "sem correção" (parse
+    // falhou silenciosamente = mesmo efeito de Orientation=1/ausente), nunca escapar como exceção crua.
+    public void ImageToPdf_HostileExifIfd0Offset_NeverEscapesRawException_DefaultsToNoRotation()
+    {
+        var exifPayload = new byte[] { (byte)'M', (byte)'M', 0x00, 0x2A, 0x7F, 0xFF, 0xFF, 0xE0 };
+        var jpeg = BuildJpegWithCustomExifPayload(exifPayload);
+
+        var pdf = Editor.ImageToPdf(jpeg); // NÃO pode lançar IndexOutOfRangeException (nem nada crua)
+        Assert.NotEmpty(pdf);
+
+        // orientação "defaulted" (parse falhou) -> SEM rotação nenhuma, página no tamanho cru (10x10px
+        // @ fallback 96dpi = 7.5x7.5pt), /Rotate sempre 0 (I3 acima).
+        Assert.Equal(0, Assert.Single(Editor.GetPageRotations(pdf)));
+        using var r = new PdfDocumentRenderer(pdf);
+        var size = r.GetPageSize(0);
+        Assert.Equal(7.5, size.WidthPt, 0.5);
+        Assert.Equal(7.5, size.HeightPt, 0.5);
+    }
+
+    [Theory] // fuzz de truncamento/extremos — cada forma provoca uma checagem de limite DIFERENTE no
+    // parser (header truncado; IFD0 aponta pra dentro do arquivo mas declara mais entradas do que
+    // cabem; offset no valor MÁXIMO absoluto de 32 bits). Nenhuma pode escapar como exceção crua —
+    // todas convergem pra "sem rotação", conversão segue normalmente.
+    [InlineData(new byte[] { (byte)'M', (byte)'M', 0x00 })]                                        // TIFF header truncado (falta metade do magic)
+    [InlineData(new byte[] { (byte)'M', (byte)'M', 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08, 0xFF, 0xFF })] // IFD0 logo após o header, declara 65535 entradas SEM nenhum dado de entrada (truncado)
+    [InlineData(new byte[] { (byte)'M', (byte)'M', 0x00, 0x2A, 0xFF, 0xFF, 0xFF, 0xFF })]           // offset = 0xFFFFFFFF (máximo de 32 bits — o valor mais hostil possível)
+    public void ImageToPdf_TruncatedOrExtremeExifPayloads_NeverThrowsUnexpectedException(byte[] exifPayload)
+    {
+        var jpeg = BuildJpegWithCustomExifPayload(exifPayload);
+        var pdf = Editor.ImageToPdf(jpeg); // nunca lança — payload EXIF malformado não é "imagem corrompida"
+        Assert.NotEmpty(pdf);
+        Assert.Equal(0, Assert.Single(Editor.GetPageRotations(pdf)));
+    }
+
+    // --- Minor (revisão pré-merge): imagem 1x1 degenerada ---
+
+    [Fact] // minor da revisão: imagem 1x1 (degenerada) não pode quebrar o pipeline de tamanho de página
+    public void ImageToPdf_OnePixelImage_ProducesDegeneratePageWithoutThrowing()
+    {
+        var pdf = Editor.ImageToPdf(Fixtures.OnePixelPng());
+        using var r = new PdfDocumentRenderer(pdf);
+        Assert.Equal(1, r.PageCount);
+        var size = r.GetPageSize(0);
+        Assert.True(size.WidthPt > 0 && size.HeightPt > 0, $"tamanho de página degenerado: {size.WidthPt}x{size.HeightPt}");
+    }
+
+    // --- Task 3 (Plano 7): IsWithinImagePixelLimit — exposição do teto de header pro App -------------
+    //
+    // O caminho AddAnnotation/AnnotationKind.ImageStamp (consumido por DocumentViewModel.
+    // PlaceStampAtAsync) nunca teve teto de pixels nenhum — foi implementado (Task 9, Plano 3a) ANTES
+    // do teto de ImageToPdf existir (Task 1, Plano 7), e nunca foi retrofitado. Task 3 (Plano 7,
+    // ferramenta "🖼 Imagem") decide aplicar o MESMO teto (50MP) ANTES do modo de colocação, do lado
+    // do App — mas o App não pode reimplementar o parser SOF/IHDR (duplicar um parser resiliente a
+    // overflow É o tipo de duplicação que diverge silenciosamente na 1ª mudança futura). Este método
+    // reusa TryReadJpegSofInfo/TryReadPngDimensions (já testados via ImageToPdf acima), sem alterar o
+    // código de ImageToPdf em si (risco zero de regressão no teto já revisado/hardenizado).
+
+    [Fact]
+    public void IsWithinImagePixelLimit_SmallJpeg_IsTrue() =>
+        Assert.True(Editor.IsWithinImagePixelLimit(Fixtures.Foto()));
+
+    [Fact] // mesma técnica de ImageToPdf_ImageAbovePixelCeiling_ThrowsNamingMegapixelLimit — header SOF
+    // declarando 10000x10000 (100MP), sem decodificar nada.
+    public void IsWithinImagePixelLimit_JpegAbovePixelCeiling_IsFalse() =>
+        Assert.False(Editor.IsWithinImagePixelLimit(BuildMinimalSofJpeg(numComponents: 3, width: 10000, height: 10000)));
+
+    [Fact]
+    public void IsWithinImagePixelLimit_SmallPng_IsTrue() =>
+        Assert.True(Editor.IsWithinImagePixelLimit(Fixtures.Transparente()));
+
+    [Fact] // mesma técnica de ImageToPdf_OversizedRealPng_RefusesFastBeforeReachingDecode — IHDR
+    // declarando 7200x7200 (51.84MP), sem IDAT nenhum (varredura de header não precisa de pixels reais).
+    public void IsWithinImagePixelLimit_PngAbovePixelCeiling_IsFalse() =>
+        Assert.False(Editor.IsWithinImagePixelLimit(BuildPngIhdrOnly(7200, 7200)));
+
+    [Fact] // header ilegível/truncado -> FAIL-OPEN (true): este método só existe pra pegar "grande
+    // demais" ANTES do decode caro; um header que não dá pra ler com confiança não é "grande demais",
+    // é "sem opinião" — o decode real (WPF no App) decide o resto (corrupção vira outra mensagem).
+    public void IsWithinImagePixelLimit_UnreadableHeader_IsTrue()
+    {
+        Assert.True(Editor.IsWithinImagePixelLimit(new byte[] { 0xFF, 0xD8, 0xFF })); // JPEG truncado antes do SOF
+        Assert.True(Editor.IsWithinImagePixelLimit(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x00 })); // PNG truncado antes do IHDR
+    }
+
+    [Fact]
+    public void IsWithinImagePixelLimit_NullOrEmpty_IsTrue()
+    {
+        Assert.True(Editor.IsWithinImagePixelLimit(null!));
+        Assert.True(Editor.IsWithinImagePixelLimit(Array.Empty<byte>()));
+    }
+
+    // --- Task 3 (Plano 7): ReadJpegExifOrientation — exposição do parser EXIF pro App ----------------
+    //
+    // AddAnnotation/AnnotationKind.ImageStamp nunca honrou EXIF (ao contrário de ImageToPdf, Task 1) —
+    // uma foto de celular colocada como "🖼 Imagem" entraria de lado sem correção. A correção de
+    // PIXELS em si é 100% App-side (WPF TransformedBitmap — WPF não pode entrar em mPdf.Editing, ver
+    // AgplGuardTests/csproj); este método só expõe a LEITURA pura do ângulo (já testada indiretamente
+    // via ImageToPdf_JpegWithExifOrientation6_OpensUpright acima) — reusa ReadJpegExifOrientationRotation
+    // sem reimplementar o parser TIFF/IFD0 uma 2ª vez.
+
+    [Fact]
+    public void ReadJpegExifOrientation_FotoWithoutExifRotation_IsZero() =>
+        Assert.Equal(0, Editor.ReadJpegExifOrientation(Fixtures.Foto()));
+
+    [Fact] // mesma fixture/mesmo ângulo (90°) que ImageToPdf_JpegWithExifOrientation6_OpensUpright prova
+    // visualmente via render — aqui só o NÚMERO devolvido pelo parser.
+    public void ReadJpegExifOrientation_FotoExif90_Returns90() =>
+        Assert.Equal(90, Editor.ReadJpegExifOrientation(Fixtures.FotoExif90()));
+
+    [Fact] // PNG não tem EXIF (segmento APP1 é conceito JPEG) -> 0 sempre, sem tentar parsear nada.
+    public void ReadJpegExifOrientation_Png_IsZero() =>
+        Assert.Equal(0, Editor.ReadJpegExifOrientation(Fixtures.Transparente()));
+
+    [Fact]
+    public void ReadJpegExifOrientation_NullOrTooShort_IsZero()
+    {
+        Assert.Equal(0, Editor.ReadJpegExifOrientation(null!));
+        Assert.Equal(0, Editor.ReadJpegExifOrientation(new byte[] { 0xFF }));
+    }
+
+    // --- Task 3 (Plano 7), fix pós-revisão — IsCmykJpeg: exposição do detector de CMYK pro App --------
+    //
+    // ACHADO (revisão pós-merge desta task): o caminho AddAnnotation/AnnotationKind.ImageStamp
+    // (consumido por DocumentViewModel.ToggleImageTool/ToggleStampTool/PlaceStampAtAsync) nunca recusou
+    // JPEG CMYK — só ImageToPdf (Task 1) tem essa recusa (varredura de SOF, componentes==4, decisão
+    // fail-closed porque renderizar CMYK embutido via PDFium é intestável sem fixture real). Este
+    // método expõe o MESMO detector (já existia como `private static IsCmykJpeg`, não estava sendo
+    // usado por NADA — `ImageToPdf` sempre checou `sofComponents == 4` inline, direto — reaproveitado
+    // aqui em vez de duplicar a leitura de SOF) pra `ToggleImageTool` recusar ANTES do modo de
+    // colocação, mesma disciplina de `IsWithinImagePixelLimit`.
+
+    [Fact]
+    public void IsCmykJpeg_RgbJpeg_IsFalse() =>
+        Assert.False(Editor.IsCmykJpeg(BuildMinimalSofJpeg(numComponents: 3)));
+
+    [Fact] // técnica do Task 1 (BuildMinimalSofJpeg): só o header SOF, sem dados de scan reais — basta
+    // pra exercitar o detector, sem precisar de uma fixture CMYK de verdade (não construível
+    // sinteticamente sem pacote novo — ver task-1-report.md).
+    public void IsCmykJpeg_CmykSofJpeg_IsTrue() =>
+        Assert.True(Editor.IsCmykJpeg(BuildMinimalSofJpeg(numComponents: 4)));
+
+    [Fact]
+    public void IsCmykJpeg_GrayscaleJpeg_IsFalse() =>
+        Assert.False(Editor.IsCmykJpeg(BuildMinimalSofJpeg(numComponents: 1)));
+
+    [Fact]
+    public void IsCmykJpeg_Png_IsFalse() =>
+        Assert.False(Editor.IsCmykJpeg(Fixtures.Transparente()));
+
+    [Fact]
+    public void IsCmykJpeg_NullOrTooShort_IsFalse()
+    {
+        Assert.False(Editor.IsCmykJpeg(null!));
+        Assert.False(Editor.IsCmykJpeg(new byte[] { 0xFF }));
+    }
 }

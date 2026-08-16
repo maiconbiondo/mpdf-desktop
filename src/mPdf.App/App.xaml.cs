@@ -48,11 +48,16 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        // Task 2 (Plano 6, associação .pdf): args[0] é o caminho que o Windows passa ao abrir um .pdf
-        // associado a este .exe (ou uma linha de comando manual) — só aceito se realmente parecer um
-        // caminho de PDF; qualquer outro argumento em args[0] é ignorado (nunca tenta abrir algo que
-        // claramente não é um .pdf).
-        string? argPath = e.Args.Length > 0 && e.Args[0].EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)
+        // Task 2 (Plano 6, associação .pdf) + Task 2 (Plano 7, imagens): args[0] é o caminho que o
+        // Windows passa ao abrir um .pdf/.jpg/.jpeg/.png associado a este .exe (ou uma linha de comando
+        // manual) — só aceito se realmente parecer um desses formatos; qualquer outro argumento em
+        // args[0] é ignorado (nunca tenta abrir algo que claramente não é PDF nem imagem). Uma imagem
+        // forwardada aqui converte+abre pelo MESMO caminho que qualquer outra: `MainWindow.ViewModel.
+        // OpenPath` (abaixo, e em `HandleExternalPathAsync`) já ramifica pra conversão sozinho — ver
+        // `ImageImport.IsImagePath`/`MainViewModel.OpenImageAsNewDocument`, testado no nível de VM
+        // (`MainViewModelTests`), nunca aqui (este arquivo não é testável headless — ver doc XML da
+        // classe).
+        string? argPath = e.Args.Length > 0 && IsSupportedOpenArgument(e.Args[0])
             ? e.Args[0]
             : null;
 
@@ -146,6 +151,12 @@ public partial class App : Application
         _singleInstance?.Dispose();
         base.OnExit(e);
     }
+
+    /// Task 2 (Plano 7): PDF (critério ORIGINAL, Plano 6) OU imagem (`ImageImport.IsImagePath` — mesma
+    /// lista de extensões do filtro dos diálogos de arquivo, `.jpg`/`.jpeg`/`.png`). `static` — não
+    /// depende de estado nenhum da instância.
+    private static bool IsSupportedOpenArgument(string path) =>
+        path.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) || ImageImport.IsImagePath(path);
 
     /// <summary>
     /// Rede (a) — ver doc XML da classe. `CrashLog.Append` roda SEMPRE, incondicionalmente (cada

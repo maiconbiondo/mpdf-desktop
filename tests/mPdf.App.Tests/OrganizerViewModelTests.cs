@@ -787,4 +787,106 @@ public class OrganizerViewModelTests
             Assert.Empty(infos);
         }
     }
+
+    // ---- Task 2 (Plano 7): Inserir aceita imagens -- conversão ANTES de InsertPages (motor intocado) --
+    //
+    // Cada teste cria/apaga sua PRÓPRIA pasta temp (mesmo padrão try/finally de
+    // ExtractSelectedCommand_SinglePage_UsesSingularNoticeText acima) -- nunca uma pasta compartilhada
+    // entre testes, e nunca deixa lixo em %TEMP% entre execuções.
+
+    private static string WriteTempImageFile(string dir, string fileName)
+    {
+        var path = Path.Combine(dir, fileName);
+        File.WriteAllBytes(path, new byte[] { 0xFF, 0xD8, 0xFF });
+        return path;
+    }
+
+    [Fact] // caminho de imagem -- convertido via ImageToPdf ANTES de InsertPages; InsertPages recebe o
+    // PDF resultante da conversão, NUNCA os bytes crus da imagem.
+    public async Task InsertCommand_ImagePath_ConvertsBeforeInsertPages()
+    {
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"mpdf-organizer-img-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tmpDir);
+        try
+        {
+            var imgPath = WriteTempImageFile(tmpDir, "pagina.png");
+            var dialogs = new FakeFileDialogService(openResult: imgPath);
+            var (vm, fake, session, _) = Build(dialogs: dialogs);
+            fake.ImageToPdfResult = Fixtures.A4();
+            using (session) using (vm)
+            {
+                await vm.InsertCommand.ExecuteAsync(null);
+
+                Assert.Equal(1, fake.ImageToPdfCallCount);
+                Assert.Equal(File.ReadAllBytes(imgPath), fake.ImageToPdfInputs[0]);
+                Assert.Equal(1, fake.InsertPagesCallCount);
+                Assert.Equal(Fixtures.A4(), fake.LastInsertSource); // convertido, não os bytes crus da imagem
+            }
+        }
+        finally { Directory.Delete(tmpDir, true); }
+    }
+
+    [Fact] // caminho .pdf continua o fluxo normal -- NENHUMA chamada a ImageToPdf (invariante preservado)
+    public async Task InsertCommand_PdfPath_DoesNotCallImageConversion()
+    {
+        var sourcePath = Path.Combine(Fixtures.Root, "fixture-a4.pdf");
+        var dialogs = new FakeFileDialogService(openResult: sourcePath);
+        var (vm, fake, session, _) = Build(dialogs: dialogs);
+        using (session) using (vm)
+        {
+            await vm.InsertCommand.ExecuteAsync(null);
+
+            Assert.Equal(0, fake.ImageToPdfCallCount);
+            Assert.Equal(1, fake.InsertPagesCallCount);
+        }
+    }
+
+    [Fact] // conversão FALHA -- notificado pt-BR nomeando o arquivo, InsertPages NUNCA chamado, sessão intacta
+    public async Task InsertCommand_ImageConversionFails_NotifiesError_DoesNotInsert()
+    {
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"mpdf-organizer-img-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tmpDir);
+        try
+        {
+            var imgPath = WriteTempImageFile(tmpDir, "quebrada.jpg");
+            var dialogs = new FakeFileDialogService(openResult: imgPath);
+            var (vm, fake, session, errors) = Build(dialogs: dialogs);
+            fake.ThrowOnImageToPdf = new PdfEditingException("Imagem corrompida.");
+            using (session) using (vm)
+            {
+                var before = session.Snapshot;
+
+                await vm.InsertCommand.ExecuteAsync(null);
+
+                Assert.Equal(0, fake.InsertPagesCallCount);
+                Assert.Same(before, session.Snapshot);
+                Assert.Contains(errors, e => e.Contains("quebrada.jpg"));
+            }
+        }
+        finally { Directory.Delete(tmpDir, true); }
+    }
+
+    [Fact] // HasSignatures roda normalmente sobre o PDF CONVERTIDO (fluxo uniforme, sem caso especial) --
+    // nunca lança, nunca é pulado; uma imagem convertida não tem assinatura -> sem aviso.
+    public async Task InsertCommand_ImagePath_HasSignaturesRunsUniformlyOnConvertedBytes_NoWarning()
+    {
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"mpdf-organizer-img-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tmpDir);
+        try
+        {
+            var imgPath = WriteTempImageFile(tmpDir, "pagina.jpg");
+            var dialogs = new FakeFileDialogService(openResult: imgPath);
+            var infos = new List<string>();
+            var (vm, fake, session, _) = Build(dialogs: dialogs, notifyInfo: infos.Add);
+            fake.ImageToPdfResult = Fixtures.A4();
+            using (session) using (vm)
+            {
+                await vm.InsertCommand.ExecuteAsync(null);
+
+                Assert.Equal(1, fake.HasSignaturesCallCount);
+                Assert.Empty(infos);
+            }
+        }
+        finally { Directory.Delete(tmpDir, true); }
+    }
 }

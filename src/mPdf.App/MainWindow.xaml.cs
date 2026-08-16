@@ -22,6 +22,12 @@ public partial class MainWindow : Window
         // garantia no PRÓPRIO call site: uma falha de limpeza JAMAIS pode impedir a janela de abrir.
         try { DocumentSession.SweepOrphanUndoSpillDirectories(); }
         catch { /* melhor esforço — nunca pode impedir a janela de abrir */ }
+        // Task 2 (Plano 7, fix Important 1 pós-revisão): MESMO raciocínio/MESMO try-catch acima, agora
+        // também pros PDFs temporários de imagem convertida (%TEMP%\mPDF\open-*, mais de 24h) deixados
+        // por MainViewModel.OpenImageAsNewDocument quando o usuário nunca dá "Salvar como" (ou o app
+        // crasha/fecha antes) — ver doc XML de DocumentSession.SweepOrphanConvertedImageDirectories.
+        try { DocumentSession.SweepOrphanConvertedImageDirectories(); }
+        catch { /* melhor esforço — nunca pode impedir a janela de abrir */ }
         ViewModel = new MainViewModel(new FileDialogService());
         DataContext = ViewModel;
         InputBindings.Add(new KeyBinding(ViewModel.OpenFileCommand, Key.O, ModifierKeys.Control));

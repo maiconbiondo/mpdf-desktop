@@ -41,6 +41,8 @@ public class UiPromptsCoverageTests
         [("DocumentViewModel", "confirmSaveBeforeSign")] = "UiPrompts.CreateConfirmSaveBeforeSign",
         [("DocumentViewModel", "signDialog")] = "UiPrompts.CreateSignDialog",
         [("DocumentViewModel", "confirmOrganizerScale")] = "UiPrompts.CreateConfirmOrganizerScale",
+        // Task 4 (Plano 7): "Exportar página como imagem" -- mesma disciplina de injeção via UiPrompts.
+        [("DocumentViewModel", "exportImageDialog")] = "UiPrompts.CreateExportImageDialog",
         [("OrganizerViewModel", "dialogs")] = "UiPrompts.CreateFileDialog",
         [("OrganizerViewModel", "notifyInfo")] = "UiPrompts.NotifyInfo",
         [("MainViewModel", "annotationDialog")] = "UiPrompts.CreateAnnotationDialog",

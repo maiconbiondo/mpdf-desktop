@@ -8,8 +8,10 @@ public interface IFileDialogService
     /// Devolve null se o usuário cancelar (mesmo contrato de PickPdfToOpen).
     string? PickPdfToSaveAs(string currentPath);
 
-    /// Diálogo "Adicionar carimbo…" (Task 9, Plano 3a) — escolhe UMA imagem PNG/JPG pra copiar pra
-    /// dentro da `StampGallery`. Mesmo contrato de PickPdfToOpen (null = cancelado).
+    /// Diálogo "Escolher imagem" (Task 9, Plano 3a) — escolhe UMA imagem PNG/JPG. 2 chamadores (Task 3,
+    /// Plano 7): `MainViewModel.AddStamp` (copia pra dentro da `StampGallery`, carimbo persistente) e
+    /// `DocumentViewModel.ToggleImageTool` ("🖼 Imagem" — carimbo AVULSO, nunca entra na galeria). Mesmo
+    /// contrato de PickPdfToOpen (null = cancelado).
     string? PickImageToImport();
 
     /// Diálogo "Salvar como…" SEM um caminho de origem (Task 4, Plano 3b) — usado por Extrair/Juntar,

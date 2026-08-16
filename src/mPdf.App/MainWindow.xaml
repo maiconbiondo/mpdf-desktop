@@ -46,6 +46,14 @@
                 <Button Command="{Binding SelectedDocument.SignCommand}" ToolTip="Assinar digitalmente" Padding="8,4">
                     <TextBlock Text="🖊 Assinar"/>
                 </Button>
+                <!-- Task 4 (Plano 7): leitura pura, sem CanExecute — funciona até em documento assinado
+                     (ver doc XML de DocumentViewModel.ExportImage). Colocado junto de Imprimir/Assinar
+                     (mesmo agrupamento de "ações sobre o documento inteiro"); sonda de overflow
+                     (ViewerIntegrationTests.MainWindow_At1200x800_ToolbarsHaveNoOverflowItems) é o
+                     critério de aceitação do brief — verde sem precisar mover pra banda 2. -->
+                <Button Command="{Binding SelectedDocument.ExportImageCommand}" ToolTip="Exportar página como imagem" Padding="8,4">
+                    <TextBlock Text="📤 Exportar"/>
+                </Button>
                 <Separator/>
                 <!-- Task 6: toggle do painel de miniaturas — oculto por padrão (ThumbnailsVisible = false),
                      TwoWay padrão do IsChecked de ToggleButton dispensa comando dedicado. -->
@@ -229,6 +237,15 @@
                         </DockPanel>
                     </Border>
                 </Popup>
+                <!-- Task 3 (Plano 7): "🖼 Imagem" — abre um PNG/JPG avulso (OpenFileDialog injetável,
+                     mesmo diálogo do "➕ Adicionar carimbo…" acima) e entra em modo de colocação
+                     click-to-place (exemplar EXATO: ToggleStampTool/PlaceStampAtAsync acima) — a imagem
+                     escolhida NUNCA vai pra dentro da StampGallery (carimbo avulso, não persistente).
+                     Button simples (não ToggleButton), mesmo padrão "sem indicador visual de ferramenta
+                     CORRENTE" de Nota/Texto/Desenho acima. -->
+                <Button Command="{Binding SelectedDocument.ToggleImageToolCommand}" ToolTip="Inserir imagem" Padding="8,4">
+                    <TextBlock Text="🖼 Imagem"/>
+                </Button>
                 <!-- Task 3 (Plano 5): zoom + ajuste de página migraram pra cá (2ª linha) na reorganização
                      anti-overflow — não são "ferramenta de anotação", mas a 1ª linha sozinha (arquivo/
                      desfazer-refazer/imprimir/assinar/miniaturas/páginas/juntar-dividir-lote/recentes)

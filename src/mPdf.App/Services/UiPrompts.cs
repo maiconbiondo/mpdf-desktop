@@ -34,7 +34,10 @@ namespace mPdf.App.Services;
 /// risco) + o prompt de achatar formulário (`IConfirmFlattenService`, Task 3 do Plano 3c — parâmetro
 /// opcional `confirmFlatten` de `DocumentViewModel`, mesma classe de risco) + o prompt de escala do
 /// organizador (`IConfirmOrganizerScaleService`, Task 1 do Plano 5 — parâmetro opcional
-/// `confirmOrganizerScale` de `DocumentViewModel`, mesma classe de risco) completam a lista.
+/// `confirmOrganizerScale` de `DocumentViewModel`, mesma classe de risco) + o diálogo "Exportar página
+/// como imagem" (`IExportImageDialogService`, Task 4 do Plano 7 — parâmetro opcional `exportImageDialog`
+/// de `DocumentViewModel`, mesma classe de risco, mesma FORMA de `IBatchSignDialogService`: hospeda um VM
+/// já construído) completam a lista.
 /// `StampGallery`/`AppConfig`/`IPdfEditor`/`RecentFilesStore` NÃO entram aqui: nenhum mostra UI (só tocam
 /// disco/lógica), documentado como isenção deliberada em `UiPromptsCoverageTests`.
 /// </summary>
@@ -51,7 +54,7 @@ public static class UiPrompts
     /// sem prefixo (usado em vários contextos: edição bloqueada, anotação inválida, etc.).</summary>
     public static Action<string> DocumentNotifyError { get; set; } = ProductionDocumentNotifyError;
 
-    /// <summary>Diálogo "Abrir"/"Salvar como"/"Adicionar carimbo" (Win32 nativo via
+    /// <summary>Diálogo "Abrir"/"Salvar como"/"Escolher imagem" (Win32 nativo via
     /// <see cref="FileDialogService"/>).</summary>
     public static Func<IFileDialogService> CreateFileDialog { get; set; } = () => new FileDialogService();
 
@@ -94,6 +97,11 @@ public static class UiPrompts
     /// `confirmOrganizerScale` de `DocumentViewModel`.</summary>
     public static Func<IConfirmOrganizerScaleService> CreateConfirmOrganizerScale { get; set; } =
         () => new MessageBoxConfirmOrganizerScaleService();
+
+    /// <summary>Janela "Exportar página como imagem" (Task 4, Plano 7 —
+    /// <see cref="ExportImageDialogService"/>) — default do parâmetro `exportImageDialog` de
+    /// `DocumentViewModel`.</summary>
+    public static Func<IExportImageDialogService> CreateExportImageDialog { get; set; } = () => new ExportImageDialogService();
 
     // ---- Implementações de PRODUÇÃO (texto/ícone preservados byte-a-byte dos VMs originais) ---------
 

@@ -427,6 +427,117 @@ public interface IPdfEditor
     /// AcroForm -> no-op (mesmo espírito de `StripSignatures`), nunca lança. Documento XFA (`HasXfa`
     /// verdadeiro) -> `PdfEditingException` (ver bloco XFA acima) — chame `HasXfa` antes.
     byte[] FlattenForm(byte[] pdf);
+
+    // --- Task 1 (Plano 7): motor ImageToPdf ------------------------------------------------------
+    //
+    // ARQUITETURA (decisão de vínculo, brief do Plano 7): imagens convertem pra PDF NA FRONTEIRA —
+    // este método é a ÚNICA costura de conversão do app; tudo rio abaixo (visualizador/sessão/gates)
+    // só enxerga PDFs depois disso. iText confinado aqui, mesma fronteira AGPL de sempre (AgplGuardTests).
+    //
+    // HIPÓTESE + RECONCILIAÇÃO EMPÍRICA (probe project isolado — mesmo método das Tasks 8/9 do Plano
+    // 3a — ver task-1-report.md, Plano 7, para o trilho completo):
+    //   - EXIF Orientation: `ImageDataFactory.Create` NÃO honra o tag Orientation — achado empírico:
+    //     uma fixture com Orientation=6 (pixels pré-rotacionados 90° CCW) reportou W=150/H=200 (os
+    //     pixels CRUS armazenados), NUNCA W=200/H=150 (que seria "já corrigido"). `ImageToPdf` lê o
+    //     tag Orientation com um parser compacto de APP1/TIFF (sem pacote novo — só bytes crus) e
+    //     aplica a correção via MATRIZ DE TRANSFORMAÇÃO no desenho da imagem (`PdfCanvas.ConcatMatrix`
+    //     — ver `PdfEditor.ComputeRotationMatrix`), NUNCA via `PdfPage.SetRotation`. REVISÃO PRÉ-MERGE
+    //     (I3, "o /Rotate collision"): a 1ª versão usava `SetRotation`, que fazia CADA foto convertida
+    //     com EXIF != 1 nascer como "página girada" — e o gate de rotação do Plano 3b (ver
+    //     `GetPageRotations` abaixo: "interação de anotação fica DESLIGADA em página girada") passava a
+    //     bloquear anotação/assinatura em qualquer foto de celular convertida, quebrando o fluxo real
+    //     "foto do WhatsApp -> assinar". Fix por construção: a página nasce DIRETO no tamanho CORRIGIDO
+    //     (upright) com `/Rotate` SEMPRE 0 — `GetPageRotations(ImageToPdf(...))[0] == 0` é invariante
+    //     assertado por teste, MESMO com EXIF Orientation=6. Confirmado empiricamente (render via
+    //     PDFium, motor independente do iText que escreveu) que a matriz produz cores de canto
+    //     IDÊNTICAS ao render da MESMA foto sem EXIF nenhum — a correção visual continua funcionando,
+    //     só o MECANISMO mudou.
+    //   - DPI: `ImageData.GetDpiX()/GetDpiY()` devolvem 0 quando o arquivo não tem segmento de
+    //     densidade (JFIF APP0 pro JPEG) — confirmado removendo o APP0 de um JPEG real. Fallback pra
+    //     96 quando <= 0 (ausente ou explicitamente zero).
+    //   - PNG com canal alpha: `ImageDataFactory.Create` + `PdfCanvas.AddImageFittedIntoRectangle`
+    //     gera `/SMask` automaticamente no XObject de imagem resultante (confirmado inspecionando o
+    //     dicionário cru) — PDFium compõe o SMask corretamente: região TOTALMENTE transparente
+    //     (alpha=0, mesmo sobre RGB preto de propósito) renderiza BRANCA (fundo da página), nunca preta.
+    //   - JPEG CMYK: não construível sinteticamente sem pacote novo (o encoder JPEG do GDI+/System.
+    //     Drawing só escreve YCbCr/RGB). Reflexão sobre itext.io.dll 9.7.0 mostra que `JpegImageData`
+    //     TEM campos internos de suporte a CMYK (`colorEncodingComponentsNumber`, `colorTransform`,
+    //     `inverted`, `decode`) — sugere que o caminho de EMBUTIR provavelmente funciona — mas a
+    //     RENDERIZAÇÃO via PDFium/Docnet de um `/DeviceCMYK`+`/Decode` embutido num JPEG é INTESTÁVEL
+    //     sem essa fixture real. Decisão FAIL-CLOSED (brief): `ImageToPdf` detecta JPEG CMYK por
+    //     varredura CRUA do marcador SOF (nº de componentes de cor == 4), independente do iText, e
+    //     RECUSA tipado — nunca arrisca produzir um PDF que renderize errado silenciosamente.
+    //
+    /// Converte 1 imagem (JPG ou PNG) num PDF de 1 página do TAMANHO DA IMAGEM
+    /// (pt = px × 72 / DPI; DPI ausente/zero no metadado → fallback 96, com um PISO mínimo de tamanho
+    /// de página — ver `PdfEditor` — pra imagens degeneradas tipo 1x1px). Foto JPEG com EXIF
+    /// Orientation != 1 é corrigida via MATRIZ DE TRANSFORMAÇÃO no desenho da imagem (ver bloco acima)
+    /// — abre UPRIGHT, e a página resultante NUNCA gira (`/Rotate` sempre 0 — `GetPageRotations` do
+    /// resultado é sempre `[0]`, mesmo para fotos com EXIF Orientation != 1: o gate de rotação do
+    /// Plano 3b nunca bloqueia anotação/assinatura numa foto convertida). PNG com canal alpha preserva
+    /// transparência (SMask). `bytes` que não é JPEG/PNG por magic bytes, corrompido (magic bytes ok
+    /// mas iText não decodifica), JPEG CMYK, ou imagem além do teto de pixels suportado (ver
+    /// `PdfEditor.MaxImagePixels` — decidido por varredura de HEADER, ANTES de decodificar, pra nunca
+    /// pagar o custo do decode numa imagem que vai ser recusada) → `PdfEditingException` pt-BR
+    /// nomeando o motivo — a mensagem de "não é JPG/PNG válido" sempre NOMEIA os formatos suportados.
+    byte[] ImageToPdf(byte[] image);
+
+    /// Sniff por magic bytes (JPEG: `FF D8`; PNG: `89 50 4E 47`) — SEM decodificar a imagem, sem
+    /// tocar iText — usado pela camada de App (Tasks 2-4 do Plano 7) pra filtrar/validar seleção de
+    /// arquivo sem enxergar iText (mesmo espírito de `HasXfa`: detector de PRESENÇA da assinatura de
+    /// formato, não de validade do conteúdo — um JPEG corrompido ainda começa com `FF D8` e volta
+    /// `true` aqui; só `ImageToPdf` decodifica de verdade e pode recusar por corrupção). `false` pra
+    /// bytes nulos/vazios/curtos demais ou qualquer assinatura que não seja JPEG/PNG.
+    bool IsSupportedImage(byte[]? bytes);
+
+    // --- Task 3 (Plano 7): imagem-como-anotação ("🖼 Imagem" — click-to-place sobre a página) --------
+    //
+    // ACHADO (brief desta task): o caminho AddAnnotation/AnnotationKind.ImageStamp (Task 9, Plano 3a —
+    // consumido por DocumentViewModel.PlaceStampAtAsync, o MESMO mecanismo que "🖼 Imagem" reusa) foi
+    // implementado ANTES do teto de pixels e da correção de EXIF existirem (Task 1, Plano 7,
+    // `ImageToPdf`) — nunca ganhou nenhum dos dois retroativamente. Os 2 métodos abaixo expõem, pro
+    // App decidir ANTES do modo de colocação, exatamente a MESMA lógica que `ImageToPdf` já usa
+    // internamente — sem duplicar os parsers (JPEG SOF/PNG IHDR resilientes a overflow; TIFF/IFD0 de
+    // EXIF) numa 2ª cópia do lado do App, que divergiria silenciosamente na 1ª correção futura de
+    // qualquer um dos dois.
+
+    /// `true` quando `bytes` está DENTRO do mesmo teto de pixels que `ImageToPdf` aplica
+    /// (`PdfEditor.MaxImagePixels`, 50MP) — decidido por VARREDURA DE HEADER (JPEG: marcador SOF; PNG:
+    /// IHDR), sem decodificar a imagem, mesma técnica/mesmos parsers do teto de `ImageToPdf` (nunca
+    /// reimplementados aqui — reusados). Usado pela camada de App (Task 3, Plano 7 — "🖼 Imagem") pra
+    /// recusar uma imagem grande demais ANTES do modo de colocação, sem pagar o custo de decodificar
+    /// (WPF, do lado do App) uma imagem que vai ser recusada de qualquer forma. FAIL-OPEN: bytes nulos/
+    /// vazios/com header ilegível ou truncado (não dá pra ler dimensões com confiança) -> `true` — este
+    /// método só existe pra pegar "grande demais SABIDO"; um formato desconhecido ou corrompido é
+    /// responsabilidade de `IsSupportedImage`/do decode real, não deste teto.
+    bool IsWithinImagePixelLimit(byte[] bytes);
+
+    /// Rotação EXIF (tag Orientation, 0x0112) de um JPEG, em graus HORÁRIOS normalizados (0/90/180/270)
+    /// — mesmo parser puro (sem iText, sem decodificar pixels) que `ImageToPdf` já usa internamente pra
+    /// corrigir fotos de celular via matriz de transformação (nunca reimplementado aqui). Exposto pro
+    /// App (Task 3, Plano 7 — "🖼 Imagem") pré-normalizar os PIXELS de uma foto ANTES de embutir como
+    /// anotação: `AddAnnotation`/`AnnotationKind.ImageStamp` nunca aplicou nenhuma correção de EXIF
+    /// (diferente de `ImageToPdf`) — a correção de pixels em si é 100% App-side (WPF, que não pode
+    /// entrar em `mPdf.Editing` — ver `AgplGuardTests`/`mPdf.Editing.csproj`); este método só expõe a
+    /// LEITURA do ângulo. PNG (sem EXIF), JPEG com Orientation 1/ausente, ou `bytes` nulo/curto/
+    /// malformado demais pra ler com confiança -> `0` (nunca lança — mesma defesa em profundidade do
+    /// parser interno). 2/4/5/7 (espelhamento) -> `0`, mesmo escopo v1 de `ImageToPdf`.
+    int ReadJpegExifOrientation(byte[] image);
+
+    /// FIX (revisão pós-merge da Task 3, Plano 7 — "🖼 Imagem"): `true` quando `bytes` é um JPEG com 4
+    /// componentes de cor no marcador SOF (CMYK/YCCK) — mesmo detector que `ImageToPdf` já aplica
+    /// inline (varredura de SOF, decisão fail-closed do Task 1: render CMYK embutido via PDFium é
+    /// intestável sem fixture real), agora exposto pro App recusar ANTES do modo de colocação no
+    /// caminho `AddAnnotation`/`AnnotationKind.ImageStamp` — esse caminho (Task 9, Plano 3a, reusado
+    /// por `DocumentViewModel.ToggleStampTool`/`ToggleImageTool`) nunca teve recusa de CMYK nenhuma
+    /// (implementado ANTES do detector existir, nunca retrofitado — mesma lacuna histórica do teto de
+    /// pixels, ver `IsWithinImagePixelLimit`). Varredura de HEADER pura (mesmo parser
+    /// `TryReadJpegSofInfo`, nunca reimplementado aqui), sem decodificar nada. `bytes` que não é JPEG
+    /// por magic bytes, nulo/curto demais, ou com SOF ilegível/truncado -> `false` (sem opinião — nunca
+    /// "detecta" CMYK sem confiança nenhuma sobre o header). ACEITO (revisão): a GALERIA de carimbos
+    /// (`ToggleStampTool`, Task 9/Plano 3a) continua sem este gate — só `ToggleImageTool` (Task 3,
+    /// Plano 7) o consulta; a mesma correção pra galeria fica ledgerada, não implementada aqui.
+    bool IsCmykJpeg(byte[] bytes);
 }
 
 public static class PdfEditorFactory

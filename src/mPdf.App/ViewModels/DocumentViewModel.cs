@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -64,6 +65,11 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// Largura MÁXIMA (pontos) de um carimbo de imagem recém-colocado (Task 9, Plano 3a, brief: "natural
     /// image size scaled to max 150pt width, keep aspect"). Ver `NaturalStampSize`.
     private const double MaxStampWidthPt = 150.0;
+    /// Largura MÁXIMA (pontos) de uma imagem colocada via "🖼 Imagem" (Task 3, Plano 7, brief: "~200pt
+    /// wide, height by aspect") — MAIOR que `MaxStampWidthPt` acima de propósito (decisão do brief:
+    /// tamanho default distinto do carimbo de galeria, Task 9/Plano 3a, que fica INALTERADO). Ver
+    /// `_pendingStampMaxWidthPt`/`ToggleImageTool`/`NaturalStampSize`.
+    private const double MaxPickedImageWidthPt = 200.0;
     private readonly RenderScheduler _scheduler;
 
     // ---- Task 6 (Plano 3a): Marca-texto/Sublinhado/Riscado -----------------------------------------
@@ -108,6 +114,9 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     private readonly ISignDialogService _signDialog;
     private readonly ISigningEngine _signingEngine;
     private readonly Func<IReadOnlyList<SigningCertificateInfo>> _listSigningCertificates;
+    // Task 4 (Plano 7): "Exportar página como imagem" -- mesmo padrão de injeção via UiPrompts dos
+    // diálogos acima (produção abre Views.ExportImageDialog, testes injetam um fake).
+    private readonly IExportImageDialogService _exportImageDialog;
 
     private const double DefaultStampWidthPt = 180.0, DefaultStampHeightPt = 60.0;
 
@@ -139,11 +148,19 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// Ferramenta de colocação ativa na toolbar — ver doc XML de `AnnotationTool`.
     [ObservableProperty] private AnnotationTool activeTool = AnnotationTool.None;
 
-    /// Bytes do carimbo escolhido na galeria (Task 9, Plano 3a) — só relevante enquanto `ActiveTool ==
-    /// AnnotationTool.ImageStamp` (ver `ToggleStampTool`/`PlaceStampAtAsync`). Trocar de ferramenta para
-    /// outra deixa este campo obsoleto sem limpar (resíduo aceito, inofensivo: `PlaceStampAtAsync` só o
-    /// lê quando `ActiveTool` ainda é `ImageStamp`).
+    /// Bytes do carimbo escolhido na galeria (Task 9, Plano 3a) OU da imagem escolhida via "🖼 Imagem"
+    /// (Task 3, Plano 7, ver `ToggleImageTool`) — só relevante enquanto `ActiveTool ==
+    /// AnnotationTool.ImageStamp` (ver `ToggleStampTool`/`ToggleImageTool`/`PlaceStampAtAsync`). Trocar
+    /// de ferramenta para outra deixa este campo obsoleto sem limpar (resíduo aceito, inofensivo:
+    /// `PlaceStampAtAsync` só o lê quando `ActiveTool` ainda é `ImageStamp`).
     private byte[]? _pendingStampBytes;
+
+    /// Largura MÁXIMA a aplicar em `NaturalStampSize` no PRÓXIMO `PlaceStampAtAsync` — `MaxStampWidthPt`
+    /// (galeria) ou `MaxPickedImageWidthPt` ("🖼 Imagem"), conforme QUEM ativou `_pendingStampBytes`
+    /// por último (`ToggleStampTool`/`ToggleImageTool`, cada um seta este campo explicitamente ao
+    /// ativar — Task 3, Plano 7). Mesmo resíduo aceito de `_pendingStampBytes` acima: só importa
+    /// enquanto `ActiveTool == ImageStamp`, nunca precisa de reset em desativação.
+    private double _pendingStampMaxWidthPt = MaxStampWidthPt;
 
     /// Anotação atualmente selecionada (clique, sem ferramenta ativa, num retângulo de
     /// `AnnotationsByPage` — ver `HitTestAnnotation`/`SelectAnnotationAt`). `null` = nada selecionado.
@@ -297,10 +314,22 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     internal PdfDocumentRenderer ThumbnailRenderer => _thumbnailRenderer;
 
     public DocumentSession Session { get; }
-    // "•" quando suja (Task 3, Plano 3a) — um único binding ({Binding Title}) já cobre tab header E,
-    // por encadeamento de PropertyPath do WPF (SelectedDocument.Title), o título da janela também, sem
-    // precisar duplicar a lógica em MainViewModel. OnSessionDirtyChanged (abaixo) mantém isto vivo.
-    public string Title => IsDirty ? $"{Session.FileName} •" : Session.FileName;
+    // "•" quando suja (Task 3, Plano 3a) + "(não salvo)" quando NeedsSaveAs (Task 2, Plano 7, rider da
+    // revisão — pista visível de que este documento está temp-backed) — um único binding
+    // ({Binding Title}) já cobre tab header E, por encadeamento de PropertyPath do WPF
+    // (SelectedDocument.Title), o título da janela também, sem precisar duplicar a lógica em
+    // MainViewModel. OnSessionDirtyChanged/OnSessionFilePathChanged (abaixo) + OnNeedsSaveAsChanged
+    // (junto da declaração de NeedsSaveAs) mantêm isto vivo.
+    public string Title
+    {
+        get
+        {
+            string title = Session.FileName;
+            if (NeedsSaveAs) title += " (não salvo)";
+            if (IsDirty) title += " •";
+            return title;
+        }
+    }
     /// Espelha `Session.IsDirty` como propriedade observável do VM (Task 3, Plano 3a) — permite ao
     /// MainViewModel assinar `PropertyChanged` (via INotifyPropertyChanged já herdado de
     /// ObservableObject) para reavaliar `SaveCommand.CanExecute` sem precisar conhecer `DocumentSession`.
@@ -333,6 +362,26 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// `false` até a checagem terminar — nunca bloqueia a UI achando que está "assinado" por engano
     /// enquanto o resultado real ainda está em voo.
     [ObservableProperty] private bool isSignedDocument;
+
+    /// Task 2 (Plano 7): `true` quando este documento foi aberto a partir de uma imagem CONVERTIDA
+    /// (JPG/PNG -> PDF pela conversão na fronteira, `MainViewModel.OpenImageAsNewDocument`) — o arquivo
+    /// por trás de `Session.FilePath` é um PDF TEMPORÁRIO em `%TEMP%\mPDF\open-<guid>\`, um caminho que
+    /// o usuário NUNCA escolheu. Setter PÚBLICO de propósito (mesmo padrão de `IsSignedDocument` acima):
+    /// quem converteu a imagem é quem sabe disso; este VM só guarda o resultado, nunca referencia
+    /// `mPdf.Editing`/conversão de imagem. Consumido por `MainViewModel.Save`/`TryResolveDirtyDocument`
+    /// E por `Sign` (abaixo, fix CRÍTICO pós-revisão) pra desviar "Salvar"/"Assinar" pra "Salvar como" —
+    /// nunca grava (nem uma edição comum, nem — o caso mais grave — uma ASSINATURA) silenciosamente de
+    /// volta no temp (ver doc XML de `MainViewModel.Save`/`Sign` abaixo).
+    /// `[ObservableProperty]` (fix pós-revisão, rider "visible cue" — deixou de ser uma propriedade
+    /// simples): `Title` acima COMPÕE este valor pra mostrar "(não salvo)" na aba — sem a notificação
+    /// gerada automaticamente por `[ObservableProperty]`, a aba recém-aberta (`MainViewModel.
+    /// OpenImageAsNewDocument` seta isto DEPOIS que a aba já está visível/vinculada) ficaria com o
+    /// título ANTIGO até algum evento NÃO RELACIONADO (IsDirty/FilePath) disparar um refresh por
+    /// coincidência. `false` (default) preserva o comportamento de TODO documento aberto de um caminho
+    /// real de disco — a esmagadora maioria.
+    [ObservableProperty] private bool needsSaveAs;
+
+    partial void OnNeedsSaveAsChanged(bool value) => OnPropertyChanged(nameof(Title));
 
     /// Documento assinado -> edição bloqueada (spec ICP-Brasil §5.2 — mesma precondição que
     /// `IPdfEditor.AddAnnotation`/`RemoveAnnotation` já aplicam como defesa em profundidade dentro de
@@ -540,7 +589,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         ISignDialogService? signDialog = null,
         ISigningEngine? signingEngine = null,
         Func<IReadOnlyList<SigningCertificateInfo>>? listSigningCertificates = null,
-        IConfirmOrganizerScaleService? confirmOrganizerScale = null)
+        IConfirmOrganizerScaleService? confirmOrganizerScale = null,
+        IExportImageDialogService? exportImageDialog = null)
     {
         Session = session;
         _editor = editor ?? PdfEditorFactory.Create();
@@ -562,6 +612,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         _signDialog = signDialog ?? UiPrompts.CreateSignDialog();
         _signingEngine = signingEngine ?? SigningEngineFactory.Create();
         _listSigningCertificates = listSigningCertificates ?? CertificateCatalog.ListSigningCertificates;
+        // Task 4 (Plano 7): mesmo padrão dos diálogos acima (seam UiPrompts).
+        _exportImageDialog = exportImageDialog ?? UiPrompts.CreateExportImageDialog();
         // SEAM (Task 3, Plano 3a — "o lugar mais provável de quebrar em silêncio" do Apply): a forma
         // ANTIGA, `new RenderScheduler(session.Renderer.RenderPage)`, é uma conversão de GRUPO DE
         // MÉTODO — ela avalia `session.Renderer` UMA VEZ, na hora desta linha, e produz um delegate
@@ -1239,6 +1291,11 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         }
 
         _pendingStampBytes = imageBytes;
+        // Task 3 (Plano 7): reafirma o teto de largura DESTA origem (galeria) explicitamente — protege
+        // contra um `ToggleImageTool` anterior ter deixado `_pendingStampMaxWidthPt` em 200pt (resíduo
+        // aceito documentado no campo, mas cada ativação PRECISA setar o valor CORRETO pra sua própria
+        // origem, nunca confiar no que sobrou de uma ativação alheia).
+        _pendingStampMaxWidthPt = MaxStampWidthPt;
         ActiveTool = AnnotationTool.ImageStamp;
     }
 
@@ -1247,14 +1304,17 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// tamanho a COLOCAR na página, em pontos: DECISÃO v1 (brief: "natural image size scaled to max
     /// 150pt width, keep aspect") — sem metadado de DPI confiável num PNG/JPG qualquer, este módulo
     /// interpreta 1px = 1pt (tamanho "natural" = dimensão em pixels tomada diretamente como pontos),
-    /// depois clampa a LARGURA a `MaxStampWidthPt`, preservando a proporção — imagens menores que
-    /// `MaxStampWidthPt` de largura ficam no tamanho natural (nunca AUMENTADAS); maiores encolhem.
-    private static (double widthPt, double heightPt) NaturalStampSize(byte[] imageBytes)
+    /// depois clampa a LARGURA a `maxWidthPt`, preservando a proporção — imagens menores que
+    /// `maxWidthPt` de largura ficam no tamanho natural (nunca AUMENTADAS); maiores encolhem.
+    /// `maxWidthPt` (Task 3, Plano 7 — antes uma constante fixa `MaxStampWidthPt`): parametrizado pra
+    /// servir os 2 tetos distintos (galeria vs "🖼 Imagem") sem duplicar este método — ver
+    /// `_pendingStampMaxWidthPt`/chamador em `PlaceStampAtAsync`.
+    private static (double widthPt, double heightPt) NaturalStampSize(byte[] imageBytes, double maxWidthPt)
     {
         using var stream = new MemoryStream(imageBytes);
         var frame = BitmapDecoder.Create(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad).Frames[0];
         double wPx = frame.PixelWidth, hPx = frame.PixelHeight;
-        double widthPt = Math.Min(wPx, MaxStampWidthPt);
+        double widthPt = Math.Min(wPx, maxWidthPt);
         double heightPt = wPx > 0 ? widthPt * hPx / wPx : widthPt;
         return (widthPt, heightPt);
     }
@@ -1283,7 +1343,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
 
             double widthPt, heightPt;
-            try { (widthPt, heightPt) = NaturalStampSize(bytes); }
+            try { (widthPt, heightPt) = NaturalStampSize(bytes, _pendingStampMaxWidthPt); }
             catch (Exception ex) when (ex is NotSupportedException or FileFormatException or ArgumentException)
             {
                 _notifyError("Não foi possível ler esta imagem de carimbo.");
@@ -1312,6 +1372,140 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             _pendingStampBytes = null;
         }
         finally { Session.EndEdit(); }
+    }
+
+    // ==== Task 3 (Plano 7): "🖼 Imagem" — click-to-place a partir de OpenFileDialog (não-galeria) ======
+    //
+    // EXEMPLAR EXATO (brief): o mecanismo de carimbo de imagem acima (Task 9, Plano 3a) —
+    // ToggleStampTool/PlaceStampAtAsync, REUSADOS sem alteração de contrato. A ÚNICA diferença real é
+    // A ORIGEM dos bytes: em vez de vir já pronta da galeria (`StampGallery`/`MainViewModel.
+    // SelectStamp`), este método ABRE o diálogo, valida (magic-bytes + teto de pixels, ANTES do modo de
+    // colocação — a galeria não valida nada na ativação) e normaliza EXIF (WPF, App-side — o motor
+    // nunca honrou EXIF neste caminho, ao contrário de `IPdfEditor.ImageToPdf`/Task 1), depois ativa o
+    // MESMO `ActiveTool.ImageStamp`/`_pendingStampBytes` que `PlaceStampAtAsync` já sabe comitar.
+
+    /// Corrige EXIF ANTES do modo de colocação — decisão registrada no brief desta task: o caminho
+    /// AddAnnotation/AnnotationKind.ImageStamp (`PlaceStampAtAsync` acima) NUNCA aplicou a matriz de
+    /// correção que `IPdfEditor.ImageToPdf` (Task 1, Plano 7) já tem pro OUTRO caminho de imagem (Abrir/
+    /// Juntar/Inserir como página nova) — colocar uma foto de celular como "🖼 Imagem" faria a foto
+    /// entrar de lado sem este fix (a MESMA armadilha, um caminho diferente). Opções cogitadas no brief:
+    /// (a) normalizar pixels App-side via WPF, (b) estender o motor, (c) recusar fotos com EXIF
+    /// rotacionado. Escolhida (a) — mais barata E correta: o motor só precisa expor a LEITURA pura do
+    /// ângulo (`IPdfEditor.ReadJpegExifOrientation`, reusa o parser TIFF/IFD0 já testado de `ImageToPdf`
+    /// SEM reimplementá-lo), a rotação de PIXELS em si é 100% WPF (`TransformedBitmap`+`RotateTransform`,
+    /// mesmo sentido horário documentado no motor), nunca cruza pra dentro de iText/AGPL. PNG (sem EXIF)
+    /// ou JPEG com Orientation 1/ausente -> `ReadJpegExifOrientation` devolve 0, devolve os bytes
+    /// ORIGINAIS sem tocar (caminho quente, sem custo de reencode pra maioria dos arquivos — só fotos de
+    /// celular fora de pé pagam o decode+reencode). Decodificação inválida propaga como uma das 3
+    /// exceções que `ToggleImageTool` (único chamador) já trata, mesmo padrão de `NaturalStampSize`.
+    private byte[] NormalizeExifRotation(byte[] bytes)
+    {
+        int rotation = _editor.ReadJpegExifOrientation(bytes);
+        if (rotation == 0) return bytes;
+
+        using var input = new MemoryStream(bytes);
+        var frame = BitmapDecoder.Create(input, BitmapCreateOptions.None, BitmapCacheOption.OnLoad).Frames[0];
+        var rotated = new TransformedBitmap(frame, new RotateTransform(rotation));
+
+        using var output = new MemoryStream();
+        var encoder = new JpegBitmapEncoder { QualityLevel = 90 };
+        encoder.Frames.Add(BitmapFrame.Create(rotated));
+        encoder.Save(output);
+        return output.ToArray();
+    }
+
+    /// "🖼 Imagem" (toolbar, banda 2) — abre o diálogo pt-BR injetável (`_dialogs.PickImageToImport`,
+    /// mesmo diálogo do "➕ Adicionar carimbo…" da galeria — Task 9, Plano 3a; a imagem escolhida aqui
+    /// NUNCA é copiada pra dentro da `StampGallery`, é um carimbo AVULSO). "clicar de novo desliga"
+    /// (mesma semântica dos demais `Toggle*Tool`) cobre QUALQUER `ImageStamp` já ativo, seja a origem a
+    /// galeria ou este diálogo — um único botão "parar de colocar imagem" é mais previsível do que
+    /// rastrear a origem só pra decidir se desliga. Cancelado (diálogo devolve `null`) -> NADA muda
+    /// (brief: "cancel pick -> no mode"). Validação ANTES do modo de colocação (brief): magic-bytes
+    /// (`IPdfEditor.IsSupportedImage`, mesma mensagem nomeando os formatos suportados de
+    /// `ImageImport.ConvertToPdf`) primeiro (mais barato — sniff puro, sem decodificar nada), DEPOIS o
+    /// teto de pixels (`IPdfEditor.IsWithinImagePixelLimit`, mesmo teto de 50MP de `ImageToPdf`/Task 1,
+    /// aplicado aqui porque o caminho AddAnnotation/ImageStamp NUNCA teve teto nenhum — implementado
+    /// ANTES do teto existir, nunca retrofitado), DEPOIS CMYK (`IPdfEditor.IsCmykJpeg`, FIX pós-revisão
+    /// — mesmo detector que `ImageToPdf` já aplica, mesma lacuna histórica do teto de pixels: o caminho
+    /// AddAnnotation/ImageStamp nunca recusou CMYK; render CMYK embutido via PDFium é intestável, ver
+    /// Contract.cs — ACEITO: a galeria de carimbos [`ToggleStampTool`, Task 9/Plano 3a] continua sem
+    /// este gate, ledgerado separadamente no relatório desta task, não corrigido aqui). EXIF normalizado
+    /// por ÚLTIMO (`NormalizeExifRotation` acima) — só paga o custo de decode+reencode DEPOIS que os 3
+    /// checks mais baratos (header-only, sem decodificar pixel nenhum) já aprovaram.
+    /// Gated por `CanUseAnnotationTool` (mesmo `CanEdit` de todo `Toggle*ToolCommand`).
+    [RelayCommand(CanExecute = nameof(CanUseAnnotationTool))]
+    private void ToggleImageTool()
+    {
+        if (ActiveTool == AnnotationTool.ImageStamp)
+        {
+            ActiveTool = AnnotationTool.None;
+            _pendingStampBytes = null;
+            return;
+        }
+
+        if (_dialogs.PickImageToImport() is not { } path) return; // cancelado — brief: "no mode"
+
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(path); }
+        catch (IOException ex) { _notifyError(ex.Message); return; }
+
+        if (!_editor.IsSupportedImage(bytes))
+        {
+            _notifyError($"'{Path.GetFileName(path)}' não é uma imagem JPG/PNG válida — formatos suportados: JPG, PNG.");
+            return;
+        }
+
+        if (!_editor.IsWithinImagePixelLimit(bytes))
+        {
+            _notifyError("Imagem excede o limite de 50MP suportado. Use uma imagem menor.");
+            return;
+        }
+
+        if (_editor.IsCmykJpeg(bytes))
+        {
+            _notifyError("JPEG CMYK não é suportado. Converta para RGB.");
+            return;
+        }
+
+        try { bytes = NormalizeExifRotation(bytes); }
+        catch (Exception ex) when (ex is NotSupportedException or FileFormatException or ArgumentException)
+        {
+            _notifyError("Não foi possível ler esta imagem de carimbo.");
+            return;
+        }
+
+        _pendingStampBytes = bytes;
+        _pendingStampMaxWidthPt = MaxPickedImageWidthPt;
+        ActiveTool = AnnotationTool.ImageStamp;
+    }
+
+    // ---- Task 4 (Plano 7): "📤 Exportar" (página como imagem, PNG/JPG) --------------------------------
+    //
+    // LEITURA PURA (mPdf.Rendering nunca muta nada) -- SEM `CanExecute`/gate nenhum: ao contrário de todo
+    // `Toggle*ToolCommand`/`ApplyMarkupCommand` acima (gated por `CanEdit`/`CanUseAnnotationTool`), este
+    // comando funciona em QUALQUER documento aberto, INCLUSIVE assinado -- mesma política uniforme de
+    // leitura já registrada em `mPdf.Editing.Contract` para `ExtractPages`/`MergeDocuments`/
+    // `SplitByRanges`/`GetPageRotations`/`ReadOutline`/`ReadFormFields` (nenhuma dessas MUTA o PDF
+    // assinado, só o LEEM para produzir algo novo -- ver doc XML de `ExportImageViewModel`). NÃO arma o
+    // funil (`Session.TryBeginEdit`/`ApplyEdit`) -- nenhuma mutação de `Session` acontece.
+    //
+    // `Session.Snapshot` é capturado UMA VEZ aqui (antes do diálogo abrir) -- coerência de instantâneo:
+    // uma edição concorrente que aterrisse em `Session` DURANTE a exportação (diálogo NÃO-modal? não --
+    // `ShowExportImageDialog` é modal, mas o brief pede o mesmo contrato de `PdfPrintPaginator` mesmo
+    // assim, pela MESMA razão: o snapshot vira a fonte de verdade do que será exportado, documentado, não
+    // implícito) exporta a versão CAPTURADA, nunca uma versão mais nova. `Session.Renderer.PageCount`
+    // (cache já existente, ver `MainViewModel.Split`) só pra saber QUANTAS páginas existem -- o RENDER em
+    // si usa um `PdfDocumentRenderer` DEDICADO sobre `Session.Snapshot`, criado dentro do próprio VM (
+    // nunca o `Session.Renderer` da aba ativa, que é o cache de escala ÚNICA do visualizador).
+    [RelayCommand]
+    private void ExportImage()
+    {
+        var vm = new ExportImageViewModel(
+            Session.Snapshot,
+            Session.Renderer.PageCount,
+            currentPageIndex: CurrentPage - 1,
+            baseFileName: Path.GetFileNameWithoutExtension(Session.FileName));
+        _exportImageDialog.ShowExportImageDialog(vm);
     }
 
     // ==== Task 8 (Plano 3a): Desenho livre (Ink) + formas (Rectangle/Line/Arrow) =====================
@@ -2222,18 +2416,34 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// delas aparece na composição de `CanX` de comando nenhum deste VM, só `SignCommand`.
     partial void OnActiveToolChanged(AnnotationTool value) => SignCommand.NotifyCanExecuteChanged();
 
-    /// "Assinar" (Task 3, Plano 4): doc sujo -> confirma salvar ANTES (recusa aborta o fluxo inteiro,
-    /// SEM armar o funil — mesma ordem de `FlattenForm`: diálogo síncrono ANTES de `TryBeginEdit`) ->
-    /// diálogo de assinatura (certificado/motivo/local/DocMDP/carimbo) -> se o usuário escolheu carimbo
-    /// visível, entra em modo de COLOCAÇÃO na página (espelha `ToggleStampTool`/`PlaceStampAtAsync`) e
-    /// devolve — o commit de verdade só acontece em `PlaceSignatureStampAtAsync`, no CLIQUE; sem carimbo,
-    /// assina direto aqui mesmo. Assinar NUNCA passa por `ApplyEdit`/`_editor` (append mode, sempre
-    /// resolvido dentro de `mPdf.Signing`) — o funil (`Session.TryBeginEdit`) é armado só DEPOIS do
-    /// diálogo, imediatamente antes de `SignCoreAsync` (mesmo contrato "sincronamente antes do 1º await
-    /// de verdade" de todo outro comando mutador deste VM).
+    /// "Assinar" (Task 3, Plano 4): documento TEMP-BACKED (`NeedsSaveAs`, Task 2 Plano 7) -> relocaliza
+    /// PRIMEIRO (ver `TryRelocateBeforeSign` abaixo — fix CRÍTICO pós-revisão) -> doc sujo -> confirma
+    /// salvar ANTES (recusa aborta o fluxo inteiro, SEM armar o funil — mesma ordem de `FlattenForm`:
+    /// diálogo síncrono ANTES de `TryBeginEdit`) -> diálogo de assinatura (certificado/motivo/local/
+    /// DocMDP/carimbo) -> se o usuário escolheu carimbo visível, entra em modo de COLOCAÇÃO na página
+    /// (espelha `ToggleStampTool`/`PlaceStampAtAsync`) e devolve — o commit de verdade só acontece em
+    /// `PlaceSignatureStampAtAsync`, no CLIQUE; sem carimbo, assina direto aqui mesmo. Assinar NUNCA
+    /// passa por `ApplyEdit`/`_editor` (append mode, sempre resolvido dentro de `mPdf.Signing`) — o
+    /// funil (`Session.TryBeginEdit`) é armado só DEPOIS do diálogo, imediatamente antes de
+    /// `SignCoreAsync` (mesmo contrato "sincronamente antes do 1º await de verdade" de todo outro
+    /// comando mutador deste VM).
     [RelayCommand(CanExecute = nameof(CanSign))]
     private async Task Sign()
     {
+        // CRÍTICO (fix pós-revisão, achado end-to-end confirmado): um documento TEMP-BACKED (aberto de
+        // uma imagem convertida — `MainViewModel.OpenImageAsNewDocument`) abre LIMPO (`IsDirty=false`,
+        // o temp já bate com o snapshot) — o dirty-check/forced-save logo abaixo NUNCA dispararia pra
+        // ele, então SEM esta linha `SignCoreAsync`/`Session.CommitSigned` gravaria a assinatura de
+        // volta no MESMO arquivo em `%TEMP%\mPDF\open-<guid>\`, `MarkSaved` limparia `IsDirty` de novo
+        // (documento CONTINUA "limpo" do ponto de vista de Save/fechar aba), e a assinatura — um
+        // documento LEGAL, não um rascunho — desapareceria em silêncio na próxima limpeza do SO. Roda
+        // ANTES de QUALQUER outra coisa neste método (antes até do dirty-check/forced-save PRÉ-existente
+        // e do diálogo de assinatura) — mesma disciplina "diálogo síncrono ANTES de qualquer funil" que
+        // o resto do método já segue. Recusa (diálogo de "Salvar como" cancelado) aborta o fluxo INTEIRO
+        // aqui mesmo, SEM tocar `_confirmSaveBeforeSign`/o diálogo de assinatura/o motor — mesmo
+        // contrato de "recusa aborta sem armar o funil" que a linha seguinte já tinha pro dirty-check.
+        if (NeedsSaveAs && !TryRelocateBeforeSign()) return;
+
         bool didForcedSave = false;
         if (Session.IsDirty)
         {
@@ -2279,6 +2489,28 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (!Session.TryBeginEdit()) return; // outra edição em voo — mesmo funil de qualquer outro comando
         try { await SignCoreAsync(result, stamp: null, snapshotAtDialogOk, didForcedSave); }
         finally { Session.EndEdit(); }
+    }
+
+    /// Relocaliza um documento TEMP-BACKED (`NeedsSaveAs`) ANTES de assinar — ver doc XML de `Sign`
+    /// acima (fix CRÍTICO pós-revisão). MESMA FORMA de `MainViewModel.TrySaveAsSync` (diálogo síncrono
+    /// -> `Session.SaveAs` -> zera a flag), implementada AQUI (não delegada a `MainViewModel`) porque
+    /// `Sign` já vive neste VM e `_dialogs`/`Session` já são acessíveis — não precisa de uma 2ª
+    /// dependência cruzando VMs só pra este caminho. DIFERENÇA aceita (registrada no relatório): não
+    /// adiciona `path` a `RecentFilesStore` — esse serviço só existe em `MainViewModel` (compartilhado
+    /// entre abas), `DocumentViewModel` nunca teve acesso a ele; a lista de recentes é UX, não uma
+    /// garantia de correção (a garantia de correção É o documento nunca ficar preso no temp — essa
+    /// continua valendo sem recentes). Diálogo CANCELADO -> `false`, mesma semântica de "recusa aborta
+    /// sem notificar erro" que o dirty-check logo acima em `Sign` já usa (cancelar não é uma falha).
+    private bool TryRelocateBeforeSign()
+    {
+        if (_dialogs.PickPdfToSaveAs(Session.FilePath) is not { } path) return false;
+        try
+        {
+            Session.SaveAs(path);
+            NeedsSaveAs = false;
+            return true;
+        }
+        catch (Exception ex) { _notifyError(ex.Message); return false; }
     }
 
     /// Chamado pela View no CLIQUE da página quando `ActiveTool == AnnotationTool.SignatureStamp`

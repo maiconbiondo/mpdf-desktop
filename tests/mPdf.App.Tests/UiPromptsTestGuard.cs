@@ -47,6 +47,7 @@ internal static class UiPromptsTestGuard
         UiPrompts.CreateSignDialog = () => new ThrowingSignDialogService();
         UiPrompts.CreateBatchSignDialog = () => new ThrowingBatchSignDialogService();
         UiPrompts.CreateConfirmOrganizerScale = () => new ThrowingConfirmOrganizerScaleService();
+        UiPrompts.CreateExportImageDialog = () => new ThrowingExportImageDialogService();
     }
 
     /// <summary>Mensagem PADRONIZADA — nomeia o membro da seam alcançado E o tipo de fake a injetar no
@@ -120,4 +121,10 @@ internal sealed class ThrowingConfirmOrganizerScaleService : IConfirmOrganizerSc
 {
     public bool Confirm(string message) =>
         throw UiPromptsTestGuard.Guard(nameof(UiPrompts.CreateConfirmOrganizerScale), "um IConfirmOrganizerScaleService fake");
+}
+
+internal sealed class ThrowingExportImageDialogService : IExportImageDialogService
+{
+    public void ShowExportImageDialog(mPdf.App.ViewModels.ExportImageViewModel viewModel) =>
+        throw UiPromptsTestGuard.Guard(nameof(UiPrompts.CreateExportImageDialog), "um IExportImageDialogService fake");
 }

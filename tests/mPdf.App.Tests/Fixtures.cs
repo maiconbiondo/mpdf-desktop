@@ -31,6 +31,14 @@ public static class Fixtures
     public static byte[] Formulario() => File.ReadAllBytes(Path.Combine(Root, "fixture-formulario.pdf"));
     // AcroForm com /XFA dummy (Task 1, Plano 3c) — só pra HasXfa detectar a CHAVE (ver mPdf.Editing.Tests.Fixtures.Xfa()).
     public static byte[] Xfa() => File.ReadAllBytes(Path.Combine(Root, "fixture-xfa.pdf"));
+
+    // Foto/FotoExif90 (Task 3, Plano 7 — "🖼 Imagem", px integration): MESMOS arquivos de
+    // mPdf.Editing.Tests.Fixtures.Foto()/FotoExif90() (tests/fixtures/ é compartilhado entre projetos
+    // de teste) — cantos de cor conhecida (TL=vermelho, TR=verde/lime, BL=azul, BR=amarelo);
+    // FotoExif90 tem os MESMOS pixels pré-rotacionados 90° CCW + EXIF Orientation=6, usada pra provar
+    // que ToggleImageTool corrige a rotação ANTES de colocar (renderiza EM PÉ, mesmas cores de canto).
+    public static byte[] Foto() => File.ReadAllBytes(Path.Combine(Root, "fixture-foto.jpg"));
+    public static byte[] FotoExif90() => File.ReadAllBytes(Path.Combine(Root, "fixture-foto-exif90.jpg"));
     // XFA dummy + 1 campo /FT /Sig com /V presente (Important 2, revisão do Task 2, Plano 3c) — ver
     // mPdf.Editing.Tests.Fixtures.XfaAssinado(): prova que HasSignatures reconhece o doc como assinado
     // (banner de assinado) mesmo sendo XFA, sem lançar — CanEdit continua falso via o gate IsXfaForm.

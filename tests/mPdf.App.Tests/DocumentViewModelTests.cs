@@ -285,6 +285,72 @@ internal sealed class FakePdfEditor : IPdfEditor
         if (ThrowOnFlattenForm is { } ex) throw ex;
         return FlattenFormResult ?? Fixtures.ThirtyPages();
     }
+
+    // Task 2 (Plano 7): ImageToPdf/IsSupportedImage ganham implementação REAL no fake — mesmo padrão de
+    // Rotate/Delete/Move/Insert/Merge/Split acima (registra CADA chamada — não só a última: Juntar pode
+    // converter VÁRIAS imagens numa única execução, "conversão por linha de imagem, ordem preservada"
+    // precisa da lista inteira, não só do último item — devolve bytes REAIS configuráveis, default
+    // "bytes-marcador" Fixtures.A4() quando o teste não precisa de um resultado específico).
+    // `IsSupportedImageResult` default `true`: preserva o caso comum (o fake não faz sniff de verdade,
+    // então testes de VM que não se importam com o conteúdo do arquivo — só com "é tratado como
+    // imagem?" — não precisam configurar nada) — só os testes do detector em si (recusa por magic
+    // bytes) setam `false`.
+    public bool IsSupportedImageResult { get; set; } = true;
+    public int IsSupportedImageCallCount { get; private set; }
+    public byte[]? LastIsSupportedImageBytes { get; private set; }
+
+    public bool IsSupportedImage(byte[]? bytes)
+    {
+        IsSupportedImageCallCount++;
+        LastIsSupportedImageBytes = bytes;
+        return IsSupportedImageResult;
+    }
+
+    public List<byte[]> ImageToPdfInputs { get; } = new();
+    public int ImageToPdfCallCount => ImageToPdfInputs.Count;
+    public Exception? ThrowOnImageToPdf { get; set; }
+    public byte[]? ImageToPdfResult { get; set; }
+
+    public byte[] ImageToPdf(byte[] image)
+    {
+        ImageToPdfInputs.Add(image);
+        if (ThrowOnImageToPdf is { } ex) throw ex;
+        return ImageToPdfResult ?? Fixtures.A4();
+    }
+
+    // Task 3 (Plano 7): "🖼 Imagem" — ToggleImageTool consulta os 2 métodos abaixo ANTES do modo de
+    // colocação. Defaults preservam o comportamento de todo teste PRÉ-EXISTENTE que nunca configura
+    // nada aqui (mesmo espírito de IsSupportedImageResult acima): imagem "dentro do teto" e "sem
+    // rotação EXIF" são os casos mais comuns, só os testes do teto/EXIF em si configuram algo diferente.
+    public bool IsWithinImagePixelLimitResult { get; set; } = true;
+    public int IsWithinImagePixelLimitCallCount { get; private set; }
+
+    public bool IsWithinImagePixelLimit(byte[] bytes)
+    {
+        IsWithinImagePixelLimitCallCount++;
+        return IsWithinImagePixelLimitResult;
+    }
+
+    public int ReadJpegExifOrientationResult { get; set; }
+    public int ReadJpegExifOrientationCallCount { get; private set; }
+
+    public int ReadJpegExifOrientation(byte[] image)
+    {
+        ReadJpegExifOrientationCallCount++;
+        return ReadJpegExifOrientationResult;
+    }
+
+    // Task 3 (Plano 7), fix pós-revisão: ToggleImageTool consulta este método ANTES do modo de
+    // colocação. Default `false` preserva o comportamento de todo teste PRÉ-EXISTENTE (mesmo espírito
+    // de IsWithinImagePixelLimitResult acima) — só o teste da recusa CMYK em si configura `true`.
+    public bool IsCmykJpegResult { get; set; }
+    public int IsCmykJpegCallCount { get; private set; }
+
+    public bool IsCmykJpeg(byte[] bytes)
+    {
+        IsCmykJpegCallCount++;
+        return IsCmykJpegResult;
+    }
 }
 
 // Task 7 (Plano 3a): fake do prompt de texto de nota/caixa de texto — mesmo padrão de
@@ -336,6 +402,30 @@ internal sealed class FakeConfirmOrganizerScaleService(bool result) : IConfirmOr
         LastMessage = message;
         return result;
     }
+}
+
+// Task 3 (Plano 7): fake de IFileDialogService pra ToggleImageTool — só implementa PickImageToImport
+// (o único diálogo que este VM abre); os outros 3 lançam NotSupportedException (nunca deveriam ser
+// chamados por um teste desta ferramenta — mesmo espírito defensivo de FakePdfEditor.StripSignatures).
+// `imagePath`: caminho devolvido pelo diálogo, `null` = usuário cancelou (mesmo contrato de produção).
+internal sealed class FakePickImageDialog(string? imagePath) : IFileDialogService
+{
+    public int PickImageToImportCallCount { get; private set; }
+
+    public string? PickPdfToOpen() => throw new NotSupportedException();
+    public string? PickPdfToSaveAs(string currentPath) => throw new NotSupportedException();
+    public string? PickImageToImport() { PickImageToImportCallCount++; return imagePath; }
+    public string? PickPdfToSave(string suggestedName) => throw new NotSupportedException();
+}
+
+// Task 4 (Plano 7) — "📤 Exportar": fake que NUNCA abre janela nenhuma, só registra a chamada + captura
+// o VM recebido (pra inspecionar Format/Range/Dpi default e o índice de página passado, sem precisar de
+// um ExportImageDialogService real).
+internal sealed class SpyExportImageDialogService : IExportImageDialogService
+{
+    public int CallCount { get; private set; }
+    public ExportImageViewModel? LastViewModel { get; private set; }
+    public void ShowExportImageDialog(ExportImageViewModel viewModel) { CallCount++; LastViewModel = viewModel; }
 }
 
 public class DocumentViewModelTests
@@ -534,6 +624,31 @@ public class DocumentViewModelTests
         doc.Session.Apply(Fixtures.ThirtyPages());
 
         Assert.True(doc.IsDirty);
+        Assert.Equal("fixture-a4.pdf •", doc.Title);
+    }
+
+    [Fact] // Task 2 (Plano 7, rider da revisão): NeedsSaveAs adiciona "(não salvo)" ao título -- pista
+    // visível de que este documento é temp-backed; combina com o "•" de sujo quando os dois são true.
+    // [ObservableProperty] (fix pós-revisão -- deixou de ser plain property) dispara PropertyChanged
+    // pra Title mesmo sem nenhum evento de Session envolvido (a aba recém-aberta precisa refletir isto
+    // de imediato, não só na PRÓXIMA vez que IsDirty/FilePath mudarem por coincidência).
+    public void NeedsSaveAs_True_AppendsSuffixToTitle_AndRaisesPropertyChangedForTitle()
+    {
+        using var doc = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")));
+        var titleChanges = new List<string>();
+        doc.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(DocumentViewModel.Title)) titleChanges.Add(doc.Title); };
+
+        doc.NeedsSaveAs = true;
+
+        Assert.Equal("fixture-a4.pdf (não salvo)", doc.Title);
+        Assert.Single(titleChanges);
+        Assert.Equal("fixture-a4.pdf (não salvo)", titleChanges[0]);
+
+        doc.Session.Apply(Fixtures.ThirtyPages()); // suja também -- os dois sufixos combinam
+        Assert.Equal("fixture-a4.pdf (não salvo) •", doc.Title);
+
+        doc.NeedsSaveAs = false;
         Assert.Equal("fixture-a4.pdf •", doc.Title);
     }
 
@@ -918,7 +1033,7 @@ public class DocumentViewModelTests
     // ==== Task 7 (Plano 3a): Nota adesiva + caixa de texto (criar/editar/mover/excluir + lift) ======
 
     private static (DocumentViewModel doc, FakePdfEditor fake, FakeAnnotationTextDialogService dialog, List<string> errors) BuildForAnnotations(
-        string autor = "Autor de Teste")
+        string autor = "Autor de Teste", IFileDialogService? dialogs = null)
     {
         var configDir = Path.Combine(Path.GetTempPath(), $"mpdf-annot-cfg-{Guid.NewGuid():N}");
         var fake = new FakePdfEditor();
@@ -929,8 +1044,20 @@ public class DocumentViewModelTests
             editor: fake,
             config: new AppConfig(configDir) { Autor = autor },
             notifyError: errors.Add,
-            annotationDialog: dialog);
+            annotationDialog: dialog,
+            dialogs: dialogs);
         return (doc, fake, dialog, errors);
+    }
+
+    // Grava `bytes` num arquivo TEMPORÁRIO de verdade (Task 3, Plano 7 — "🖼 Imagem") — ToggleImageTool
+    // lê o caminho devolvido pelo diálogo via `File.ReadAllBytes` de verdade (não seamado), mesmo
+    // padrão de `ImageImportTests.WriteFile`. Sem limpeza explícita (mesmo espírito de `configDir` em
+    // BuildForAnnotations acima — resíduo de %TEMP% aceito, nunca tocado pela suíte de novo).
+    private static string WriteTempImageFile(byte[] bytes, string ext = ".png")
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"mpdf-imgtool-{Guid.NewGuid():N}{ext}");
+        File.WriteAllBytes(path, bytes);
+        return path;
     }
 
     // ---- ActiveTool: toggles mutuamente exclusivos, gated em CanEdit --------------------------------
@@ -1532,6 +1659,57 @@ public class DocumentViewModelTests
 
         Assert.Equal(0, fake.RemoveAnnotationCallCount); // nunca chegou a tentar o lift
         Assert.Equal(expected, d.Pages[0].AnnotationSelectionRect); // overlay voltou pra posição REAL
+    }
+
+    // ==== Task 4 (Plano 7): "📤 Exportar" (página como imagem) =========================================
+    //
+    // Testes AQUI provam a FIAÇÃO (comando -> diálogo, sem gate) — a lógica de exportação em si (formato/
+    // alcance/dpi/cancelamento/colisão/pixels) é testada isoladamente em ExportImageViewModelTests/
+    // ExportImageIntegrationTests, sem precisar de DocumentViewModel/janela nenhuma.
+
+    [Fact] // leitura pura: SEM CanExecute -- funciona mesmo com o documento ASSINADO (CanEdit == false).
+    public void ExportImageCommand_CanExecute_TrueEvenOnSignedDocument()
+    {
+        var (doc, _, _, _) = BuildForAnnotations();
+        using var d = doc;
+        d.IsSignedDocument = true;
+
+        Assert.False(d.CanEdit); // sanity: o documento está de fato no estado "bloqueado pra edição"
+        Assert.True(d.ExportImageCommand.CanExecute(null));
+    }
+
+    [Fact] // caminho feliz: constrói o VM com o snapshot/contagem de páginas/página CORRENTE certos e
+    // delega pro diálogo injetado -- nenhuma janela real aberta (SpyExportImageDialogService).
+    public void ExportImageCommand_Execute_ShowsDialogWithSessionSnapshotAndCurrentPage()
+    {
+        var spy = new SpyExportImageDialogService();
+        using var d = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-30p.pdf")),
+            exportImageDialog: spy);
+        d.CurrentPage = 6; // 1-based -- índice 0-based esperado: 5
+
+        d.ExportImageCommand.Execute(null);
+
+        Assert.Equal(1, spy.CallCount);
+        Assert.NotNull(spy.LastViewModel);
+        Assert.Equal(30, spy.LastViewModel!.PageCount);
+        Assert.Equal(5, spy.LastViewModel.CurrentPageIndex); // ASSERTÁVEL: CurrentPage(6, 1-based) - 1 == 5
+        Assert.Equal(ExportImagePhase.Options, spy.LastViewModel.Phase); // diálogo mostrado, nada executado ainda
+    }
+
+    [Fact] // leitura pura: funciona em documento assinado E o diálogo é de fato alcançado (não recusado
+    // antes por nenhum gate) -- prova de disparo complementar à de UiPromptsGuardTests (que prova o
+    // SEAM; esta prova o CAMINHO de produção real do comando, com IsSignedDocument=true).
+    public void ExportImageCommand_Execute_SignedDocument_ReachesDialog_NoGate()
+    {
+        var spy = new SpyExportImageDialogService();
+        using var d = new DocumentViewModel(DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")), exportImageDialog: spy);
+        d.IsSignedDocument = true;
+
+        var ex = Record.Exception(() => d.ExportImageCommand.Execute(null));
+
+        Assert.Null(ex);
+        Assert.Equal(1, spy.CallCount);
     }
 
     // ==== Task 8 (Plano 3a): Desenho livre (Ink) + formas (Rectangle/Line/Arrow) =====================
@@ -2142,6 +2320,257 @@ public class DocumentViewModelTests
         Assert.Equal(1, fake.RemoveAnnotationCallCount);
         Assert.Equal("carimbo-2", fake.LastRemovedId);
         Assert.Equal(30, d.Pages.Count); // ApplyEdit trocou Snapshot pro marcador do fake
+    }
+
+    // ==== Task 3 (Plano 7): "🖼 Imagem" — click-to-place a partir de OpenFileDialog (não-galeria) ======
+    //
+    // Exemplar EXATO: o mecanismo de carimbo de imagem da galeria (Task 9, Plano 3a) —
+    // ToggleStampTool/PlaceStampAtAsync, REUSADOS sem alteração de contrato: ToggleImageTool só decide
+    // OS BYTES (escolhidos via diálogo, validados, normalizados) e então ativa o MESMO ActiveTool.
+    // ImageStamp com os MESMOS bytes pendentes — PlaceStampAtAsync (já testado acima) comita do mesmo
+    // jeito, seja a origem a galeria ou o diálogo. Única diferença de COMPORTAMENTO: validação (magic-
+    // bytes + teto de pixels) ANTES do modo de colocação (a galeria não valida nada na ativação — só na
+    // decodificação em PlaceStampAtAsync) e o tamanho default MAIOR (MaxPickedImageWidthPt=200pt vs
+    // MaxStampWidthPt=150pt da galeria).
+
+    [Fact] // cancelado -> ActiveTool nunca muda (brief: "cancel pick -> no mode").
+    public void ToggleImageTool_PickCancelled_NoModeChange()
+    {
+        var dialogs = new FakePickImageDialog(null);
+        var (doc, fake, _, errors) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+
+        d.ToggleImageToolCommand.Execute(null);
+
+        Assert.Equal(AnnotationTool.None, d.ActiveTool);
+        Assert.Equal(1, dialogs.PickImageToImportCallCount);
+        Assert.Empty(errors);
+        Assert.Equal(0, fake.IsSupportedImageCallCount); // nem chegou a validar — cancelou antes
+    }
+
+    [Fact] // magic-bytes recusados -> ActiveTool continua None (recusa ANTES do modo de colocação,
+    // brief: "unsupported file refused BEFORE placement mode") — mesma mensagem nomeando os formatos
+    // suportados de ImageImport.ConvertToPdf, agora nomeando o arquivo escolhido.
+    public void ToggleImageTool_UnsupportedFile_RefusesBeforePlacementMode()
+    {
+        var path = WriteTempImageFile(new byte[] { 1, 2, 3 }, ".gif");
+        var dialogs = new FakePickImageDialog(path);
+        var (doc, fake, _, errors) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+        fake.IsSupportedImageResult = false;
+
+        d.ToggleImageToolCommand.Execute(null);
+
+        Assert.Equal(AnnotationTool.None, d.ActiveTool);
+        Assert.Single(errors);
+        Assert.Contains(Path.GetFileName(path), errors[0]);
+        Assert.Contains("JPG", errors[0]);
+        Assert.Contains("PNG", errors[0]);
+        Assert.Equal(0, fake.IsWithinImagePixelLimitCallCount); // nunca chegou a checar o teto
+    }
+
+    [Fact] // teto de pixels recusado -> ActiveTool continua None, ANTES do modo de colocação (mesmo
+    // espírito do teste acima — brief: "apply the same pixel ceiling check").
+    public void ToggleImageTool_OversizedImage_RefusesBeforePlacementMode()
+    {
+        var path = WriteTempImageFile(MakePng(10, 10));
+        var dialogs = new FakePickImageDialog(path);
+        var (doc, fake, _, errors) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+        fake.IsWithinImagePixelLimitResult = false;
+
+        d.ToggleImageToolCommand.Execute(null);
+
+        Assert.Equal(AnnotationTool.None, d.ActiveTool);
+        Assert.Single(errors);
+        Assert.Contains("50", errors[0]);
+        Assert.Contains("MP", errors[0]);
+    }
+
+    [Fact] // fix pós-revisão (Important): JPEG CMYK recusado ANTES do modo de colocação — mesmo
+    // espírito do teto de pixels acima, checado logo depois dele. Mensagem EXATA pedida pela revisão.
+    public void ToggleImageTool_CmykJpeg_RefusesBeforePlacementMode()
+    {
+        var path = WriteTempImageFile(MakePng(10, 10)); // conteúdo real irrelevante — fake decide
+        var dialogs = new FakePickImageDialog(path);
+        var (doc, fake, _, errors) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+        fake.IsCmykJpegResult = true;
+
+        d.ToggleImageToolCommand.Execute(null);
+
+        Assert.Equal(AnnotationTool.None, d.ActiveTool);
+        Assert.Single(errors);
+        Assert.Equal("JPEG CMYK não é suportado. Converta para RGB.", errors[0]);
+        Assert.Equal(0, fake.ReadJpegExifOrientationCallCount); // nunca chegou a normalizar EXIF
+    }
+
+    [Fact] // controle NEGATIVO: JPEG RGB (IsCmykJpegResult=false, default) NÃO é bloqueado por este
+    // gate — prova que o detector é PRECISO (só bloqueia quando o motor de fato reporta CMYK).
+    public void ToggleImageTool_RgbJpeg_NotBlockedByCmykGate()
+    {
+        var path = WriteTempImageFile(MakePng(10, 10));
+        var dialogs = new FakePickImageDialog(path);
+        var (doc, fake, _, errors) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+
+        d.ToggleImageToolCommand.Execute(null);
+
+        Assert.Empty(errors);
+        Assert.Equal(AnnotationTool.ImageStamp, d.ActiveTool);
+        Assert.Equal(1, fake.IsCmykJpegCallCount);
+    }
+
+    [Fact] // caminho feliz: valida, entra em modo de colocação com os bytes LIDOS DO DISCO (sem rotação
+    // EXIF — ReadJpegExifOrientationResult default 0, ver FakePdfEditor).
+    public void ToggleImageTool_ValidImage_EntersPlacementModeWithFileBytes()
+    {
+        var bytes = MakePng(40, 20);
+        var path = WriteTempImageFile(bytes);
+        var dialogs = new FakePickImageDialog(path);
+        var (doc, fake, _, errors) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+
+        d.ToggleImageToolCommand.Execute(null);
+
+        Assert.Empty(errors);
+        Assert.Equal(AnnotationTool.ImageStamp, d.ActiveTool);
+        Assert.Equal(1, fake.IsSupportedImageCallCount);
+        Assert.Equal(1, fake.IsWithinImagePixelLimitCallCount);
+        Assert.Equal(1, fake.ReadJpegExifOrientationCallCount);
+    }
+
+    [Fact] // click-to-place comita via o MESMO PlaceStampAtAsync da galeria — Kind/PageIndex/ImageBytes/
+    // Author + rect no tamanho NATURAL (40x20px = 40x20pt, bem abaixo dos 2 tetos de largura).
+    public async Task ToggleImageTool_ThenPlaceStampAtAsync_AddsAnnotationWithImagePayloadAndRect()
+    {
+        var bytes = MakePng(40, 20);
+        var path = WriteTempImageFile(bytes);
+        var dialogs = new FakePickImageDialog(path);
+        var (doc, fake, _, errors) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+        d.ToggleImageToolCommand.Execute(null);
+
+        await d.PlaceStampAtAsync(0, 100, 700);
+
+        Assert.Empty(errors);
+        Assert.Equal(1, fake.AddAnnotationCallCount);
+        var sent = fake.LastAnnotation!;
+        Assert.Equal(AnnotationKind.ImageStamp, sent.Kind);
+        Assert.Equal(0, sent.PageIndex);
+        Assert.Equal(100, sent.LeftPt, 0.01); Assert.Equal(700, sent.BottomPt, 0.01);
+        Assert.Equal(140, sent.RightPt, 0.01); Assert.Equal(720, sent.TopPt, 0.01); // 40x20pt natural
+        Assert.Equal(bytes, sent.ImageBytes);
+        Assert.Equal("Autor de Teste", sent.Author);
+        Assert.Equal(AnnotationTool.None, d.ActiveTool); // one-shot: mesmo contrato de PlaceStampAtAsync
+    }
+
+    [Fact] // brief: default ~200pt de largura (vs 150pt da galeria, Task 9/Plano 3a, inalterado) —
+    // imagem 400x200px (2:1) escolhida via "🖼 Imagem" clampa a 200pt de largura / 100pt de altura;
+    // a MESMA imagem via ToggleStampTool (galeria) clamparia a 150pt/75pt (teste separado abaixo).
+    public async Task PlaceStampAtAsync_ViaPickedImageTool_ScalesToMaxPickedImageWidthPt()
+    {
+        var bytes = MakePng(400, 200);
+        var path = WriteTempImageFile(bytes);
+        var dialogs = new FakePickImageDialog(path);
+        var (doc, fake, _, _) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+        d.ToggleImageToolCommand.Execute(null);
+
+        await d.PlaceStampAtAsync(0, 50, 50);
+
+        var sent = fake.LastAnnotation!;
+        Assert.Equal(200, sent.RightPt - sent.LeftPt, 0.5); // largura clampada a 200pt (não 150pt)
+        Assert.Equal(100, sent.TopPt - sent.BottomPt, 0.5); // altura na MESMA proporção 2:1
+    }
+
+    [Fact] // INVARIANTE PIN (Task 9, Plano 3a inalterado): a MESMA imagem 400x200px via ToggleStampTool
+    // (galeria) continua clampando a 150pt/75pt — prova que o teto maior de "🖼 Imagem" não vazou pro
+    // caminho da galeria (2 caps distintos, cada um só aplicado à sua própria origem).
+    public async Task PlaceStampAtAsync_ViaGalleryStampTool_StillScalesToMaxStampWidthPt()
+    {
+        var (doc, fake, _, _) = BuildForAnnotations();
+        using var d = doc;
+        d.ToggleStampTool(MakePng(400, 200));
+
+        await d.PlaceStampAtAsync(0, 50, 50);
+
+        var sent = fake.LastAnnotation!;
+        Assert.Equal(150, sent.RightPt - sent.LeftPt, 0.5);
+        Assert.Equal(75, sent.TopPt - sent.BottomPt, 0.5);
+    }
+
+    [Fact] // costura de rotação (exemplar: PlaceStampAtAsync_PageRotated_NotifiesAndDoesNotAddAnnotation)
+    // — página girada recusa com o MESMO aviso pt-BR, ferramenta continua ativa (usuário tenta outra
+    // página), nenhuma anotação adicionada.
+    public async Task PlaceStampAtAsync_ViaPickedImageTool_PageRotated_NotifiesAndDoesNotAddAnnotation()
+    {
+        var path = WriteTempImageFile(MakePng(10, 10));
+        var dialogs = new FakePickImageDialog(path);
+        var (doc, fake, _, errors) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
+        fake.PageRotationsResult = new[] { 90 };
+        await d.RefreshAnnotationsByPageAsync(); // popula o cache de rotação ANTES da ferramenta ativar
+        d.ToggleImageToolCommand.Execute(null);
+
+        await d.PlaceStampAtAsync(0, 100, 100);
+
+        Assert.Equal(0, fake.AddAnnotationCallCount);
+        Assert.Contains(errors, e => e.Contains("girada"));
+        Assert.Equal(AnnotationTool.ImageStamp, d.ActiveTool); // continua ativa — mesmo contrato do exemplar
+    }
+
+    [Fact] // mesmo gate CanEdit de todo Toggle*ToolCommand (exemplar: ToolCommands_CanExecute_FalseWhenSignedDocument).
+    public void ToggleImageToolCommand_CanExecute_FalseWhenSignedDocument()
+    {
+        var (doc, _, _, _) = BuildForAnnotations();
+        using var d = doc;
+        Assert.True(d.ToggleImageToolCommand.CanExecute(null));
+
+        d.IsSignedDocument = true;
+
+        Assert.False(d.ToggleImageToolCommand.CanExecute(null));
+    }
+
+    [Fact] // "clicar de novo desliga" (mesma semântica dos outros Toggle*Tool) — clicar com ImageStamp
+    // já ativo (de QUALQUER origem, galeria ou "🖼 Imagem") desliga sem reabrir o diálogo.
+    public void ToggleImageTool_AlreadyActive_TogglesOffWithoutReopeningDialog()
+    {
+        var dialogs = new FakePickImageDialog(null);
+        var (doc, _, _, _) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+        d.ToggleStampTool(Fixtures.OnePixelPng()); // ativa via galeria, não via diálogo
+        Assert.Equal(AnnotationTool.ImageStamp, d.ActiveTool);
+
+        d.ToggleImageToolCommand.Execute(null);
+
+        Assert.Equal(AnnotationTool.None, d.ActiveTool);
+        Assert.Equal(0, dialogs.PickImageToImportCallCount); // nunca abriu o diálogo — só desligou
+    }
+
+    [Fact] // EXIF (brief: "does the stamp path honor EXIF?" — NÃO por padrão; ToggleImageTool corrige
+    // ANTES do modo de colocação). Simula uma foto "precisando de correção" via
+    // ReadJpegExifOrientationResult=90 (o fake não lê EXIF de verdade — a leitura real é provada pelos
+    // testes de PdfEditorTests; este teste prova que o VM AGE sobre o ângulo devolvido): os bytes que
+    // chegam em AddAnnotation são DIFERENTES dos bytes crus do arquivo (WPF girou e reencodificou) —
+    // a prova visual (upright de verdade) é o teste de px com o motor REAL, ver PdfEditorImageToolTests.
+    public async Task ToggleImageTool_ExifRotationReported_PlacedBytesDifferFromRawFileBytes()
+    {
+        var rawBytes = MakePng(40, 20);
+        var path = WriteTempImageFile(rawBytes);
+        var dialogs = new FakePickImageDialog(path);
+        var (doc, fake, _, errors) = BuildForAnnotations(dialogs: dialogs);
+        using var d = doc;
+        fake.ReadJpegExifOrientationResult = 90;
+        d.ToggleImageToolCommand.Execute(null);
+        Assert.Equal(AnnotationTool.ImageStamp, d.ActiveTool); // sanity: normalização não falhou
+
+        await d.PlaceStampAtAsync(0, 100, 700);
+
+        Assert.Empty(errors);
+        Assert.Equal(1, fake.AddAnnotationCallCount);
+        Assert.NotEqual(rawBytes, fake.LastAnnotation!.ImageBytes); // reencodificado pelo WPF, não os bytes crus do PNG
     }
 
     // ==== Task 3 (Plano 3b): Organizador de páginas — toggle IsOrganizerOpen ==========================

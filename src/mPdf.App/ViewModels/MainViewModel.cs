@@ -220,6 +220,13 @@ public sealed partial class MainViewModel : ObservableObject
 
     public async Task OpenPath(string path)
     {
+        // Task 2 (Plano 7): caminho de IMAGEM (.jpg/.jpeg/.png) -> ramo SEPARADO, antes de qualquer
+        // lógica de dedupe/abertura de PDF abaixo (ver OpenImageAsNewDocument). Roteado por AQUI (não um
+        // método público novo) de propósito: os 3 chamadores existentes de OpenPath (OpenFileCommand,
+        // OpenRecentCommand, App.xaml.cs — args-path e forwarding de instância única) precisam do MESMO
+        // comportamento estendido sem precisar saber que imagem é um caso diferente de PDF.
+        if (ImageImport.IsImagePath(path)) { await OpenImageAsNewDocument(path); return; }
+
         // Dedupe (Task 7): mesmo caminho completo já aberto numa aba -> só seleciona, sem duplicar.
         // ANTES de tocar no arquivo (nem File.Exists) — se já está aberto, a leitura é desnecessária.
         if (Documents.FirstOrDefault(d => string.Equals(d.Session.FilePath, path, StringComparison.OrdinalIgnoreCase)) is { } existing)
@@ -336,6 +343,71 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task OpenRecent(string path) => await OpenPath(path);
 
+    // ---- Task 2 (Plano 7): "Abrir" com uma IMAGEM (.jpg/.jpeg/.png) ----------------------------------
+    //
+    // DESIGN DO DOCUMENTO NÃO-SALVO (registrado no relatório): exemplar TRAÇADO é `EditCopy` acima —
+    // "converte bytes -> DocumentSession.WriteNewFile (mesmo AtomicWrite de Save/SaveAs) -> await
+    // OpenPath(novoCaminho)", a MESMA receita, escolhida por ser a MENOS invasiva consistente com um
+    // precedente já existente no código (DocumentSession não precisou ganhar um construtor "pathless" —
+    // continua abrindo de um caminho real de disco sempre, só que aqui o caminho é um arquivo TEMPORÁRIO
+    // recém-escrito, nunca um caminho escolhido pelo usuário). A ALTERNATIVA cogitada (estender
+    // DocumentSession para abrir sem nenhum arquivo em disco, "pathless open") foi rejeitada: exigiria
+    // uma 2ª forma de construir a sessão só para este caso, quando o app já tem um jeito PROVADO de
+    // materializar bytes recém-produzidos como um arquivo real e abrir uma sessão de verdade sobre ele.
+    //
+    // POR QUE TEMP (não um arquivo permanente ao lado do original, como EditCopy faz): a imagem
+    // convertida NUNCA teve um "lar" escolhido pelo usuário — ele só pediu para ABRIR uma foto, não
+    // decidiu ainda ONDE o PDF resultante deveria morar. Gravar ao lado do original poluiria a pasta do
+    // usuário com um .pdf que ele não pediu explicitamente; gravar em %TEMP% deixa claro que é um estado
+    // TRANSITÓRIO até o usuário decidir (Salvar como). `NeedsSaveAs = true` (setado logo abaixo) é a
+    // salvaguarda que impede um "Salvar" (Ctrl+S) de gravar SILENCIOSAMENTE de volta nesse temp — ver
+    // doc XML de `Save`/`TryResolveDirtyDocument`.
+    //
+    // SEM dedupe por caminho ORIGINAL de propósito (decisão registrada no relatório): o dedupe padrão de
+    // `OpenPath` (mesmo `Session.FilePath`) nunca dispara aqui porque cada chamada gera um caminho temp
+    // com um GUID novo (`BuildConvertedImageTempPath`) — abrir a MESMA imagem duas vezes produz DOIS
+    // documentos. Aceito: um cache de conversões (dedupe por caminho de ORIGEM) adicionaria estado extra
+    // sem um requisito real do brief; cada import é tratado como um rascunho novo, nunca uma referência
+    // compartilhada a uma conversão anterior.
+    private async Task OpenImageAsNewDocument(string imagePath)
+    {
+        IsOpening = true;
+        try
+        {
+            byte[] pdfBytes;
+            try { pdfBytes = await ImageImport.ConvertToPdfAsync(imagePath, _editor); }
+            catch (Exception ex) { _notifyError(ex.Message); return; }
+
+            string tempPath = BuildConvertedImageTempPath(imagePath);
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(tempPath)!);
+                await Task.Run(() => DocumentSession.WriteNewFile(tempPath, pdfBytes));
+            }
+            catch (Exception ex) { _notifyError(ex.Message); return; }
+
+            await OpenPath(tempPath);
+            // Task 2 (Plano 7): NeedsSaveAs setado DEPOIS que a aba já existe (não antes) — se a
+            // abertura em si falhar (ex.: PDFium recusa o resultado por algum motivo), não há
+            // DocumentViewModel nenhum para marcar; o guard de caminho abaixo garante que só marcamos o
+            // documento que REALMENTE corresponde a esta conversão (defesa contra uma corrida
+            // improvável onde SelectedDocument mudou por outro caminho entre o await acima e esta linha).
+            if (SelectedDocument is { } doc && string.Equals(doc.Session.FilePath, tempPath, StringComparison.OrdinalIgnoreCase))
+                doc.NeedsSaveAs = true;
+        }
+        finally { IsOpening = _opening.Count > 0; }
+    }
+
+    // "<nome-sem-extensão> (convertido).pdf" numa pasta TEMP própria por GUID (nunca reaproveitada —
+    // mesmo raciocínio de `DocumentSession.NewUndoSpillDirectory`) — o GUID na pasta (não no nome do
+    // arquivo) é o que garante caminhos diferentes em aberturas repetidas da MESMA imagem, mantendo o
+    // NOME exibido na aba limpo ("foto (convertido).pdf", nunca "foto (convertido)-a1b2c3.pdf").
+    private static string BuildConvertedImageTempPath(string imagePath)
+    {
+        string fileName = $"{Path.GetFileNameWithoutExtension(imagePath)} (convertido).pdf";
+        return Path.Combine(Path.GetTempPath(), "mPDF", $"open-{Guid.NewGuid():N}", fileName);
+    }
+
     // ---- Task 5 (Plano 3a): "Editar uma cópia" -------------------------------------------------------
     //
     // Único caminho de edição pra um documento assinado: a precondição em
@@ -414,12 +486,40 @@ public sealed partial class MainViewModel : ObservableObject
             case CloseConfirmation.Cancel:
                 return false;
             case CloseConfirmation.Save:
-                try { doc.Session.Save(_config); return true; }
-                catch (Exception ex) { _notifyError(ex.Message); return false; }
+                // Task 2 (Plano 7): mesma desvio de "Salvar" pra "Salvar como" que `MainViewModel.Save`
+                // aplica no comando síncrono — sem isto, escolher "Salvar" aqui pra um documento
+                // temp-backed gravaria silenciosamente de volta em %TEMP%, violando a MESMA garantia
+                // pelo caminho de fechar aba em vez do Ctrl+S.
+                return doc.NeedsSaveAs ? TrySaveAsSync(doc) : TrySaveSync(doc);
             case CloseConfirmation.Discard:
             default:
                 return true;
         }
+    }
+
+    private bool TrySaveSync(DocumentViewModel doc)
+    {
+        try { doc.Session.Save(_config); return true; }
+        catch (Exception ex) { _notifyError(ex.Message); return false; }
+    }
+
+    // Contraparte SÍNCRONA de `SaveAs` (o comando é `async` — arma `TryBeginEdit`/`Task.Run` — mas
+    // `TryResolveDirtyDocument` é chamado de contextos síncronos, `CloseDocument`/`ConfirmCloseAll`; o
+    // diálogo em si (`PickPdfToSaveAs`) já é síncrono, e a escrita de um único documento não justifica
+    // sair pra uma Task só pra este caminho residual). Diálogo CANCELADO -> `false` (mesma semântica de
+    // "Save que falha": a aba NÃO fecha, sem notificar erro nenhum — cancelar não é uma falha).
+    private bool TrySaveAsSync(DocumentViewModel doc)
+    {
+        if (_dialogs.PickPdfToSaveAs(doc.Session.FilePath) is not { } path) return false;
+        try
+        {
+            doc.Session.SaveAs(path);
+            doc.NeedsSaveAs = false;
+            _recent.Add(path);
+            OnPropertyChanged(nameof(RecentFiles));
+            return true;
+        }
+        catch (Exception ex) { _notifyError(ex.Message); return false; }
     }
 
     // I3 (revisão pós-Task 3): chamado por MainWindow.OnClosing ao fechar a JANELA inteira (✕ da
@@ -469,6 +569,13 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task Save()
     {
         if (SelectedDocument is not { } doc) return;
+        // Task 2 (Plano 7): documento TEMP-BACKED (aberto de uma imagem convertida — ver
+        // OpenImageAsNewDocument) NUNCA pode ser salvo silenciosamente de volta no arquivo em %TEMP% —
+        // "Salvar" vira "Salvar como" até o usuário escolher um destino real. Reusa o MESMO método
+        // `SaveAs` (não uma cópia da lógica): `doc == SelectedDocument` aqui, então chamar o corpo do
+        // comando direto (sem passar por `SaveAsCommand.ExecuteAsync`) já tem as mesmas precondições que
+        // `CanSave` já garantiu (documento selecionado, sem edição em voo).
+        if (doc.NeedsSaveAs) { await SaveAs(); return; }
         if (!doc.Session.TryBeginEdit()) return; // outra edição em voo — mesmo funil de qualquer outro comando
         doc.IsSaving = true;
         try { await Task.Run(() => doc.Session.Save(_config)); }
@@ -505,6 +612,10 @@ public sealed partial class MainViewModel : ObservableObject
         try
         {
             await Task.Run(() => doc.Session.SaveAs(path));
+            // Task 2 (Plano 7): documento ganhou um "lar" definitivo — o próximo Save já pode gravar
+            // direto ali (sem desviar de novo pra este mesmo diálogo). No-op para um documento que já
+            // não era temp-backed (o caso comum, `NeedsSaveAs` já false).
+            doc.NeedsSaveAs = false;
             _recent.Add(path);
             OnPropertyChanged(nameof(RecentFiles));
         }
@@ -529,16 +640,28 @@ public sealed partial class MainViewModel : ObservableObject
     // na revisão pós-Task 4 pra permitir testar o catch de `ArgumentException` abaixo sem o motor real.
 
     /// ➕ Juntar (brief) — SEMPRE habilitado (nenhum `CanExecute`), mesmo sem documento algum aberto.
-    /// Diálogo devolve os caminhos JÁ na ordem de concatenação; lê os bytes, concatena via
+    /// Diálogo devolve os caminhos JÁ na ordem de concatenação; lê os bytes (convertendo cada entrada de
+    /// IMAGEM pra PDF na fronteira — Task 2, Plano 7, `ImageImport.ReadOrConvertToPdf`, ANTES de
+    /// `MergeDocuments`; o motor só enxerga PDFs, nunca uma entrada de imagem crua), concatena via
     /// `MergeDocuments`, grava como arquivo NOVO (SaveFileDialog) e abre o resultado numa aba nova —
     /// `OpenPath` (mesmo caminho de abrir qualquer PDF, dedupe/seleção de aba inclusos de graça).
+    ///
+    /// ATÔMICO (decisão registrada no relatório, Task 2 Plano 7): a conversão de CADA imagem roda dentro
+    /// do MESMO `Task.Run`/`try` que já lia os bytes brutos — se QUALQUER arquivo (imagem ou PDF) falhar
+    /// (arquivo ausente, imagem corrompida/CMYK/acima do teto de pixels — `ImageImport.ConvertToPdf` já
+    /// nomeia o arquivo na mensagem), o `Select(...).ToArray()` propaga a exceção do PRIMEIRO item que
+    /// falhar e o `catch` abaixo aborta o comando INTEIRO antes de tocar `MergeDocuments`/o SaveFileDialog
+    /// — nenhum arquivo parcial é escrito, nenhuma aba abre. Alternativa cogitada (juntar só os arquivos
+    /// que converteram, pular os que falharam com um aviso) foi rejeitada: um "documento unificado" que
+    /// silenciosamente perde páginas que o usuário pediu é uma corrupção de intenção pior do que só
+    /// recusar a operação inteira e deixar o usuário corrigir a entrada problemática.
     [RelayCommand]
     private async Task Merge()
     {
         if (_mergeDialog.PickFilesToMerge() is not { Count: > 0 } paths) return;
 
         byte[][] inputs;
-        try { inputs = await Task.Run(() => paths.Select(File.ReadAllBytes).ToArray()); }
+        try { inputs = await Task.Run(() => paths.Select(p => ImageImport.ReadOrConvertToPdf(p, _editor)).ToArray()); }
         catch (Exception ex) { _notifyError(ex.Message); return; }
 
         // C1 (revisão final pré-merge): `MergeDocuments` agora tira o widget visual de assinatura de

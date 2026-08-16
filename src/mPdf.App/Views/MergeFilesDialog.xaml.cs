@@ -26,10 +26,16 @@ public partial class MergeFilesDialog : Window
 
     private void Add_Click(object sender, RoutedEventArgs e)
     {
+        // Task 2 (Plano 7): filtro aceita imagens (*.jpg/*.jpeg/*.png) além de PDF — cada imagem é
+        // convertida na ENTRADA do Juntar (`MainViewModel.Merge`/`ImageImport.ReadOrConvertToPdf`, motor
+        // intocado); a linha correspondente ganha o sufixo "(imagem)" via `ImageFileLabelConverter`
+        // (ver XAML). Mesmo padrão de 3 grupos do filtro combinado já usado por
+        // `IFileDialogService.PickPdfToOpen`/`FileDialogService`.
         var dlg = new OpenFileDialog
         {
             Title = "Adicionar arquivos",
-            Filter = "Documentos PDF (*.pdf)|*.pdf",
+            Filter = "Documentos PDF e imagens (*.pdf;*.jpg;*.jpeg;*.png)|*.pdf;*.jpg;*.jpeg;*.png|" +
+                     "Documentos PDF (*.pdf)|*.pdf|Imagens (*.jpg;*.jpeg;*.png)|*.jpg;*.jpeg;*.png",
             Multiselect = true,
         };
         if (dlg.ShowDialog() != true) return;

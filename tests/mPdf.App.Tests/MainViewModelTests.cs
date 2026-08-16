@@ -192,6 +192,109 @@ public class MainViewModelTests : IDisposable
         Assert.Single(vm.Documents);
     }
 
+    // ---- Task 2 (Plano 7): Abrir imagem (.jpg/.jpeg/.png) -> converte e abre como documento novo NÃO
+    // -SALVO, título "nome (convertido).pdf". FakePdfEditor (não sniffa de verdade) -> o conteúdo do
+    // arquivo escrito aqui é irrelevante, só a EXTENSÃO decide se OpenPath entra no ramo de imagem.
+
+    private string WriteTempImageFile(string fileName)
+    {
+        Directory.CreateDirectory(_dir);
+        var path = Path.Combine(_dir, fileName);
+        File.WriteAllBytes(path, new byte[] { 0xFF, 0xD8, 0xFF });
+        return path;
+    }
+
+    [Fact]
+    public async Task OpenPath_ImagePath_ConvertsAndOpensAsUnsavedDocument_NeedsSaveAsTrue()
+    {
+        var imgPath = WriteTempImageFile("foto.jpg");
+        var fake = new FakePdfEditor { ImageToPdfResult = Fixtures.A4() };
+        var vm = VmFull(editor: fake);
+
+        await vm.OpenPath(imgPath);
+
+        Assert.Single(vm.Documents);
+        Assert.Equal(1, fake.ImageToPdfCallCount);
+        var doc = vm.Documents[0];
+        Assert.Same(doc, vm.SelectedDocument);
+        Assert.True(doc.NeedsSaveAs);
+        Assert.Equal("foto (convertido).pdf", doc.Session.FileName);
+        Assert.False(doc.IsDirty); // recém-escrito no temp -- OpenAsync considera "salvo" ali (ver relatório)
+    }
+
+    [Fact] // .pdf continua o fluxo normal -- NENHUMA chamada a ImageToPdf, NeedsSaveAs fica false
+    public async Task OpenPath_PdfPath_DoesNotCallImageConversion()
+    {
+        var fake = new FakePdfEditor();
+        var vm = VmFull(editor: fake);
+
+        await vm.OpenPath(Path.Combine(Fixtures.Root, "fixture-a4.pdf"));
+
+        Assert.Equal(0, fake.ImageToPdfCallCount);
+        Assert.False(vm.Documents[0].NeedsSaveAs);
+    }
+
+    [Fact] // motor recusa a conversão (corrompida/CMYK/teto) -- notificado pt-BR NOMEANDO o arquivo, nenhuma aba
+    public async Task OpenPath_ImagePath_ConversionFails_NotifiesError_OpensNoDocument()
+    {
+        var imgPath = WriteTempImageFile("quebrada.png");
+        var fake = new FakePdfEditor { ThrowOnImageToPdf = new PdfEditingException("Imagem corrompida.") };
+        string? notified = null;
+        var vm = VmFull(notifyError: msg => notified = msg, editor: fake);
+
+        await vm.OpenPath(imgPath);
+
+        Assert.Empty(vm.Documents);
+        Assert.NotNull(notified);
+        Assert.Contains("quebrada.png", notified);
+    }
+
+    [Fact] // extensão de imagem mas magic-bytes recusados -- mesma notificação nomeando o arquivo, ImageToPdf NUNCA chamado
+    public async Task OpenPath_ImagePath_UnsupportedMagicBytes_NotifiesError_OpensNoDocument()
+    {
+        var imgPath = WriteTempImageFile("falsa.jpg");
+        var fake = new FakePdfEditor { IsSupportedImageResult = false };
+        string? notified = null;
+        var vm = VmFull(notifyError: msg => notified = msg, editor: fake);
+
+        await vm.OpenPath(imgPath);
+
+        Assert.Empty(vm.Documents);
+        Assert.NotNull(notified);
+        Assert.Contains("falsa.jpg", notified);
+        Assert.Equal(0, fake.ImageToPdfCallCount);
+    }
+
+    [Fact] // Dedupe (decisão registrada no relatório): abrir a MESMA imagem duas vezes -> DOIS documentos
+    // (pastas temp com GUID diferente cada vez) -- diferente do dedupe por caminho de um PDF real.
+    public async Task OpenPath_SameImageTwice_OpensTwoSeparateDocuments()
+    {
+        var imgPath = WriteTempImageFile("duplicada.jpg");
+        var fake = new FakePdfEditor();
+        var vm = VmFull(editor: fake);
+
+        await vm.OpenPath(imgPath);
+        await vm.OpenPath(imgPath);
+
+        Assert.Equal(2, vm.Documents.Count);
+        Assert.NotEqual(vm.Documents[0].Session.FilePath, vm.Documents[1].Session.FilePath, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact] // Integração: motor REAL (VmFull sem editor -> PdfEditorFactory.Create()) + fixture real de foto.
+    public async Task OpenPath_RealImageFixture_OpensAsOnePageUnsavedDocument()
+    {
+        var vm = VmFull();
+
+        await vm.OpenPath(Path.Combine(Fixtures.Root, "fixture-foto.jpg"));
+
+        Assert.Single(vm.Documents);
+        var doc = vm.Documents[0];
+        Assert.Equal(1, doc.Session.Renderer.PageCount);
+        Assert.True(doc.NeedsSaveAs);
+        Assert.False(doc.IsDirty);
+        Assert.Equal("fixture-foto (convertido).pdf", doc.Session.FileName);
+    }
+
     // ---- Task 3 (Plano 3a): SaveCommand ------------------------------------------------------------
 
     [Fact] // "enabled when dirty": desabilitado num documento recém-aberto (limpo), habilita após Apply
@@ -364,6 +467,84 @@ public class MainViewModelTests : IDisposable
             Assert.Contains(newPath, vm.RecentFiles);
         }
         finally { TryDelete(newPath); }
+    }
+
+    // ---- Task 2 (Plano 7): Save/SaveAs num documento TEMP-BACKED (aberto de uma imagem convertida) --
+    //
+    // "Save exigindo Salvar como" (brief): Save NUNCA pode gravar silenciosamente de volta no arquivo
+    // TEMP por trás deste tipo de documento — precisa desviar pro MESMO fluxo de "Salvar como".
+
+    private async Task<(MainViewModel vm, DocumentViewModel doc)> OpenConvertedImageDirty(
+        Action<string>? notifyError = null, string? saveAsResult = null, IConfirmCloseService? confirmClose = null)
+    {
+        var imgPath = WriteTempImageFile("foto-temp.jpg");
+        var fake = new FakePdfEditor { ImageToPdfResult = Fixtures.A4() };
+        var vm = VmFull(notifyError: notifyError, saveAsResult: saveAsResult, confirmClose: confirmClose, editor: fake);
+        await vm.OpenPath(imgPath);
+        var doc = vm.SelectedDocument!;
+        doc.Session.Apply(Fixtures.ThirtyPages()); // suja -- CanSave passa a habilitado
+        return (vm, doc);
+    }
+
+    [Fact] // Save num documento temp-backed -> desvia pro MESMO fluxo de SaveAs (diálogo, escreve no
+    // destino ESCOLHIDO) -- o arquivo TEMP original nunca é reescrito por este Save.
+    public async Task SaveCommand_TempBackedDocument_RoutesToSaveAs_NeverWritesTempPath()
+    {
+        var target = Path.Combine(_dir, "foto-temp (salva).pdf");
+        var (vm, doc) = await OpenConvertedImageDirty(saveAsResult: target);
+        var tempPath = doc.Session.FilePath;
+
+        Assert.True(vm.SaveCommand.CanExecute(null));
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.Equal(target, doc.Session.FilePath); // FilePath mudou -> prova que passou por SaveAs, não por Save
+        Assert.True(File.Exists(target));
+        Assert.Equal(Fixtures.ThirtyPages(), File.ReadAllBytes(target));
+        Assert.False(doc.NeedsSaveAs); // ganhou um "lar" definitivo -- próximo Save já pode gravar direto
+        Assert.Equal(Fixtures.A4(), File.ReadAllBytes(tempPath)); // temp NUNCA reescrito (continua a conversão original, 1 página)
+    }
+
+    [Fact] // diálogo de "Salvar como" CANCELADO durante o Save desviado -> documento continua sujo, temp intocado
+    public async Task SaveCommand_TempBackedDocument_SaveAsDialogCancelled_StaysDirtyAndTempUntouched()
+    {
+        var (vm, doc) = await OpenConvertedImageDirty(saveAsResult: null);
+        var tempPath = doc.Session.FilePath;
+
+        await vm.SaveCommand.ExecuteAsync(null);
+
+        Assert.True(doc.IsDirty);
+        Assert.True(doc.NeedsSaveAs);
+        Assert.Equal(tempPath, doc.Session.FilePath);
+        Assert.Equal(Fixtures.A4(), File.ReadAllBytes(tempPath));
+    }
+
+    [Fact] // fechar aba SUJA de um documento temp-backed, escolha "Salvar" -> pede Salvar Como, grava no
+    // destino escolhido, NUNCA no temp (mesma garantia do Ctrl+S acima, agora pelo caminho de fechar aba).
+    public async Task CloseDocument_DirtyTempBackedDocument_SaveChoice_PromptsSaveAs_WritesToChosenPath()
+    {
+        var target = Path.Combine(_dir, "foto-fechar (salva).pdf");
+        var confirm = new FakeConfirmCloseService(CloseConfirmation.Save);
+        var (vm, doc) = await OpenConvertedImageDirty(saveAsResult: target, confirmClose: confirm);
+        var tempPath = doc.Session.FilePath;
+
+        vm.CloseDocumentCommand.Execute(doc);
+
+        Assert.Empty(vm.Documents);
+        Assert.True(File.Exists(target));
+        Assert.Equal(Fixtures.ThirtyPages(), File.ReadAllBytes(target));
+        Assert.Equal(Fixtures.A4(), File.ReadAllBytes(tempPath)); // temp nunca reescrito
+        Assert.Contains(target, vm.RecentFiles);
+    }
+
+    [Fact] // "Salvar como" CANCELADO durante o fechamento -> aba NÃO fecha (mesma semântica de "Save que falha não fecha")
+    public async Task CloseDocument_DirtyTempBackedDocument_SaveChoice_SaveAsCancelled_KeepsTabOpen()
+    {
+        var confirm = new FakeConfirmCloseService(CloseConfirmation.Save);
+        var (vm, doc) = await OpenConvertedImageDirty(saveAsResult: null, confirmClose: confirm);
+
+        vm.CloseDocumentCommand.Execute(doc);
+
+        Assert.Single(vm.Documents);
     }
 
     // ---- Task 3 (Plano 3a): prompt de fechar sujo (3 caminhos) -------------------------------------
@@ -710,6 +891,60 @@ public class MainViewModelTests : IDisposable
         Assert.Equal(Fixtures.A4(), File.ReadAllBytes(firstCopyPath)); // a cópia PRÉ-EXISTENTE não é tocada
     }
 
+    [Fact] // Important 2 (revisão pós-Task 2, Plano 7): EditCopy TRANSITIVAMENTE corrigido pelo fix
+    // CRÍTICO de Sign/NeedsSaveAs -- depois que um documento temp-backed relocaliza (Salvar Como) ANTES
+    // de assinar, `Session.FilePath` já é o caminho ESCOLHIDO pelo usuário; EditCopy deriva o nome da
+    // cópia de `Session.FilePath` (`BuildEditableCopyPath`), então a cópia editável nasce IRMÃ do
+    // caminho ESCOLHIDO -- pin de regressão pro fluxo completo "converter -> assinar (relocando) ->
+    // editar uma cópia" (CanEditCopy exige IsSignedDocument -- depois do fix, todo doc assinado JÁ tem
+    // um caminho real, nunca mais o temp original).
+    public async Task EditCopyCommand_AfterSignRelocatedFromTempBacked_BuildsCopyNextToChosenPath_NotTemp()
+    {
+        var tempOriginal = CopyFixtureToTemp(); // simula o PDF temp de %TEMP%\mPDF\open-<guid>\
+        var chosenDir = Path.Combine(_dir, "escolhido-pelo-usuario");
+        Directory.CreateDirectory(chosenDir);
+        var chosenTarget = Path.Combine(chosenDir, "meu documento assinado.pdf");
+        try
+        {
+            using var cert = SignCommandTests.CreateEphemeralRsaCertificate();
+            var signDialogFake = new FakeSignDialogService(
+                new SignDialogResult(cert, "Motivo", "Local", ApplyDocMdp: true, PlaceStamp: false));
+            var saveAsDialogFake = new FakeDialog(openResult: null, saveAsResult: chosenTarget);
+
+            var doc = new DocumentViewModel(
+                DocumentSession.Open(tempOriginal),
+                editor: PdfEditorFactory.Create(),
+                config: new AppConfig(Path.Combine(_dir, "sign-config")),
+                notifyError: _ => { }, notifyInfo: _ => { },
+                dialogs: saveAsDialogFake,
+                signDialog: signDialogFake,
+                signingEngine: SigningEngineFactory.Create(),
+                confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
+                listSigningCertificates: () => new[] { new SigningCertificateInfo(cert, true, "Teste", false, false) })
+            { NeedsSaveAs = true };
+
+            await doc.SignCommand.ExecuteAsync(null);
+            Assert.Equal(chosenTarget, doc.Session.FilePath); // sign relocalizou -- pré-condição deste teste
+            Assert.True(doc.IsSignedDocument);
+
+            var vm = VmFull();
+            vm.Documents.Add(doc);
+            vm.SelectedDocument = doc;
+            Assert.True(vm.EditCopyCommand.CanExecute(null));
+
+            await vm.EditCopyCommand.ExecuteAsync(null);
+
+            var expectedCopyPath = Path.Combine(chosenDir, "meu documento assinado (cópia editável).pdf");
+            var wrongTempSiblingPath = Path.Combine(
+                Path.GetDirectoryName(tempOriginal)!, Path.GetFileNameWithoutExtension(tempOriginal) + " (cópia editável).pdf");
+            Assert.True(File.Exists(expectedCopyPath)); // IRMÃ do caminho ESCOLHIDO
+            Assert.False(File.Exists(wrongTempSiblingPath)); // NUNCA construída ao lado do temp original
+            Assert.False(PdfEditorFactory.Create().HasSignatures(File.ReadAllBytes(expectedCopyPath)));
+            TryDelete(expectedCopyPath);
+        }
+        finally { TryDelete(tempOriginal); TryDelete(chosenTarget); }
+    }
+
     // ---- Deferência (Task 2, Plano 5): ApplyEditToSelectedDocument DELETADO --------------------------
     //
     // `MainViewModel.ApplyEditToSelectedDocument` (Task 5, Plano 3a) foi criado como um chokepoint
@@ -891,6 +1126,51 @@ public class MainViewModelTests : IDisposable
         await vm.MergeCommand.ExecuteAsync(null);
 
         Assert.Empty(vm.Documents);
+    }
+
+    // ---- Task 2 (Plano 7): Juntar aceita imagens — conversão NA ENTRADA, por item, ANTES de
+    // MergeDocuments (motor intocado: só recebe PDFs, mesmo se algumas entradas eram imagens no diálogo).
+
+    [Fact] // lista mista PDF + imagem -- só a imagem passa por ImageToPdf; ORDEM preservada na lista final
+    public async Task MergeCommand_MixedPdfAndImage_ConvertsImageOnly_PreservesOrder()
+    {
+        var pdfPath = Path.Combine(Fixtures.Root, "fixture-a4.pdf");
+        var imgPath = WriteTempImageFile("pagina.jpg");
+        var fake = new FakePdfEditor { ImageToPdfResult = Fixtures.ThirtyPages() };
+        var mergeDialog = new FakeMergeDialogService(new[] { pdfPath, imgPath });
+        // saveResult null (diálogo de salvar cancelado) -- MergeDocuments já rodou nesse ponto, então
+        // basta pra provar entrada/ordem sem precisar gerenciar um arquivo de saída real.
+        var vm = VmFull(saveResult: null, mergeDialog: mergeDialog, editor: fake);
+
+        await vm.MergeCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, fake.MergeDocumentsCallCount);
+        Assert.NotNull(fake.LastMergeInputs);
+        Assert.Equal(2, fake.LastMergeInputs!.Count);
+        Assert.Equal(File.ReadAllBytes(pdfPath), fake.LastMergeInputs[0]); // pdf: bytes crus, NUNCA convertido
+        Assert.Equal(Fixtures.ThirtyPages(), fake.LastMergeInputs[1]);     // imagem: resultado de ImageToPdf
+
+        Assert.Single(fake.ImageToPdfInputs); // conversão chamada SÓ pra imagem, nunca pro pdf
+        Assert.Equal(File.ReadAllBytes(imgPath), fake.ImageToPdfInputs[0]);
+    }
+
+    [Fact] // conversão de uma das imagens FALHA -- Juntar é ATÔMICO: aborta ANTES de MergeDocuments,
+    // mensagem pt-BR NOMEIA o arquivo que falhou, nenhum arquivo é escrito, nenhuma aba abre.
+    public async Task MergeCommand_ImageConversionFails_AbortsWithFilenameMessage_WritesNoFile()
+    {
+        var pdfPath = Path.Combine(Fixtures.Root, "fixture-a4.pdf");
+        var imgPath = WriteTempImageFile("quebrada.jpg");
+        var fake = new FakePdfEditor { ThrowOnImageToPdf = new PdfEditingException("Imagem corrompida.") };
+        var mergeDialog = new FakeMergeDialogService(new[] { pdfPath, imgPath });
+        string? notified = null;
+        var vm = VmFull(notifyError: msg => notified = msg, mergeDialog: mergeDialog, editor: fake);
+
+        await vm.MergeCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, fake.MergeDocumentsCallCount);
+        Assert.Empty(vm.Documents);
+        Assert.NotNull(notified);
+        Assert.Contains("quebrada.jpg", notified);
     }
 
     // ---- C1 (revisão final pré-merge, Plano 3b): aviso "documento(s) de origem assinado(s)" -----------

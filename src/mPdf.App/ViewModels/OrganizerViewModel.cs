@@ -292,8 +292,19 @@ public sealed partial class OrganizerViewModel : ObservableObject, IDisposable
         if (!_session.TryBeginEdit()) return; // ARMADO AQUI — antes do 1º await (a leitura do arquivo)
         try
         {
+            // Task 2 (Plano 7): `path` pode ser uma IMAGEM (o mesmo `PickPdfToOpen` agora aceita
+            // *.jpg/*.jpeg/*.png — filtro compartilhado com `MainViewModel.OpenFile`) — converte pra PDF
+            // ANTES de tudo abaixo (motor intocado, `InsertPages` só enxerga PDF). Aviso de assinatura de
+            // origem (logo abaixo) continua UNIFORME de propósito: uma imagem convertida É um PDF válido
+            // sem nenhuma assinatura, então `HasSignatures` sobre ela devolve `false` normalmente — sem
+            // caso especial nenhum pra pular a checagem (decisão registrada no relatório).
             byte[] source;
-            try { source = await Task.Run(() => File.ReadAllBytes(path)); }
+            try
+            {
+                source = ImageImport.IsImagePath(path)
+                    ? await ImageImport.ConvertToPdfAsync(path, _editor)
+                    : await Task.Run(() => File.ReadAllBytes(path));
+            }
             catch (Exception ex) { _notifyError(ex.Message); return; }
 
             // R2 (revisão pós-branch, "C1 wiring gap"): `InsertPages` já tira o widget visual de

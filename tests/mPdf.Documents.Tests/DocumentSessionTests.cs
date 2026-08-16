@@ -1080,6 +1080,46 @@ public class DocumentSessionTests
         Assert.Null(ex);
     }
 
+    // ---- Task 2 (Plano 7, fix Important 1 pós-revisão): SweepOrphanDirectories — generalização do
+    // sweep acima com um GLOB (prefixo) configurável. `SweepOrphanUndoSpillDirectories(root, maxAge)`
+    // (acima) passa a ser implementado POR CIMA deste (mesmo comportamento, "undo-*" fixo) — os 2 testes
+    // acima continuam provando isso sem nenhuma mudança. Usado também pelo sweep NOVO de PDFs
+    // temporários de imagem convertida (`open-*`, `DocumentSession.SweepOrphanConvertedImageDirectories`
+    // abaixo).
+
+    [Fact] // só remove dirs cujo NOME bate com o GLOB e cujo LastWriteTime é mais antigo que o limiar —
+    // um dir de OUTRO prefixo, mesmo velho, nunca é tocado (prova que o filtro é genuíno, não "remove tudo").
+    public void SweepOrphanDirectories_RemovesOnlyMatchingPrefixAndOlderThanThreshold()
+    {
+        var root = TempConfigDir();
+        Directory.CreateDirectory(root);
+        var oldOpenDir = Path.Combine(root, "open-velha");
+        var newOpenDir = Path.Combine(root, "open-nova");
+        var oldOtherPrefixDir = Path.Combine(root, "undo-velha"); // prefixo DIFERENTE
+        Directory.CreateDirectory(oldOpenDir);
+        Directory.CreateDirectory(newOpenDir);
+        Directory.CreateDirectory(oldOtherPrefixDir);
+        Directory.SetLastWriteTimeUtc(oldOpenDir, DateTime.UtcNow.AddHours(-48));
+        Directory.SetLastWriteTimeUtc(oldOtherPrefixDir, DateTime.UtcNow.AddHours(-48));
+        try
+        {
+            DocumentSession.SweepOrphanDirectories(root, "open-*", TimeSpan.FromHours(24));
+
+            Assert.False(Directory.Exists(oldOpenDir));
+            Assert.True(Directory.Exists(newOpenDir));
+            Assert.True(Directory.Exists(oldOtherPrefixDir)); // prefixo "undo-*" não bate com o glob "open-*" -- intocado
+        }
+        finally { TryDeleteDir(root); }
+    }
+
+    [Fact] // raiz que nem existe ainda -> não lança (mesmo contrato do sweep de undo/redo)
+    public void SweepOrphanDirectories_RootMissing_DoesNotThrow()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"mpdf-sweep-nao-existe-{Guid.NewGuid():N}");
+        var ex = Record.Exception(() => DocumentSession.SweepOrphanDirectories(root, "open-*", TimeSpan.FromHours(24)));
+        Assert.Null(ex);
+    }
+
     // ---- Task 3 (Plano 4): CommitSigned -------------------------------------------------------------
 
     [Fact] // BELT (mesmo espírito de EndEdit): chamado FORA do funil (TryBeginEdit nunca armado) lança

@@ -1234,4 +1234,358 @@ internal sealed class PdfEditor : IPdfEditor
 
         return new FormFieldData(name, type, field.GetValueAsString(), options, pageIndex, widgetRect, field.IsReadOnly());
     }
+
+    // --- Task 1 (Plano 7): motor ImageToPdf ------------------------------------------------------
+    // Decisões de contrato (arquitetura, HIPÓTESE + reconciliação empírica via probe project) registradas
+    // no XML doc de IPdfEditor.ImageToPdf/IsSupportedImage em Contract.cs — não repetidas aqui.
+
+    /// Mensagem COMPARTILHADA (decisão do brief) pra "não é um JPG/PNG utilizável" — cobre magic bytes
+    /// desconhecidos (BMP/GIF/etc.) E bytes corrompidos com magic bytes válidos que o iText não
+    /// decodifica: o usuário não precisa saber a causa exata, só o que fazer (usar JPG ou PNG).
+    private const string UnsupportedImageMessage = "Formato de imagem não suportado. Use JPG ou PNG.";
+
+    /// Teto de pixels suportado por `ImageToPdf` — ver justificativa MEDIDA no comentário do call site.
+    private const long MaxImagePixels = 50_000_000; // 50 megapixels
+
+    private static PdfEditingException OversizedImageException() => new(
+        $"Imagem excede o limite de {MaxImagePixels / 1_000_000}MP suportado. Use uma imagem menor.");
+
+    /// Sniff por magic bytes — ver XML doc em Contract.cs. Puro, sem I/O, sem iText.
+    public bool IsSupportedImage(byte[]? bytes)
+    {
+        if (bytes is null || bytes.Length < 4) return false;
+        if (bytes[0] == 0xFF && bytes[1] == 0xD8) return true; // JPEG: SOI
+        if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) return true; // PNG
+        return false;
+    }
+
+    /// Task 3 (Plano 7) — ver XML doc em Contract.cs. Reusa TryReadJpegSofInfo/TryReadPngDimensions
+    /// (mesmos parsers overflow-safe de ImageToPdf, NUNCA reimplementados aqui) — nenhuma mudança no
+    /// código de ImageToPdf em si (zero risco de regressão no teto já revisado/hardenizado lá).
+    public bool IsWithinImagePixelLimit(byte[] bytes)
+    {
+        if (bytes is null || bytes.Length < 4) return true; // sem opinião — IsSupportedImage decide formato
+        bool isJpeg = bytes[0] == 0xFF && bytes[1] == 0xD8;
+        if (isJpeg)
+        {
+            // SOF ilegível/truncado -> sem opinião (mesmo fail-open de ImageToPdf: segue pro decode real).
+            return !TryReadJpegSofInfo(bytes, out int width, out int height, out _) || (long)width * height <= MaxImagePixels;
+        }
+        if (TryReadPngDimensions(bytes, out long pngWidth, out long pngHeight))
+            // Checagem por DIMENSÃO INDIVIDUAL antes do produto — mesma proteção contra overflow de 32
+            // bits (C3, task-1-report.md) que ImageToPdf já aplica pro mesmo par de valores.
+            return pngWidth <= MaxImagePixels && pngHeight <= MaxImagePixels && pngWidth * pngHeight <= MaxImagePixels;
+        return true; // IHDR ilegível/truncado -> sem opinião
+    }
+
+    /// Task 3 (Plano 7) — ver XML doc em Contract.cs. Reusa ReadJpegExifOrientationRotation (mesmo
+    /// parser TIFF/IFD0 de ImageToPdf, nunca reimplementado aqui).
+    public int ReadJpegExifOrientation(byte[] image) =>
+        image is { Length: >= 2 } && image[0] == 0xFF && image[1] == 0xD8
+            ? ReadJpegExifOrientationRotation(image)
+            : 0;
+
+    public byte[] ImageToPdf(byte[] image)
+    {
+        if (!IsSupportedImage(image))
+            throw new PdfEditingException(UnsupportedImageMessage);
+
+        bool isJpeg = image[0] == 0xFF && image[1] == 0xD8;
+
+        // C2 (revisão pré-merge, task-1-report.md "## Fix"): CMYK e teto de pixels são decididos por
+        // VARREDURA DE HEADER (sem iText, sem decodificar) ANTES de `ImageDataFactory.Create` — medido
+        // que o decode (sobretudo PNG com alpha, que o iText separa em SMask) já é o trabalho CARO que
+        // o teto existe pra evitar; checar DEPOIS de já ter pago esse custo derrota o propósito.
+        //
+        // JPEG: `sofWidth`/`sofHeight` vêm de campos de 2 bytes do SOF (0..65535 cada, ver
+        // `TryReadJpegSofInfo`) — o PRODUTO máximo possível é 65535*65535 ≈ 4.29e9, MUITO abaixo de
+        // `long.MaxValue` (~9.22e18): estruturalmente IMUNE ao overflow que atingiu o ramo PNG abaixo
+        // (não precisa do mesmo tratamento — não há combinação de bytes de SOF que overflowe `long`).
+        if (isJpeg)
+        {
+            if (TryReadJpegSofInfo(image, out int sofWidth, out int sofHeight, out int sofComponents))
+            {
+                if (sofComponents == 4)
+                    throw new PdfEditingException("JPEG CMYK não é suportado.");
+                if ((long)sofWidth * sofHeight > MaxImagePixels)
+                    throw OversizedImageException();
+            }
+            // SOF ilegível/truncado: segue pro Create() abaixo — recusa por corrupção, ou (se decodificar
+            // mesmo assim) cai na rede de segurança pós-Create abaixo.
+        }
+        else if (TryReadPngDimensions(image, out long pngWidth, out long pngHeight))
+        {
+            // C3 (revisão pós-merge, task-1-report.md "## Fix" — CRÍTICO, achado real do revisor): PNG
+            // IHDR é campo de 4 bytes cada (width/height até 0xFFFFFFFF = 4294967295) — o produto de
+            // dois valores nesse tamanho (~1.84e19) EXCEDE `long.MaxValue` (~9.22e18) e OVERFLOWA pra
+            // NEGATIVO em aritmética `long` padrão (unchecked); `pngWidth*pngHeight > MaxImagePixels`
+            // comparado contra um produto negativo nunca dispara — um PNG hostil com as duas dimensões
+            // no máximo de 32 bits atravessava o teto inteiro. Fix: comparar CADA dimensão
+            // INDIVIDUALMENTE contra o teto ANTES de multiplicar — por construção, se os dois checks
+            // individuais passam (nenhuma dimensão sozinha excede `MaxImagePixels`=50_000_000), o
+            // produto máximo possível é 50_000_000² = 2.5e15, muito abaixo de `long.MaxValue`, então a
+            // multiplicação seguinte NUNCA overflowa.
+            if (pngWidth > MaxImagePixels || pngHeight > MaxImagePixels || pngWidth * pngHeight > MaxImagePixels)
+                throw OversizedImageException();
+        }
+
+        ImageData imageData;
+        try { imageData = ImageDataFactory.Create(image); }
+        catch (ITextException ex) { throw new PdfEditingException(UnsupportedImageMessage, ex); }
+
+        // C3 (revisão pós-merge — mesmo achado acima): um PNG com IHDR 0xFFFFFFFF×0xFFFFFFFF SEM IDAT
+        // sobrevive à checagem de header acima (bloqueada pelo overflow) E o iText devolve `GetWidth()/
+        // GetHeight() == -1` pra essa imagem degenerada (lê o campo de 4 bytes como `int` SINALIZADO —
+        // 0xFFFFFFFF vira -1) — sem esta checagem, `pixelCount = (-1)*(-1) = 1` passaria a rede de
+        // segurança abaixo TAMBÉM, produzindo silenciosamente um PDF com `/MediaBox [0 0 -0.75 -0.75]`
+        // (dimensões NEGATIVAS, documento inválido). Dimensão não-positiva nunca é uma imagem válida —
+        // recusa tipada ANTES de calcular qualquer coisa a partir dela.
+        if (imageData.GetWidth() <= 0 || imageData.GetHeight() <= 0)
+            throw new PdfEditingException("Imagem inválida (dimensões inconsistentes).");
+
+        // Rede de segurança (defesa em profundidade — mesmo espírito do StripSignatures "defensivo" em
+        // ExtractPages/MergeDocuments): só dispara se a varredura de header acima não conseguiu ler as
+        // dimensões (arquivo malformado que o iText ainda assim decodificou).
+        long pixelCount = (long)imageData.GetWidth() * (long)imageData.GetHeight();
+        if (pixelCount > MaxImagePixels)
+            throw OversizedImageException();
+
+        double dpiX = imageData.GetDpiX() > 0 ? imageData.GetDpiX() : 96;
+        double dpiY = imageData.GetDpiY() > 0 ? imageData.GetDpiY() : 96;
+        double rawWidthPt = imageData.GetWidth() * 72.0 / dpiX;
+        double rawHeightPt = imageData.GetHeight() * 72.0 / dpiY;
+
+        // Minor (revisão pré-merge, task-1-report.md "## Fix"): PISO de tamanho de página — achado
+        // REAL do teste `ImageToPdf_OnePixelImage_...` (imagem 1x1 @ fallback 96dpi = 0.75x0.75pt):
+        // `Docnet.Core.Readers.IPageReader.GetPageWidth()/GetPageHeight()` (confirmado via reflexão
+        // sobre Docnet.Core.dll) devolvem `int` — um MediaBox de 0.75pt, escrito CORRETAMENTE pelo
+        // iText (confirmado inspecionando o PDF bruto: `/MediaBox[0 0 0.75 0.75]`), TRUNCA pra 0 no
+        // motor de render que este app usa de verdade (`mPdf.Rendering`/PDFium), produzindo uma
+        // página tecnicamente válida mas INUTILIZÁVEL (invisível/degenerada em qualquer tela do app).
+        // `MinPageDimensionPt` escala as 2 dimensões PROPORCIONALMENTE (nunca distorce, nunca reduz)
+        // só o suficiente pra garantir que nenhuma fique abaixo do que o motor consegue reportar —
+        // margem de 2pt (não 1pt cravado) contra imprecisão de ponto flutuante na trilha DPI->pt.
+        const double MinPageDimensionPt = 2.0;
+        double growScale = Math.Max(1.0, Math.Max(MinPageDimensionPt / rawWidthPt, MinPageDimensionPt / rawHeightPt));
+        if (growScale > 1.0) { rawWidthPt *= growScale; rawHeightPt *= growScale; }
+
+        int rotation = isJpeg ? ReadJpegExifOrientationRotation(image) : 0;
+
+        // I3 (revisão pré-merge, task-1-report.md "## Fix" — "o /Rotate collision"): a página do PDF
+        // resultante NUNCA gira (/Rotate fica 0 SEMPRE) — GetPageRotations(resultado)[0] == 0 é
+        // invariante ASSERTADO por teste. Girar a página (abordagem anterior, `PdfPage.SetRotation`)
+        // fazia o gate de rotação do Plano 3b (ver XML doc de `GetPageRotations`/`IPdfEditor` em
+        // Contract.cs: "interação de anotação fica DESLIGADA em página girada") bloquear anotação/
+        // assinatura em QUALQUER foto de celular convertida com EXIF != 1 — quebrando exatamente o
+        // fluxo "foto do WhatsApp -> assinar" que este motor existe pra habilitar. Fix por CONSTRUÇÃO:
+        // a correção de EXIF é aplicada via MATRIZ DE TRANSFORMAÇÃO no desenho da imagem
+        // (`PdfCanvas.ConcatMatrix`), nunca via `PdfPage.SetRotation` — ver `ComputeRotationMatrix` pra
+        // derivação explícita. A página nasce DIRETO no tamanho CORRIGIDO (upright); só o desenho da
+        // imagem dentro dela é rotacionado.
+        bool swapDims = rotation is 90 or 270;
+        double correctedWidthPt = swapDims ? rawHeightPt : rawWidthPt;
+        double correctedHeightPt = swapDims ? rawWidthPt : rawHeightPt;
+
+        using var output = new MemoryStream();
+        try
+        {
+            using (var doc = new PdfDocument(new PdfWriter(output)))
+            {
+                var page = doc.AddNewPage(new PageSize((float)correctedWidthPt, (float)correctedHeightPt));
+                var canvas = new PdfCanvas(page);
+                var localRect = new Rectangle(0, 0, (float)rawWidthPt, (float)rawHeightPt);
+                if (rotation == 0)
+                {
+                    canvas.AddImageFittedIntoRectangle(imageData, localRect, false);
+                }
+                else
+                {
+                    var m = ComputeRotationMatrix(rotation, rawWidthPt, rawHeightPt);
+                    canvas.SaveState();
+                    canvas.ConcatMatrix(m.A, m.B, m.C, m.D, m.E, m.F);
+                    canvas.AddImageFittedIntoRectangle(imageData, localRect, false);
+                    canvas.RestoreState();
+                }
+            }
+        }
+        catch (ITextException ex) { throw WrapGeneric(ex); }
+        return output.ToArray();
+    }
+
+    /// Matriz `[a b c d e f]` (convenção PDF/`PdfCanvas.ConcatMatrix` — confirmado via XML doc de
+    /// itext.kernel.dll 9.7.0: `x' = a*x + c*y + e`, `y' = b*x + d*y + f`) que rotaciona `rotation`
+    /// graus HORÁRIOS o retângulo LOCAL (0,0)-(w0,h0) — onde `w0`/`h0` = `rawWidthPt`/`rawHeightPt`,
+    /// o tamanho NATURAL (pré-correção) da imagem, o mesmo retângulo que `AddImageFittedIntoRectangle`
+    /// sempre recebeu — e traduz o resultado pra caber exatamente em (0,0)-(w0,h0) [180°] ou
+    /// (0,0)-(h0,w0) [90°/270°, dimensões trocadas]. Derivação (mapeamento dos 4 cantos do retângulo
+    /// local pro retângulo final, espaço PDF y-para-cima):
+    ///   90°:  (x,y) -> (y, w0-x)     => a=0  b=-1 c=1  d=0  e=0  f=w0   (span final: x'∈[0,h0] y'∈[0,w0])
+    ///   180°: (x,y) -> (w0-x, h0-y)  => a=-1 b=0  c=0  d=-1 e=w0 f=h0   (span final: x'∈[0,w0] y'∈[0,h0])
+    ///   270°: (x,y) -> (h0-y, x)     => a=0  b=1  c=-1 d=0  e=h0 f=0    (span final: x'∈[0,h0] y'∈[0,w0])
+    /// Verificado empiricamente (mesma fixture Orientation=6 usada pra reconciliar a HIPÓTESE original,
+    /// ver Contract.cs): o render via PDFium desta matriz bate cor-a-cor, pixel a pixel, com o que
+    /// `PdfPage.SetRotation` produzia antes do fix I3 — só que agora `/Rotate` da página fica 0.
+    private static (double A, double B, double C, double D, double E, double F) ComputeRotationMatrix(
+        int rotation, double w0, double h0) => rotation switch
+    {
+        90 => (0, -1, 1, 0, 0, w0),
+        180 => (-1, 0, 0, -1, w0, h0),
+        270 => (0, 1, -1, 0, h0, 0),
+        _ => (1, 0, 0, 1, 0, 0), // 0° — ImageToPdf nunca chama ComputeRotationMatrix pra este caso; identidade defensiva
+    };
+
+    /// EXIF Orientation (tag 0x0112) de um JPEG — parser COMPACTO do segmento APP1/TIFF, byte a byte,
+    /// sem pacote novo (achado empírico via probe, ver Contract.cs: iText não lê este tag sozinho).
+    /// Devolve os graus de rotação HORÁRIA que `ComputeRotationMatrix` precisa aplicar pra corrigir:
+    /// Orientation 1 (normal) ou ausente -> 0; 3 -> 180; 6 -> 90; 8 -> 270. Valores com espelhamento
+    /// (2/4/5/7) -> 0 (residual documentado, fora do escopo v1 — o brief só exige os 4 casos de
+    /// rotação pura, que cobrem o cenário real de foto de celular). Qualquer segmento malformado
+    /// devolve 0 (defesa em profundidade — nunca lança; um EXIF quebrado não pode derrubar a
+    /// conversão inteira, mesmo espírito de `ResolvePageIndex` em ReadOutline).
+    private static int ReadJpegExifOrientationRotation(byte[] jpeg)
+    {
+        int i = 2; // após SOI (FF D8)
+        while (i + 4 <= jpeg.Length && jpeg[i] == 0xFF)
+        {
+            byte marker = jpeg[i + 1];
+            if (marker == 0xD9 || marker == 0xDA) break; // EOI ou SOS (dados de scan) — EXIF sempre vem antes
+            if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) { i += 2; continue; } // TEM/RSTn: sem tamanho
+            // (a checagem `i+4>jpeg.Length` que existia aqui era CÓDIGO MORTO — revisão pré-merge: a
+            // condição do `while` acima já garante `i+4<=jpeg.Length` neste ponto, sempre; removida.)
+            int segLen = (jpeg[i + 2] << 8) | jpeg[i + 3];
+            if (segLen < 2) break; // segmento malformado — nunca deveria acontecer num JPEG válido
+            if (marker == 0xE1) // APP1 — candidato a EXIF ("Exif\0\0" + TIFF)
+            {
+                int payloadStart = i + 4;
+                if (payloadStart + 6 <= jpeg.Length &&
+                    jpeg[payloadStart] == 'E' && jpeg[payloadStart + 1] == 'x' && jpeg[payloadStart + 2] == 'i' &&
+                    jpeg[payloadStart + 3] == 'f' && jpeg[payloadStart + 4] == 0 && jpeg[payloadStart + 5] == 0)
+                {
+                    int rotation = ParseTiffOrientationRotation(jpeg, payloadStart + 6);
+                    if (rotation != 0) return rotation;
+                }
+            }
+            i += 2 + segLen;
+        }
+        return 0;
+    }
+
+    /// TIFF/IFD0 dentro do payload EXIF — procura o tag Orientation (0x0112, tipo SHORT) e devolve a
+    /// rotação horária correspondente (ver mapeamento em `ReadJpegExifOrientationRotation`).
+    ///
+    /// C1 (revisão pré-merge, task-1-report.md "## Fix" — CRÍTICO, achado real de fuzzing): o offset
+    /// de IFD0 (`ifd0Offset`) vem de 4 bytes NÃO CONFIÁVEIS do arquivo — qualquer valor de 32 bits é
+    /// "válido" sintaticamente. A versão anterior fazia `int ifd0Start = tiffStart + ifd0Offset;` em
+    /// aritmética `int`: um `ifd0Offset` grande o bastante (próximo de `int.MaxValue`) faz
+    /// `ifd0Start` OVERFLOWAR pra um valor ainda positivo e pequeno (passa despercebido pelo guard
+    /// `ifd0Start < 0`), mas a checagem SEGUINTE (`ifd0Start + 2 > jpeg.Length`) overflowava DE NOVO
+    /// pra um número bem negativo — `negativo > jpeg.Length` é sempre falso, então os DOIS guards
+    /// davam falso positivo de "dentro dos limites" e `jpeg[ifd0Start]` lançava `IndexOutOfRangeException`
+    /// CRUA, escapando de `ImageToPdf` sem nunca virar `PdfEditingException` (reproduzido pelo revisor
+    /// com um JPEG hostil artesanal). Fix: TODA a aritmética de offset/limite desta função roda em
+    /// `long` (`ReadUInt32` abaixo devolve `long`, nunca `int`, especificamente pra este caso —
+    /// carrega o valor UNSIGNED de 32 bits completo sem jamais virar negativo por overflow de sinal;
+    /// `long` tem margem de sobra pra somar qualquer combinação de valores de 32 bits sem overflowar).
+    /// Só depois de VALIDAR (`entryStart + 12 <= jpeg.Length`, em `long`) um offset converte de volta
+    /// pra `int` — nesse ponto já é seguro por construção (bounded por `jpeg.Length`, que é `int`).
+    private static int ParseTiffOrientationRotation(byte[] jpeg, int tiffStart)
+    {
+        if (tiffStart + 8 > jpeg.Length) return 0;
+        bool bigEndian = jpeg[tiffStart] == 'M' && jpeg[tiffStart + 1] == 'M';
+        bool littleEndian = jpeg[tiffStart] == 'I' && jpeg[tiffStart + 1] == 'I';
+        if (!bigEndian && !littleEndian) return 0;
+
+        long ifd0Offset = ReadUInt32(jpeg, tiffStart + 4, bigEndian); // 0..4294967295 — NUNCA negativo
+        long ifd0Start = tiffStart + ifd0Offset; // aritmética em `long`: sem risco de overflow (ver acima)
+        if (ifd0Start + 2 > jpeg.Length) return 0; // ifd0Start já é sempre >= tiffStart >= 0
+
+        int entryCount = ReadUInt16(jpeg, (int)ifd0Start, bigEndian); // seguro: ifd0Start+2<=jpeg.Length validado acima
+        for (int e = 0; e < entryCount; e++)
+        {
+            long entryStart = ifd0Start + 2 + (long)e * 12; // long: e*12 sozinho não overflowaria, mas
+                                                              // somado a um ifd0Start hostil poderia.
+            if (entryStart + 12 > jpeg.Length) break;
+            int entryStartInt = (int)entryStart; // seguro agora: validado < jpeg.Length (que é int)
+            int tag = ReadUInt16(jpeg, entryStartInt, bigEndian);
+            if (tag != 0x0112) continue;
+            int type = ReadUInt16(jpeg, entryStartInt + 2, bigEndian);
+            if (type != 3) return 0; // esperado SHORT — outro tipo é malformado, sem correção
+            int orientation = ReadUInt16(jpeg, entryStartInt + 8, bigEndian); // cabe nos 2 primeiros bytes do campo de 4
+            return orientation switch { 3 => 180, 6 => 90, 8 => 270, _ => 0 }; // 1=normal; 2/4/5/7=espelhado, fora de escopo v1
+        }
+        return 0;
+    }
+
+    /// Varredura crua (sem iText) do marcador SOF (Start Of Frame — 0xC0-0xCF, exceto 0xC4/0xC8/0xCC
+    /// que não são SOF de verdade: DHT/JPG/DAC) de um JPEG — devolve largura/altura/nº de componentes
+    /// de cor DIRETO do header, sem decodificar nada. Usado tanto pelo detector de CMYK (nº de
+    /// componentes==4, ver `IsCmykJpeg`) quanto pelo teto de pixels em `ImageToPdf` (C2 da revisão —
+    /// precisa saber o tamanho ANTES de chamar `ImageDataFactory.Create`, o trabalho caro que o teto
+    /// existe pra evitar). `false` quando o SOF não é encontrado ou o header está truncado — chamador
+    /// trata como "sem informação confiável", nunca lança.
+    private static bool TryReadJpegSofInfo(byte[] jpeg, out int width, out int height, out int numComponents)
+    {
+        width = 0; height = 0; numComponents = 0;
+        int i = 2; // após SOI (FF D8)
+        while (i + 4 <= jpeg.Length && jpeg[i] == 0xFF)
+        {
+            byte marker = jpeg[i + 1];
+            if (marker == 0xD9 || marker == 0xDA) break; // EOI ou SOS — SOF sempre vem antes
+            if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) { i += 2; continue; } // TEM/RSTn: sem tamanho
+            int segLen = (jpeg[i + 2] << 8) | jpeg[i + 3];
+            if (segLen < 2) break;
+            bool isSof = marker is >= 0xC0 and <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
+            if (isSof)
+            {
+                int payloadStart = i + 4; // precisão(1) + altura(2) + largura(2) + nComponentes(1)
+                if (payloadStart + 6 > jpeg.Length) return false; // header truncado — sem dado confiável
+                height = (jpeg[payloadStart + 1] << 8) | jpeg[payloadStart + 2];
+                width = (jpeg[payloadStart + 3] << 8) | jpeg[payloadStart + 4];
+                numComponents = jpeg[payloadStart + 5];
+                return true;
+            }
+            i += 2 + segLen;
+        }
+        return false;
+    }
+
+    /// FIX (revisão pós-merge da Task 3, Plano 7) — ver XML doc em Contract.cs. Era `private static`,
+    /// NUNCA chamado por nada (`ImageToPdf` sempre checou `sofComponents == 4` inline, direto, sem
+    /// passar por este helper) — promovido a instância pública pra virar a implementação de
+    /// `IPdfEditor.IsCmykJpeg`, reusando `TryReadJpegSofInfo` (nunca reimplementado). Null/curto demais
+    /// -> `false` (mesmo fail-safe de `IsWithinImagePixelLimit`) — sem essa guarda, `bytes.Length`
+    /// dentro de `TryReadJpegSofInfo` lançaria `NullReferenceException` crua pra um `bytes` nulo.
+    public bool IsCmykJpeg(byte[] bytes)
+    {
+        if (bytes is not { Length: >= 4 } || bytes[0] != 0xFF || bytes[1] != 0xD8) return false; // não é JPEG -> não pode ser CMYK
+        return TryReadJpegSofInfo(bytes, out _, out _, out int numComponents) && numComponents == 4;
+    }
+
+    /// Lê largura/altura direto do chunk IHDR de um PNG — offsets FIXOS pelo spec (assinatura de 8
+    /// bytes; depois `length`(4, ignorado aqui) + `"IHDR"`(4) + `width`(4, big-endian) +
+    /// `height`(4, big-endian), sempre o PRIMEIRO chunk de um PNG válido) — sem decodificar nada.
+    /// Usado pelo teto de pixels em `ImageToPdf` ANTES de `ImageDataFactory.Create` (C2 da revisão).
+    /// `long` de propósito (mesma disciplina do fix C1 acima): width/height vêm de 4 bytes NÃO
+    /// CONFIÁVEIS do arquivo — um PNG hostil pode declarar até 4294967295 em cada campo; `long`
+    /// carrega esse valor inteiro sem qualquer risco de overflow no produto `width*height` do chamador.
+    private static bool TryReadPngDimensions(byte[] png, out long width, out long height)
+    {
+        width = 0; height = 0;
+        if (png.Length < 24) return false;
+        if (!(png[12] == 'I' && png[13] == 'H' && png[14] == 'D' && png[15] == 'R')) return false;
+        width = ((long)png[16] << 24) | ((long)png[17] << 16) | ((long)png[18] << 8) | png[19];
+        height = ((long)png[20] << 24) | ((long)png[21] << 16) | ((long)png[22] << 8) | png[23];
+        return true;
+    }
+
+    private static int ReadUInt16(byte[] b, int offset, bool bigEndian) =>
+        bigEndian ? (b[offset] << 8) | b[offset + 1] : (b[offset + 1] << 8) | b[offset];
+
+    /// `long` de propósito (C1 da revisão, ver XML doc de `ParseTiffOrientationRotation` acima) —
+    /// devolve o valor UNSIGNED de 32 bits completo (0..4294967295); um `int` sofreria overflow de
+    /// SINAL pra qualquer valor >= 0x80000000, virando negativo silenciosamente.
+    private static long ReadUInt32(byte[] b, int offset, bool bigEndian) =>
+        bigEndian
+            ? ((long)b[offset] << 24) | ((long)b[offset + 1] << 16) | ((long)b[offset + 2] << 8) | b[offset + 3]
+            : ((long)b[offset + 3] << 24) | ((long)b[offset + 2] << 16) | ((long)b[offset + 1] << 8) | b[offset];
 }

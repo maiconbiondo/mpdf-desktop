@@ -25,12 +25,17 @@ internal sealed class FakeSigningEngine : ISigningEngine
     public byte[] SignResult { get; set; } = Fixtures.ThirtyPages();
     public Exception? ThrowOnSign { get; set; }
     public TaskCompletionSource<bool>? SignGate { get; set; }
+    // Task 2 (Plano 7, fix CRÍTICO pós-revisão): registra "engine" numa lista COMPARTILHADA (opcional)
+    // pra provar ORDEM entre a relocação (Salvar Como) e o motor — ver
+    // Sign_NeedsSaveAs_RelocatesBeforeSignDialogAndEngine.
+    public List<string>? CallOrder { get; set; }
 
     public byte[] Sign(SignRequest request)
     {
         SignGate?.Task.Wait();
         SignCallCount++;
         LastRequest = request;
+        CallOrder?.Add("engine");
         if (ThrowOnSign is { } ex) throw ex;
         return SignResult;
     }
@@ -75,12 +80,15 @@ internal sealed class FakeSignDialogService(SignDialogResult? result = null) : I
     public int CallCount { get; private set; }
     public IReadOnlyList<SigningCertificateInfo>? LastCertificates { get; private set; }
     public bool? LastAllowDocMdp { get; private set; }
+    // Task 2 (Plano 7, fix CRÍTICO pós-revisão): mesmo campo opcional de FakeSigningEngine acima.
+    public List<string>? CallOrder { get; set; }
 
     public SignDialogResult? PromptForSignature(IReadOnlyList<SigningCertificateInfo> certificates, bool allowDocMdp)
     {
         CallCount++;
         LastCertificates = certificates;
         LastAllowDocMdp = allowDocMdp;
+        CallOrder?.Add("signDialog");
         return Result;
     }
 }
@@ -89,6 +97,29 @@ internal sealed class FakeConfirmSaveBeforeSignService(bool result) : IConfirmSa
 {
     public int CallCount { get; private set; }
     public bool Confirm(string message) { CallCount++; return result; }
+}
+
+/// Diálogo "Salvar como" FAKE (Task 2, Plano 7, fix CRÍTICO pós-revisão) — mesmo padrão de
+/// `FakeFileDialogService` em `MainViewModelTests.cs`/`OrganizerViewModelTests.cs`, mas SÓ implementa
+/// `PickPdfToSaveAs` de propósito (os outros 3 métodos de `IFileDialogService` não são usados por
+/// `Sign`/`TryRelocateBeforeSign` — devolver `null`/lançar neles deixaria claro se algum dia passassem a
+/// ser chamados por engano). `saveAsResult = null` simula o usuário CANCELANDO o diálogo.
+file sealed class FakeSaveAsDialogService(string? saveAsResult, List<string>? callOrder = null) : IFileDialogService
+{
+    public int PickPdfToSaveAsCallCount { get; private set; }
+    public string? LastCurrentPath { get; private set; }
+
+    public string? PickPdfToOpen() => throw new NotSupportedException();
+    public string? PickImageToImport() => throw new NotSupportedException();
+    public string? PickPdfToSave(string suggestedName) => throw new NotSupportedException();
+
+    public string? PickPdfToSaveAs(string currentPath)
+    {
+        PickPdfToSaveAsCallCount++;
+        LastCurrentPath = currentPath;
+        callOrder?.Add("saveAs");
+        return saveAsResult;
+    }
 }
 
 /// Revisão do coordenador (item 2, "temp litter"): `BuildForSigning` (e os poucos testes que montam a
@@ -157,7 +188,13 @@ public class SignCommandTests : IDisposable
 
     private (DocumentViewModel doc, FakePdfEditor editor, FakeSigningEngine engine, FakeSignDialogService dialog,
         FakeConfirmSaveBeforeSignService confirm, List<string> errors, List<string> infos, X509Certificate2 cert)
-        BuildForSigning(bool hasSignatures = false, bool confirmSaveResult = true, string fixture = "fixture-a4.pdf")
+        BuildForSigning(
+            bool hasSignatures = false, bool confirmSaveResult = true, string fixture = "fixture-a4.pdf",
+            // Task 2 (Plano 7, fix CRÍTICO pós-revisão): `dialogs` OPCIONAL -- só os testes de
+            // `NeedsSaveAs`/relocação antes de assinar precisam injetar um `FakeSaveAsDialogService`;
+            // todos os testes PRÉ-EXISTENTES continuam usando o default de produção (`UiPrompts.
+            // CreateFileDialog()`), que nunca é alcançado (NeedsSaveAs fica `false` por padrão).
+            IFileDialogService? dialogs = null)
     {
         var editor = new FakePdfEditor { HasSignaturesResult = hasSignatures };
         var engine = new FakeSigningEngine();
@@ -172,6 +209,7 @@ public class SignCommandTests : IDisposable
             config: new AppConfig(NewConfigDir()),
             notifyError: errors.Add,
             notifyInfo: infos.Add,
+            dialogs: dialogs,
             signDialog: dialog,
             signingEngine: engine,
             confirmSaveBeforeSign: confirm,
@@ -684,6 +722,135 @@ public class SignCommandTests : IDisposable
             Assert.False(d.IsSignedDocument);
             Assert.Equal(AnnotationTool.None, d.ActiveTool); // RESET completo -- não "tente outra página"
             Assert.False(d.Session.IsEditInFlight); // funil solto (armado só durante o clique em si)
+        }
+    }
+
+    // ---- Task 2 (Plano 7, fix CRÍTICO pós-revisão): NeedsSaveAs precisa relocar (Salvar Como) ANTES de
+    // assinar — sem isto, `SignCoreAsync`/`Session.CommitSigned` gravaria o PDF ASSINADO de volta no
+    // MESMO arquivo temporário em `%TEMP%\mPDF\open-<guid>\`, e `MarkSaved` limparia `IsDirty`: a
+    // assinatura (documento LEGAL) desapareceria em silêncio na próxima limpeza do SO — achado end-to-end
+    // confirmado pelo revisor, o caso de uso CENTRAL do Plano 7 ("abrir foto -> assinar").
+
+    private string NewSaveAsTargetPath()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"mpdf-sign-relocated-{Guid.NewGuid():N}.pdf");
+        _tempFilesToDelete.Add(path);
+        return path;
+    }
+
+    [Fact] // (a) SaveAs roda ANTES do diálogo de assinatura E antes do motor -- ordem, não só CallCount.
+    public async Task Sign_NeedsSaveAs_RelocatesBeforeSignDialogAndEngine()
+    {
+        var callOrder = new List<string>();
+        var target = NewSaveAsTargetPath();
+        var dialogs = new FakeSaveAsDialogService(target, callOrder);
+        var (doc, _, engine, dialog, _, _, _, cert) = BuildForSigning(dialogs: dialogs);
+        using var d = doc;
+        using (cert)
+        {
+            d.NeedsSaveAs = true;
+            dialog.CallOrder = callOrder;
+            engine.CallOrder = callOrder;
+
+            await d.SignCommand.ExecuteAsync(null);
+
+            Assert.Equal(new[] { "saveAs", "signDialog", "engine" }, callOrder);
+            Assert.Equal(1, dialogs.PickPdfToSaveAsCallCount);
+        }
+    }
+
+    [Fact] // (b) diálogo de relocação CANCELADO -- Sign aborta LIMPO: funil nunca arma, motor nunca
+    // chamado, diálogo de assinatura nunca chamado, documento intocado (mesmo contrato de recusa já
+    // usado por "doc sujo -> confirmação recusada" acima).
+    public async Task Sign_NeedsSaveAs_SaveAsCancelled_AbortsCleanly_FunnelNeverArmed()
+    {
+        var dialogs = new FakeSaveAsDialogService(saveAsResult: null);
+        var (doc, _, engine, dialog, confirm, errors, _, cert) = BuildForSigning(dialogs: dialogs);
+        using var d = doc;
+        using (cert)
+        {
+            d.NeedsSaveAs = true;
+            var originalPath = d.Session.FilePath;
+
+            await d.SignCommand.ExecuteAsync(null);
+
+            Assert.Equal(1, dialogs.PickPdfToSaveAsCallCount);
+            Assert.Equal(0, confirm.CallCount); // nem chegou no dirty-check/forced-save existente
+            Assert.Equal(0, dialog.CallCount); // diálogo de assinatura NUNCA aberto
+            Assert.Equal(0, engine.SignCallCount);
+            Assert.False(d.Session.IsEditInFlight); // funil NUNCA armado
+            Assert.True(d.NeedsSaveAs); // ainda precisa relocar
+            Assert.Equal(originalPath, d.Session.FilePath); // nada mudou
+            Assert.Empty(errors); // cancelar não é uma falha -- sem notificação de erro
+        }
+    }
+
+    [Fact] // (c) integração: motor REAL + certificado efêmero REAL -- assina no caminho ESCOLHIDO
+    // (nunca no temp original), NeedsSaveAs zera, estado pós-assinatura é "limpo" (fecharia sem prompt).
+    public async Task Sign_NeedsSaveAs_Accepted_Integration_SignsAtChosenPath_NeedsSaveAsCleared()
+    {
+        var tempPath = CopyFixtureToTemp(); // simula o PDF temporário em %TEMP%\mPDF\open-<guid>\
+        var originalTempBytes = File.ReadAllBytes(tempPath);
+        var target = NewSaveAsTargetPath();
+        using var cert = CreateEphemeralRsaCertificate();
+        var realEngine = SigningEngineFactory.Create();
+        var dialogs = new FakeSaveAsDialogService(target);
+        var signDialog = new FakeSignDialogService(new SignDialogResult(cert, "Aprovação", "Escritório", ApplyDocMdp: true, PlaceStamp: false));
+
+        using var d = new DocumentViewModel(
+            DocumentSession.Open(tempPath),
+            editor: PdfEditorFactory.Create(), // real -- HasSignatures precisa ler o PDF de verdade
+            config: new AppConfig(NewConfigDir()),
+            notifyError: _ => { }, notifyInfo: _ => { },
+            dialogs: dialogs,
+            signDialog: signDialog, signingEngine: realEngine,
+            confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
+            listSigningCertificates: () => new[] { FakeCertificateInfo(cert) });
+        d.NeedsSaveAs = true;
+
+        await d.SignCommand.ExecuteAsync(null);
+
+        // CHOSEN-PATH assertion (o cerne do fix): o arquivo assinado está no destino que o usuário
+        // escolheu no diálogo de "Salvar como" -- NUNCA no arquivo temp original.
+        Assert.Equal(target, d.Session.FilePath);
+        Assert.True(File.Exists(target));
+        var signaturesAtTarget = realEngine.ReadSignatures(File.ReadAllBytes(target));
+        Assert.Single(signaturesAtTarget);
+        Assert.True(signaturesAtTarget[0].IntegrityValid);
+        Assert.Equal(File.ReadAllBytes(target), d.Session.Snapshot); // gravado atomicamente no destino ESCOLHIDO
+
+        // o arquivo TEMP original nunca foi tocado por CommitSigned -- continua exatamente como estava
+        // (a fixture sem assinatura nenhuma copiada por CopyFixtureToTemp), prova de que a assinatura
+        // NUNCA foi parar em %TEMP%.
+        Assert.Equal(originalTempBytes, File.ReadAllBytes(tempPath));
+
+        // estado pós-assinatura "limpo": NeedsSaveAs zerado + IsDirty falso (CommitSigned sempre marca
+        // salvo) -- é exatamente o par que MainViewModel.TryResolveDirtyDocument/CanSave leem pra
+        // decidir "fecha sem perguntar nada"/"Salvar desabilitado" (comportamento normal de doc limpo).
+        Assert.False(d.NeedsSaveAs);
+        Assert.False(d.IsDirty);
+        Assert.True(d.IsSignedDocument);
+    }
+
+    [Fact] // (d) regressão: documento NÃO temp-backed (NeedsSaveAs=false, o caso comum) -- fluxo
+    // BYTE-IDÊNTICO ao de antes desta fix, nenhum diálogo novo, nenhuma chamada a PickPdfToSaveAs.
+    public async Task Sign_NotNeedingSaveAs_NoRelocationPrompt_UnchangedFlow()
+    {
+        var dialogs = new FakeSaveAsDialogService(saveAsResult: "NUNCA_DEVERIA_SER_USADO");
+        var (doc, _, engine, dialog, confirm, _, _, cert) = BuildForSigning(dialogs: dialogs);
+        using var d = doc;
+        using (cert)
+        {
+            Assert.False(d.NeedsSaveAs);
+            var originalPath = d.Session.FilePath;
+
+            await d.SignCommand.ExecuteAsync(null);
+
+            Assert.Equal(0, dialogs.PickPdfToSaveAsCallCount); // SaveAs NUNCA invocado
+            Assert.Equal(0, confirm.CallCount); // documento limpo -- mesmo fluxo de Sign_DocClean_NeverPromptsToSave
+            Assert.Equal(1, dialog.CallCount);
+            Assert.Equal(1, engine.SignCallCount);
+            Assert.Equal(originalPath, d.Session.FilePath); // caminho nunca mudou
         }
     }
 

@@ -67,6 +67,12 @@ file sealed class SpyBatchSignDialogService : IBatchSignDialogService
     public void ShowBatchSignDialog(BatchSignViewModel viewModel) => CallCount++;
 }
 
+file sealed class SpyExportImageDialogService : IExportImageDialogService
+{
+    public int CallCount { get; private set; }
+    public void ShowExportImageDialog(ExportImageViewModel viewModel) => CallCount++;
+}
+
 /// <summary>
 /// Task 0 (Plano 3c) — prova de disparo (designing-guard-rails + Obs 19) pra cada um dos 9 membros de
 /// <see cref="UiPrompts"/> que <see cref="UiPromptsTestGuard"/> troca. Disciplina seguida em CADA teste
@@ -128,6 +134,7 @@ public class UiPromptsGuardTests
         AssertFactorySwapped<ThrowingSignDialogService>(() => UiPrompts.CreateSignDialog(), nameof(UiPrompts.CreateSignDialog));
         AssertFactorySwapped<ThrowingBatchSignDialogService>(() => UiPrompts.CreateBatchSignDialog(), nameof(UiPrompts.CreateBatchSignDialog));
         AssertFactorySwapped<ThrowingConfirmOrganizerScaleService>(() => UiPrompts.CreateConfirmOrganizerScale(), nameof(UiPrompts.CreateConfirmOrganizerScale));
+        AssertFactorySwapped<ThrowingExportImageDialogService>(() => UiPrompts.CreateExportImageDialog(), nameof(UiPrompts.CreateExportImageDialog));
     }
 
     private static string A4Path => Path.Combine(Fixtures.Root, "fixture-a4.pdf");
@@ -411,6 +418,38 @@ public class UiPromptsGuardTests
             Assert.False(doc.Session.IsEditInFlight);
         }
         finally { UiPrompts.CreateSignDialog = original; }
+    }
+
+    [Fact] // Task 4 (Plano 7): exportImageDialog OMITIDO -> ExportImageCommand alcança o diálogo de
+    // produção via UiPrompts.CreateExportImageDialog, trocado pelo guard pra uma versão que LANÇA.
+    public void DocumentViewModel_ExportImageDialogOmitted_ExportImageCommand_ThrowsViaUiPrompts()
+    {
+        AssertFactorySwapped<ThrowingExportImageDialogService>(() => UiPrompts.CreateExportImageDialog(), nameof(UiPrompts.CreateExportImageDialog));
+
+        using var doc = new DocumentViewModel(DocumentSession.Open(A4Path)); // exportImageDialog OMITIDO
+
+        var ex = Record.Exception(() => doc.ExportImageCommand.Execute(null));
+
+        var ioe = Assert.IsType<InvalidOperationException>(ex);
+        Assert.Contains(nameof(UiPrompts.CreateExportImageDialog), ioe.Message);
+    }
+
+    [Fact] // controle negativo (exportImageDialog): fake benigno local -> não lança, diálogo "mostrado" 1x.
+    public void DocumentViewModel_ExportImageDialogOmitted_NegativeControl_WithBenignFactory_DoesNotThrow()
+    {
+        var original = UiPrompts.CreateExportImageDialog;
+        try
+        {
+            var spy = new SpyExportImageDialogService();
+            UiPrompts.CreateExportImageDialog = () => spy;
+            using var doc = new DocumentViewModel(DocumentSession.Open(A4Path));
+
+            var ex = Record.Exception(() => doc.ExportImageCommand.Execute(null));
+
+            Assert.Null(ex);
+            Assert.Equal(1, spy.CallCount);
+        }
+        finally { UiPrompts.CreateExportImageDialog = original; }
     }
 
     // ==================================================================================================

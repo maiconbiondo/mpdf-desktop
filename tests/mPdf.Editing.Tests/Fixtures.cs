@@ -60,4 +60,27 @@ public static class Fixtures
     // PdfAcroForm/SignatureUtil (que lançariam, mesmo achado empírico de HasXfa). Gerada 1x via teste
     // temporário no PoC (mPdf.Poc.Signer.Tests/TempXfaSignedFixtureGenerator.cs, apagado depois).
     public static byte[] XfaAssinado() => File.ReadAllBytes(Path.Combine(Root, "fixture-xfa-assinado.pdf"));
+
+    // --- Task 1 (Plano 7): fixtures de imagem (ImageToPdf) --------------------------------------
+    // Geradas 1x via probe temporário (scratchpad, itext + System.Drawing DIRETO, apagado depois —
+    // mesmo protocolo de fixture-anotada/fixture-sumario/etc.; ver task-1-report.md, Plano 7, seção
+    // "Protocolo de geração das fixtures").
+
+    // 200x150px, JPEG qualidade 90, SEM EXIF nenhum — 4 cores PURAS e DISTINTAS em cada canto
+    // (TL=vermelho, TR=verde/lime, BL=azul, BR=amarelo, centro branco): permite detectar QUALQUER
+    // rotação/reflexão por amostragem de pixel após render (motor independente, PDFium). Tolerância
+    // medida de compressão JPEG (qualidade 90): +-1 por canal nos cantos — ver PdfEditorTests
+    // (região "JpegColorTolerance").
+    public static byte[] Foto() => File.ReadAllBytes(Path.Combine(Root, "fixture-foto.jpg"));
+    // MESMOS pixels de Foto() acima, pré-rotacionados 90° CCW (RotateFlipType.Rotate270FlipNone) +
+    // tag EXIF Orientation=6 (0x0112, SHORT, valor 6) gravado via PropertyItem do GDI+. Achado
+    // EMPÍRICO central desta task (ver task-1-report.md): `ImageDataFactory.Create` do iText NÃO
+    // honra este tag (reporta W/H dos pixels CRUS armazenados, 150x200, não os 200x150
+    // "já corrigidos") — ImageToPdf precisa ler o tag e aplicar `PdfPage.SetRotation` ele mesmo.
+    public static byte[] FotoExif90() => File.ReadAllBytes(Path.Combine(Root, "fixture-foto-exif90.jpg"));
+    // 100x100px PNG com canal alpha: quadrado OPACO verde-escuro (50,0)-(100,50); "buraco" TOTALMENTE
+    // transparente (alpha=0) sobre RGB PRETO deliberado em (0,0)-(50,50) — se o SMask não fosse
+    // honrado no render (RGB cru desenhado ignorando alpha), essa região sairia PRETA; confirmado
+    // empiricamente (probe) que sai BRANCA (fundo da página, SMask composto corretamente pelo PDFium).
+    public static byte[] Transparente() => File.ReadAllBytes(Path.Combine(Root, "fixture-transparente.png"));
 }

@@ -703,13 +703,34 @@ public sealed class DocumentSession : IDisposable
             Path.Combine(Path.GetTempPath(), "mPDF"), maxAge ?? TimeSpan.FromHours(24));
 
     /// `internal`, testável direto contra uma raiz TEMPORÁRIA própria (não a `%TEMP%\mPDF` real) — mesmo
-    /// padrão de `HandleReplaceFailure`/`BuildFailureMessage` acima.
-    internal static void SweepOrphanUndoSpillDirectories(string root, TimeSpan maxAge)
+    /// padrão de `HandleReplaceFailure`/`BuildFailureMessage` acima. Implementado POR CIMA do sweep
+    /// generalizado (`SweepOrphanDirectories` abaixo, Task 2/Plano 7 fix Important 1) com o glob
+    /// "undo-*" fixo — comportamento byte-idêntico ao de antes da generalização (os 2 testes desta
+    /// classe que chamam este overload continuam provando isso sem nenhuma mudança).
+    internal static void SweepOrphanUndoSpillDirectories(string root, TimeSpan maxAge) =>
+        SweepOrphanDirectories(root, "undo-*", maxAge);
+
+    /// Varredura de PDFs temporários ÓRFÃOS de imagens convertidas (Task 2, Plano 7, fix Important 1
+    /// pós-revisão) — cada abertura de imagem (`MainViewModel.OpenImageAsNewDocument`) grava um PDF em
+    /// `%TEMP%\mPDF\open-<guid>\`; se o usuário nunca dá "Salvar como" (ou o app crasha/fecha antes),
+    /// esse PDF fica pra trás pra sempre — mesmo problema, mesma solução, do spill de undo/redo acima.
+    /// Chamada 1x na inicialização do app (`MainWindow` ctor, MESMO call site/mesmo try/catch do sweep
+    /// de undo/redo), com o MESMO raciocínio de `maxAge` (default 24h — nunca apagar a pasta de uma
+    /// sessão ATIVA, só velha o bastante pra ser improvável que ainda esteja em uso).
+    public static void SweepOrphanConvertedImageDirectories(TimeSpan? maxAge = null) =>
+        SweepOrphanDirectories(
+            Path.Combine(Path.GetTempPath(), "mPDF"), "open-*", maxAge ?? TimeSpan.FromHours(24));
+
+    /// Núcleo GENERALIZADO (Task 2, Plano 7, fix Important 1) do sweep best-effort de pastas órfãs sob
+    /// `root` — `prefix` é o padrão de `Directory.EnumerateDirectories` (ex.: `"undo-*"`/`"open-*"`),
+    /// nunca mais hardcoded. `internal`, testável direto contra uma raiz TEMPORÁRIA própria — mesmo
+    /// padrão de `SweepOrphanUndoSpillDirectories(root, maxAge)` acima (que agora delega pra cá).
+    internal static void SweepOrphanDirectories(string root, string prefix, TimeSpan maxAge)
     {
         try
         {
             if (!Directory.Exists(root)) return;
-            foreach (var dir in Directory.EnumerateDirectories(root, "undo-*"))
+            foreach (var dir in Directory.EnumerateDirectories(root, prefix))
             {
                 try
                 {
