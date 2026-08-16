@@ -1,0 +1,120 @@
+<Window x:Class="mPdf.App.Views.BatchSignDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:mPdf.App.ViewModels"
+        Title="Assinar em lote" Height="560" Width="520" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False" Closing="Window_Closing">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <!-- Cancelar (durante a execução): só habilitado em IsRunning (ver CanCancel do VM). -->
+            <Button Content="Cancelar assinatura" Width="130" Margin="0,0,8,0"
+                    Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
+                    Command="{Binding CancelCommand}"/>
+            <!-- IsCancel=True: Esc/clique fecham a janela (DialogResult=false); Window_Closing ainda
+                 bloqueia o fechamento em IsRunning (ver code-behind), então isto nunca abandona um lote
+                 em voo. -->
+            <Button Content="Fechar" Width="90" Margin="0,0,8,0" IsCancel="True"/>
+            <!-- "Assinar" só aparece na fase de edição: a View nunca reoferece depois de Running/Done
+                 (rodar o lote de novo exigiria reabrir o diálogo, mesmo espírito "one-shot" dos outros
+                 fluxos de assinatura deste app). -->
+            <Button Content="Assinar" Width="90" IsDefault="True" Command="{Binding StartCommand}"
+                    Visibility="{Binding CanEditList, Converter={StaticResource BoolToVis}}"/>
+        </StackPanel>
+
+        <!-- Aviso de arquivo(s) recusado(s) por já estar(em) aberto(s) numa aba (risco do plano); só
+             aparece quando há algo a avisar (AddFilesNotice não-nulo). -->
+        <TextBlock DockPanel.Dock="Top" Text="{Binding AddFilesNotice}" Foreground="#FFB00020"
+                   TextWrapping="Wrap" Margin="0,0,0,8"
+                   Visibility="{Binding AddFilesNotice, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed, TargetNullValue=Collapsed}"/>
+
+        <!-- Fase EDIÇÃO: lista de arquivos + certificado + motivo/local + carimbo. -->
+        <StackPanel Visibility="{Binding CanEditList, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="Arquivos a assinar:" Margin="0,0,0,4" FontWeight="Bold"/>
+            <ListBox x:Name="FilesList" ItemsSource="{Binding Files}" Height="110" Margin="0,0,0,4"/>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <Button Content="➕ Adicionar arquivos…" Padding="8,4" Margin="0,0,8,0" Command="{Binding AddFilesCommand}"/>
+                <Button Content="Remover" Padding="8,4" Click="Remove_Click"/>
+            </StackPanel>
+
+            <TextBlock Text="Certificado:" Margin="0,0,0,4" FontWeight="Bold"/>
+            <!-- Certificados ECC listados (nunca filtrados) mas desabilitados com explicação pt-BR,
+                 mesmo padrão de Views.SignDialog (ver BatchCertificateItem). -->
+            <ListBox x:Name="CertificateListBox" ItemsSource="{Binding Certificates}"
+                     SelectedItem="{Binding SelectedCertificate}"
+                     DisplayMemberPath="DisplayText" Height="100" KeyboardNavigation.TabNavigation="Continue">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="IsEnabled" Value="{Binding IsEnabled}"/>
+                        <Setter Property="ToolTip" Value="{Binding DisabledReason}"/>
+                        <Setter Property="IsTabStop" Value="True"/>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+            </ListBox>
+
+            <TextBlock Text="Motivo (opcional):" Margin="0,12,0,4"/>
+            <TextBox Text="{Binding Reason, UpdateSourceTrigger=PropertyChanged}"/>
+
+            <TextBlock Text="Local (opcional):" Margin="0,8,0,4"/>
+            <TextBox Text="{Binding Location, UpdateSourceTrigger=PropertyChanged}"/>
+
+            <!-- v1 (decisão registrada do plano): DocMDP nunca é oferecido em lote; uma lista pode
+                 misturar arquivos já assinados e não assinados, uma única escolha de certificação seria
+                 incoerente (o motor recusa DocMDP num doc já assinado). -->
+            <TextBlock Text="Carimbo visível:" Margin="0,12,0,4"/>
+            <RadioButton x:Name="NoStampRadio" Content="Sem carimbo" GroupName="Stamp"
+                         Checked="NoStampRadio_Checked" Margin="0,0,0,4"/>
+            <RadioButton x:Name="PlaceStampRadio" Content="Carimbo na última página (canto inferior direito)"
+                         GroupName="Stamp" Checked="PlaceStampRadio_Checked"/>
+        </StackPanel>
+
+        <!-- Fase EXECUÇÃO: progresso. -->
+        <StackPanel Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}" VerticalAlignment="Center">
+            <TextBlock Text="{Binding ProgressText}" FontSize="14" TextAlignment="Center" Margin="0,0,0,12"/>
+            <ProgressBar IsIndeterminate="True" Height="18"/>
+        </StackPanel>
+
+        <!-- Fase CONCLUÍDO: resultado por arquivo, símbolo de sucesso/falha. -->
+        <DockPanel Visibility="{Binding IsDone, Converter={StaticResource BoolToVis}}">
+            <TextBlock DockPanel.Dock="Top" Text="Lote cancelado. Os arquivos restantes não foram processados."
+                       Foreground="#FFB00020" TextWrapping="Wrap" Margin="0,0,0,8"
+                       Visibility="{Binding WasCancelled, Converter={StaticResource BoolToVis}}"/>
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ItemsControl ItemsSource="{Binding Results}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="{x:Type vm:BatchSignFileResult}">
+                            <TextBlock Text="{Binding Message}" TextWrapping="Wrap" Margin="0,0,0,6" FontSize="12">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="#FF4CAF50"/>
+                                        <Setter Property="Text">
+                                            <Setter.Value>
+                                                <MultiBinding StringFormat="✔ {0}">
+                                                    <Binding Path="Message"/>
+                                                </MultiBinding>
+                                            </Setter.Value>
+                                        </Setter>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Succeeded}" Value="False">
+                                                <Setter Property="Foreground" Value="#FFE53935"/>
+                                                <Setter Property="Text">
+                                                    <Setter.Value>
+                                                        <MultiBinding StringFormat="✖ {0}">
+                                                            <Binding Path="Message"/>
+                                                        </MultiBinding>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </DockPanel>
+    </DockPanel>
+</Window>

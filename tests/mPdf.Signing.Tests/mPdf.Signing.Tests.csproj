@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Revisão 2 (item 1): PackageReference DIRETA (mesmo precedente de
+         tests/mPdf.Editing.Tests/mPdf.Editing.Tests.csproj:21 — não herdada da ProjectReference pra
+         mPdf.Signing abaixo, que continua com PrivateAssets=compile) só pra Fixtures.PasswordProtected
+         construir, EM MEMÓRIA, um PDF criptografado (WriterProperties.SetStandardEncryption) que
+         nenhum fixture existente tem forma pra exercitar. AgplGuardTests só varre src/**, nunca
+         tests/**, então isto não fura a fronteira AGPL — a fronteira é sobre o CÓDIGO DE PRODUTO
+         distribuído, não sobre testes. -->
+    <PackageReference Include="itext" Version="9.7.0" />
+    <!-- Task 6 (Plano 4): mesmo precedente do item acima — precisa da mecânica de assinatura CRUA (fora
+         de ISigningEngine) só pra fabricar uma fixture certificada com P=1 (NO_CHANGES_PERMITTED), um
+         nível que DocMdpLevel/SignRequest nunca expõem por design (este app nunca EMITE P=1/P=3 — ver
+         Contract.cs) mas que um documento de TERCEIRO pode carregar; CanFillIncremental precisa ser
+         testado contra esse caso. -->
+    <PackageReference Include="itext.bouncy-castle-adapter" Version="9.7.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- PdfQuad (usado em VisibleStampSpec.Rect) chega transitivamente por esta referência — a
+         ProjectReference de mPdf.Signing pra mPdf.Editing (no .csproj dele) NÃO tem PrivateAssets, de
+         propósito: é o tipo neutro compartilhado, precisa propagar. NÃO propaga acesso de COMPILAÇÃO
+         ao iText (PrivateAssets=compile no PROPRIO mPdf.Signing.csproj corta isso). -->
+    <ProjectReference Include="..\..\src\mPdf.Signing\mPdf.Signing.csproj" />
+    <!-- Mesmo padrão de tests/mPdf.Editing.Tests: motor de RENDER INDEPENDENTE (Docnet/PDFium) pra
+         provar o carimbo visível por pixel, nunca reler com o MESMO iText que assinou. -->
+    <ProjectReference Include="..\..\src\mPdf.Rendering\mPdf.Rendering.csproj" />
+  </ItemGroup>
+
+</Project>

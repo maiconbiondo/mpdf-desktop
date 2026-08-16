@@ -1,0 +1,71 @@
+<UserControl x:Class="mPdf.App.Views.ThumbnailsPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:mPdf.App.ViewModels">
+    <!-- ListBox = ScrollViewer + virtualização prontos, mesmo exemplar de PdfViewerControl.xaml
+         (PageList), simplificado: sem overlays de seleção/busca, seleção de item desativada no
+         estilo (a "seleção" visual é o IsCurrent do DataTrigger abaixo, não a seleção do ListBox). -->
+    <ListBox x:Name="ThumbList"
+             ItemsSource="{Binding Thumbnails}"
+             Background="#FF3C3F41"
+             BorderThickness="0"
+             Focusable="False"
+             HorizontalContentAlignment="Center"
+             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+             VirtualizingPanel.IsVirtualizing="True"
+             VirtualizingPanel.VirtualizationMode="Recycling"
+             VirtualizingPanel.ScrollUnit="Pixel"
+             VirtualizingPanel.CacheLength="1,1"
+             VirtualizingPanel.CacheLengthUnit="Page">
+        <ListBox.ItemContainerStyle>
+            <Style TargetType="ListBoxItem">
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ListBoxItem">
+                            <ContentPresenter/>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </ListBox.ItemContainerStyle>
+        <ListBox.ItemTemplate>
+            <DataTemplate DataType="{x:Type vm:ThumbnailViewModel}">
+                <StackPanel Margin="0,6" HorizontalAlignment="Center">
+                    <!-- Border = mesmo container Loaded/Unloaded/DataContextChanged de PdfViewerControl
+                         (exemplar), sem MouseMove/MouseLeftButtonDown de arrasto (não há seleção de
+                         texto aqui) — só MouseLeftButtonUp pra navegar. BorderThickness/Brush mudam
+                         via DataTrigger em IsCurrent = destaque da página atual (contrato do brief). -->
+                    <Border Width="{Binding DisplayWidth}" Height="{Binding DisplayHeight}"
+                            Background="White" SnapsToDevicePixels="True"
+                            BorderThickness="3"
+                            Loaded="Thumb_Loaded" Unloaded="Thumb_Unloaded"
+                            DataContextChanged="Thumb_DataContextChanged"
+                            MouseLeftButtonUp="Thumb_MouseLeftButtonUp"
+                            Cursor="Hand">
+                        <!-- BorderBrush default vem do Setter (não de um atributo local no Border) DE
+                             PROPÓSITO: um valor LOCAL sempre vence qualquer Setter de Style/DataTrigger
+                             em precedência do WPF — um `BorderBrush="Transparent"` direto aqui bloquearia
+                             pra sempre o Setter do DataTrigger abaixo (achado real: verificado por
+                             varredura de pixel no smoke manual, a borda nunca ficava azul). -->
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="BorderBrush" Value="Transparent"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                                        <Setter Property="BorderBrush" Value="#FF3A8EF6"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <Image Source="{Binding ImageSource}" Stretch="Fill"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                    </Border>
+                    <TextBlock Text="{Binding PageNumber}" Foreground="#FFCCCCCC"
+                               HorizontalAlignment="Center" FontSize="11" Margin="0,2,0,0"/>
+                </StackPanel>
+            </DataTemplate>
+        </ListBox.ItemTemplate>
+    </ListBox>
+</UserControl>

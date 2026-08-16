@@ -1,0 +1,81 @@
+<UserControl x:Class="mPdf.App.Views.PageOrganizerView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:mPdf.App.ViewModels">
+    <!-- Organizador de páginas (Task 3, Plano 3b) — DataContext esperado: um DocumentViewModel (mesmo
+         padrão de ThumbnailsPanel, exemplar direto deste controle), lido através de `Organizer.*`
+         (nulo fora do modo organizador — este controle só fica Visible quando IsOrganizerOpen=true,
+         ver MainWindow.xaml, então `Organizer` já é não-nulo sempre que ele é realmente mostrado). -->
+    <DockPanel Background="#FF3C3F41">
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8" Background="#FF2B2B2B">
+            <Button Command="{Binding Organizer.RotateSelectedCommand}" ToolTip="Girar 90° as páginas selecionadas" Padding="8,4" Margin="0,0,4,0">
+                <TextBlock Text="↻ Girar 90°"/>
+            </Button>
+            <Button Command="{Binding Organizer.DeleteSelectedCommand}" ToolTip="Excluir páginas selecionadas" Padding="8,4" Margin="0,0,4,0">
+                <TextBlock Text="🗑 Excluir"/>
+            </Button>
+            <!-- Drag-reorder v1 = botões (decisão registrada no relatório: o próprio plano previa este
+                 fallback caso o arrasto brigasse com a grade WPF) — habilitados só com EXATAMENTE 1
+                 página selecionada e fora dos extremos do documento (ver OrganizerViewModel.CanMoveLeft/
+                 CanMoveRight). -->
+            <Button Command="{Binding Organizer.MoveSelectionLeftCommand}" ToolTip="Mover a página selecionada uma posição para trás" Padding="8,4" Margin="0,0,4,0">
+                <TextBlock Text="◀ Mover"/>
+            </Button>
+            <Button Command="{Binding Organizer.MoveSelectionRightCommand}" ToolTip="Mover a página selecionada uma posição para frente" Padding="8,4">
+                <TextBlock Text="Mover ▶"/>
+            </Button>
+            <Separator/>
+            <!-- Task 4 (Plano 3b): Extrair — habilitado com QUALQUER seleção (não depende de CanEdit,
+                 ver OrganizerViewModel.CanExtractSelection: ExtractPages é leitura pura, funciona até em
+                 documento assinado). Não abre aba (decisão do brief) — só grava o arquivo escolhido. -->
+            <Button Command="{Binding Organizer.ExtractSelectedCommand}" ToolTip="Extrair páginas selecionadas para um novo arquivo" Padding="8,4" Margin="0,0,4,0">
+                <TextBlock Text="📤 Extrair"/>
+            </Button>
+            <!-- Inserir — gated por CanEdit (InsertPages muta o documento aberto); insere após a última
+                 página selecionada, ou no fim sem seleção nenhuma (ver OrganizerViewModel.Insert). -->
+            <Button Command="{Binding Organizer.InsertCommand}" ToolTip="Inserir páginas de outro PDF" Padding="8,4">
+                <TextBlock Text="➕ Inserir"/>
+            </Button>
+        </StackPanel>
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Organizer.Pages}" Margin="12" Focusable="False">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel/>
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="{x:Type vm:OrganizerPageViewModel}">
+                        <!-- Border = mesmo container Loaded/Unloaded/DataContextChanged de ThumbnailsPanel
+                             (exemplar); BorderBrush muda via DataTrigger em IsSelected (mesma técnica de
+                             IsCurrent lá — accent azul = seleção, não "página atual"). -->
+                        <StackPanel Margin="8" HorizontalAlignment="Center">
+                            <Border Width="{Binding DisplayWidth}" Height="{Binding DisplayHeight}"
+                                    Background="White" SnapsToDevicePixels="True"
+                                    BorderThickness="3"
+                                    Loaded="Page_Loaded" Unloaded="Page_Unloaded"
+                                    DataContextChanged="Page_DataContextChanged"
+                                    MouseLeftButtonUp="Page_MouseLeftButtonUp"
+                                    Cursor="Hand">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="BorderBrush" Value="Transparent"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                <Setter Property="BorderBrush" Value="#FF3A8EF6"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <Image Source="{Binding ImageSource}" Stretch="Fill"
+                                       RenderOptions.BitmapScalingMode="HighQuality"/>
+                            </Border>
+                            <TextBlock Text="{Binding PageNumber}" Foreground="#FFCCCCCC"
+                                       HorizontalAlignment="Center" FontSize="12" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

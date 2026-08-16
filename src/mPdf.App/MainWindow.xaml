@@ -1,0 +1,363 @@
+<Window x:Class="mPdf.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:mPdf.App.ViewModels"
+        xmlns:views="clr-namespace:mPdf.App.Views"
+        xmlns:editing="clr-namespace:mPdf.Editing;assembly=mPdf.Editing"
+        Title="{Binding SelectedDocument.Title, FallbackValue=mPDF, StringFormat='mPDF — {0}'}"
+        Height="800" Width="1200" WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
+    <DockPanel>
+        <ToolBarTray DockPanel.Dock="Top">
+            <ToolBar>
+                <Button Command="{Binding OpenFileCommand}" ToolTip="Abrir PDF (Ctrl+O)" Padding="8,4">
+                    <TextBlock Text="📂 Abrir"/>
+                </Button>
+                <!-- Task 3 (Plano 3a): desabilitado sem documento SUJO via CanExecute do SaveCommand
+                     (mesmo mecanismo do PrintCommand abaixo). -->
+                <Button Command="{Binding SaveCommand}" ToolTip="Salvar (Ctrl+S)" Padding="8,4">
+                    <TextBlock Text="💾 Salvar"/>
+                </Button>
+                <Button Command="{Binding SaveAsCommand}" ToolTip="Salvar como…" Padding="8,4">
+                    <TextBlock Text="Salvar como…"/>
+                </Button>
+                <Separator/>
+                <!-- Task 4 (Plano 3a): pilha de desfazer/refazer é POR DOCUMENTO (cada aba tem a sua),
+                     por isso os comandos vêm de SelectedDocument (mesmo padrão dos botões de Zoom
+                     abaixo), não de MainViewModel (onde vivem Save/Print, que precisam de diálogo/config
+                     compartilhados). CanExecute do próprio comando já desabilita o botão automaticamente. -->
+                <Button Command="{Binding SelectedDocument.UndoCommand}" ToolTip="Desfazer (Ctrl+Z)" Padding="8,4">
+                    <TextBlock Text="↶ Desfazer"/>
+                </Button>
+                <Button Command="{Binding SelectedDocument.RedoCommand}" ToolTip="Refazer (Ctrl+Y)" Padding="8,4">
+                    <TextBlock Text="↷ Refazer"/>
+                </Button>
+                <!-- Task 8: desabilitado sem documento via CanExecute do PrintCommand (WPF desabilita
+                     o Button automaticamente quando ICommand.CanExecute retorna false). -->
+                <Button Command="{Binding PrintCommand}" ToolTip="Imprimir (Ctrl+P)" Padding="8,4">
+                    <TextBlock Text="🖨 Imprimir"/>
+                </Button>
+                <!-- Task 3 (Plano 4): comando por DOCUMENTO (mesmo padrão de Undo/Redo acima) —
+                     habilitado com qualquer doc aberto não-XFA, INCLUSIVE já assinado (assinatura
+                     incremental — CanSign deliberadamente NÃO compõe !IsSignedDocument, ver doc XML de
+                     DocumentViewModel.CanSign). CanExecute do próprio comando desabilita o botão. -->
+                <Button Command="{Binding SelectedDocument.SignCommand}" ToolTip="Assinar digitalmente" Padding="8,4">
+                    <TextBlock Text="🖊 Assinar"/>
+                </Button>
+                <Separator/>
+                <!-- Task 6: toggle do painel de miniaturas — oculto por padrão (ThumbnailsVisible = false),
+                     TwoWay padrão do IsChecked de ToggleButton dispensa comando dedicado. -->
+                <ToggleButton IsChecked="{Binding ThumbnailsVisible}" Padding="8,4" ToolTip="Mostrar/ocultar miniaturas">
+                    <TextBlock Text="☰ Miniaturas"/>
+                </ToggleButton>
+                <!-- Task 3 (Plano 3b): toggle do organizador — POR DOCUMENTO (mesmo padrão de Undo/Redo/
+                     Zoom acima, cada aba tem seu próprio IsOrganizerOpen/Organizer), diferente de
+                     ThumbnailsVisible (janela inteira). TwoWay padrão do IsChecked de ToggleButton
+                     dispensa comando dedicado — mesma escolha já registrada para o toggle de miniaturas. -->
+                <ToggleButton IsChecked="{Binding SelectedDocument.IsOrganizerOpen}" Padding="8,4" ToolTip="Organizar páginas (girar/excluir/mover)">
+                    <TextBlock Text="📄 Páginas"/>
+                </ToggleButton>
+                <Separator/>
+                <!-- Task 4 (Plano 3b): Juntar — SEMPRE habilitado (funciona sem nenhum documento aberto,
+                     ver MainViewModel.Merge). Dividir — precisa de um documento ativo (CanSplit). -->
+                <Button Command="{Binding MergeCommand}" ToolTip="Juntar vários PDFs em um só" Padding="8,4" Margin="0,0,4,0">
+                    <TextBlock Text="🔗 Juntar"/>
+                </Button>
+                <Button Command="{Binding SplitCommand}" ToolTip="Dividir o documento em vários arquivos" Padding="8,4">
+                    <TextBlock Text="✂ Dividir"/>
+                </Button>
+                <!-- Task 5 (Plano 4): opera sobre arquivos externos escolhidos dentro do próprio diálogo,
+                     SEMPRE habilitado (nenhum CanExecute), mesmo espírito de Juntar acima. -->
+                <Button Command="{Binding BatchSignCommand}" ToolTip="Assinar vários PDFs em lote" Padding="8,4">
+                    <TextBlock Text="🖊 Assinar em lote"/>
+                </Button>
+                <Separator/>
+                <Menu VerticalAlignment="Center" Background="Transparent">
+                    <MenuItem Header="Recentes" ItemsSource="{Binding RecentFiles}">
+                        <MenuItem.ItemContainerStyle>
+                            <Style TargetType="MenuItem">
+                                <Setter Property="Command" Value="{Binding DataContext.OpenRecentCommand, RelativeSource={RelativeSource AncestorType=Menu}}"/>
+                                <Setter Property="CommandParameter" Value="{Binding}"/>
+                                <Setter Property="Header" Value="{Binding}"/>
+                            </Style>
+                        </MenuItem.ItemContainerStyle>
+                    </MenuItem>
+                </Menu>
+            </ToolBar>
+            <!-- Task 3 (Plano 5): 2ª linha da ToolBarTray — ferramentas de ANOTAÇÃO (marca-texto/
+                 sublinhado/riscado + swatches de cor + nota/texto + desenho/retângulo/linha/seta +
+                 carimbos) + zoom/ajuste de página (ver comentário mais abaixo, perto de onde entram)
+                 isoladas da 1ª linha (arquivo/desfazer-refazer/imprimir/assinar/miniaturas/organizador/
+                 juntar-dividir-lote/recentes). Motivo: com as ~13 ferramentas de anotação somadas ao
+                 resto (~24 controles), a ToolBar ÚNICA excedia a largura útil da janela a 1200px —
+                 "Assinar em lote" caía no popup de OVERFLOW do WPF (invisível/inacessível pros 38
+                 usuários leigos, achado do smoke do Plano 4). ToolBarTray já suporta múltiplas ToolBar em
+                 linhas (Band) — opção mais barata que um dropdown/split-button aqui: NENHUM Button muda
+                 de tipo (continuam Button simples, não ToggleButton — mesma escolha já documentada nos
+                 comentários de cada cluster abaixo, "sem indicador visual de ferramenta CORRENTE"),
+                 NENHUM binding muda, ZERO mudança funcional — só a POSIÇÃO no layout. Critério de
+                 aceitação (MEDIDO, não visual): `ViewerIntegrationTests.
+                 MainWindow_At1200x800_ToolbarsHaveNoOverflowItems` — sonda STA permanente que abre a
+                 MainWindow real a 1200×800, força um passe de layout (UpdateLayout) e verifica
+                 `ToolBar.HasOverflowItems == false` nas DUAS linhas; roda a cada build, protegendo
+                 contra a próxima pessoa que adicionar um botão aqui sem perceber que estourou de novo.
+                 `ToolBar.Band="1"` é OBRIGATÓRIO aqui (achado ao vivo escrevendo a sonda STA acima): sem
+                 ele, o attached property `Band` (definido em `ToolBar`, não em `ToolBarTray`) de AMBAS as
+                 ToolBar fica no default (0) — a ToolBarTray põe as duas na MESMA linha, lado a lado
+                 dividindo a largura (a 1ª pega quase tudo, a 2ª sobra com ~24px e o resto vira overflow),
+                 não empilhadas em 2 linhas como o nome "2ª linha" do comentário acima sugere. -->
+            <ToolBar Band="1">
+                <!-- Task 6 (Plano 3a): marca-texto/sublinhado/riscado a partir da seleção ativa. Os 3
+                     botões de FERRAMENTA são "toggle-less" (Button, não ToggleButton — brief) e
+                     compartilham o MESMO comando (ApplyMarkupCommand), diferenciados só pelo
+                     CommandParameter — {x:Static} entrega o AnnotationKind FORTEMENTE TIPADO (não uma
+                     string crua que um CommandParameter="Highlight" simples produziria, o que faria
+                     RelayCommand&lt;AnnotationKind&gt; lançar InvalidCastException). Habilitados só com
+                     CanEdit && seleção ativa (CanApplyMarkup, ver DocumentViewModel) — desabilitados
+                     tanto num documento assinado quanto sem nenhuma seleção. -->
+                <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}"
+                        CommandParameter="{x:Static editing:AnnotationKind.Highlight}"
+                        ToolTip="Marca-texto" Padding="8,4">
+                    <TextBlock Text="🖍 Marca-texto"/>
+                </Button>
+                <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}"
+                        CommandParameter="{x:Static editing:AnnotationKind.Underline}"
+                        ToolTip="Sublinhar" Padding="8,4">
+                    <TextBlock Text="U̲ Sublinhar"/>
+                </Button>
+                <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}"
+                        CommandParameter="{x:Static editing:AnnotationKind.Strikeout}"
+                        ToolTip="Riscar" Padding="8,4">
+                    <TextBlock Text="S̶ Riscar"/>
+                </Button>
+                <!-- Conjunto de cor (brief): 3 swatches fixos — não aplicam nada sozinhos, só trocam
+                     SelectedMarkupColorArgb, usado pelo próximo clique num dos 3 botões acima. Sempre
+                     habilitados (a escolha de cor não depende de CanEdit/seleção — só a APLICAÇÃO
+                     depende). Sem indicador visual de "cor corrente" nesta v1 (fora do pedido do
+                     brief — evitado de propósito pra não precisar de um IValueConverter novo só pra
+                     isso; ToolTip já nomeia cada cor). -->
+                <Button Command="{Binding SelectedDocument.SelectColorAmareloCommand}" ToolTip="Amarelo" Margin="4,0,0,0" Padding="2" Width="22" Height="22">
+                    <Border Background="#FFFF00" BorderBrush="Black" BorderThickness="1"/>
+                </Button>
+                <Button Command="{Binding SelectedDocument.SelectColorVerdeCommand}" ToolTip="Verde" Margin="2,0,0,0" Padding="2" Width="22" Height="22">
+                    <Border Background="#00FF66" BorderBrush="Black" BorderThickness="1"/>
+                </Button>
+                <Button Command="{Binding SelectedDocument.SelectColorVermelhoCommand}" ToolTip="Vermelho" Margin="2,0,0,0" Padding="2" Width="22" Height="22">
+                    <Border Background="#FF5555" BorderBrush="Black" BorderThickness="1"/>
+                </Button>
+                <Separator/>
+                <!-- Task 7 (Plano 3a): ferramentas de colocação — 📝 Nota (StickyNote, ícone 20x20pt) /
+                     🅰 Texto (FreeText, caixa 200x60pt). Mutuamente exclusivas E "clicar de novo desliga"
+                     ficam inteiramente no VM (ActiveTool, ver ToggleStickyNoteTool/ToggleFreeTextTool) —
+                     Button simples (não ToggleButton), mesma escolha já registrada pros swatches de cor
+                     acima ("sem indicador visual de ferramenta CORRENTE nesta v1", Task 6). Habilitados
+                     só com CanEdit (mesmo gate de ApplyMarkupCommand). -->
+                <Button Command="{Binding SelectedDocument.ToggleStickyNoteToolCommand}" ToolTip="Nota adesiva" Padding="8,4">
+                    <TextBlock Text="📝 Nota"/>
+                </Button>
+                <Button Command="{Binding SelectedDocument.ToggleFreeTextToolCommand}" ToolTip="Caixa de texto" Padding="8,4">
+                    <TextBlock Text="🅰 Texto"/>
+                </Button>
+                <!-- Task 8 (Plano 3a): ferramentas de DESENHO — ✏ Desenho livre (Ink), ▢ Retângulo,
+                     ─ Linha, ↗ Seta. Mesmo padrão dos 2 botões acima (Button simples, mutuamente
+                     exclusivos via ActiveTool no VM, sem indicador visual de ferramenta corrente nesta
+                     v1) — só o fluxo de mouse muda (arrasto desenha uma prévia, não clique único; ver
+                     PdfViewerControl.Page_MouseLeftButtonDown/CommitDrawingAsync). Cor reusa o MESMO
+                     seletor de cor da toolbar (SelectedMarkupColorArgb, swatches acima); espessura de
+                     traço é uma constante fixa 2pt (brief v1), sem controle na UI. -->
+                <Button Command="{Binding SelectedDocument.ToggleInkToolCommand}" ToolTip="Desenho livre" Padding="8,4">
+                    <TextBlock Text="✏ Desenho"/>
+                </Button>
+                <Button Command="{Binding SelectedDocument.ToggleRectangleToolCommand}" ToolTip="Retângulo" Padding="8,4">
+                    <TextBlock Text="▢ Retângulo"/>
+                </Button>
+                <Button Command="{Binding SelectedDocument.ToggleLineToolCommand}" ToolTip="Linha" Padding="8,4">
+                    <TextBlock Text="─ Linha"/>
+                </Button>
+                <Button Command="{Binding SelectedDocument.ToggleArrowToolCommand}" ToolTip="Seta" Padding="8,4">
+                    <TextBlock Text="↗ Seta"/>
+                </Button>
+                <Separator/>
+                <!-- Task 9 (Plano 3a): dropdown/popup da GALERIA de carimbos de imagem. ToggleButton +
+                     Popup (idiomático WPF pra dropdown de toolbar) — DataContext do Popup é reancorado
+                     em PlacementTarget.DataContext (o MainViewModel da JANELA — Popup cria uma raiz
+                     visual PRÓPRIA, então herdar DataContext do resto da árvore não funciona sozinho
+                     sem isto). Clique numa miniatura -> SelectStampCommand (ativa a ferramenta no
+                     documento ATIVO); "✕" -> RemoveStampCommand; "➕ Adicionar carimbo…" -> AddStampCommand
+                     (abre OpenFileDialog png/jpg injetável, ver IFileDialogService.PickImageToImport). -->
+                <ToggleButton x:Name="StampGalleryToggle" Padding="8,4" ToolTip="Carimbos de imagem">
+                    <TextBlock Text="🖃 Carimbos"/>
+                </ToggleButton>
+                <Popup PlacementTarget="{Binding ElementName=StampGalleryToggle}"
+                       IsOpen="{Binding IsChecked, ElementName=StampGalleryToggle}"
+                       StaysOpen="False" Placement="Bottom"
+                       DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                    <Border Background="White" BorderBrush="Gray" BorderThickness="1" Padding="8" MinWidth="220" MaxHeight="320">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Top" Command="{Binding AddStampCommand}" Margin="0,0,0,6" HorizontalContentAlignment="Left">
+                                <TextBlock Text="➕ Adicionar carimbo…"/>
+                            </Button>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ItemsControl x:Name="StampItemsList" ItemsSource="{Binding StampItems}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,2">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Button Grid.Column="0" HorizontalContentAlignment="Left" Padding="4"
+                                                        ToolTip="Clique para colocar este carimbo na página"
+                                                        Command="{Binding DataContext.SelectStampCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                        CommandParameter="{Binding Name}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <Image Source="{Binding Thumbnail}" Width="32" Height="32" Stretch="Uniform"/>
+                                                        <TextBlock Text="{Binding Name}" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button Grid.Column="1" Content="✕" Padding="4,0" Margin="4,0,0,0" BorderThickness="0" Background="Transparent"
+                                                        ToolTip="Remover carimbo da galeria"
+                                                        Command="{Binding DataContext.RemoveStampCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                        CommandParameter="{Binding Name}"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </DockPanel>
+                    </Border>
+                </Popup>
+                <!-- Task 3 (Plano 5): zoom + ajuste de página migraram pra cá (2ª linha) na reorganização
+                     anti-overflow — não são "ferramenta de anotação", mas a 1ª linha sozinha (arquivo/
+                     desfazer-refazer/imprimir/assinar/miniaturas/páginas/juntar-dividir-lote/recentes)
+                     já ficava no limite da largura útil a 1200px; MEDIDO (não achismo): com os 24 itens
+                     originais a 1ª linha precisava de ~1290px de conteúdo pra ~1126px úteis, e mover só o
+                     bloco de anotação pra 2ª linha (Task 3 acima) NÃO bastava — ver sonda STA
+                     `MainWindow_At1200x800_ToolbarsHaveNoOverflowItems`, que reprovou até este ajuste
+                     entrar. Mesmos Command/Click de sempre, zero mudança de binding. -->
+                <Separator/>
+                <Button Command="{Binding SelectedDocument.ZoomOutCommand}" Padding="8,4" ToolTip="Reduzir zoom">−</Button>
+                <TextBlock Text="{Binding SelectedDocument.ZoomPercent, FallbackValue=''}" VerticalAlignment="Center" MinWidth="42" TextAlignment="Center"/>
+                <Button Command="{Binding SelectedDocument.ZoomInCommand}" Padding="8,4" ToolTip="Ampliar zoom">+</Button>
+                <Separator/>
+                <Button Click="FitWidth_Click" Padding="8,4" ToolTip="Ajustar à largura">↔ Largura</Button>
+                <Button Click="FitPage_Click" Padding="8,4" ToolTip="Página inteira">▭ Página</Button>
+            </ToolBar>
+        </ToolBarTray>
+        <StatusBar DockPanel.Dock="Bottom">
+            <StatusBarItem>
+                <TextBlock Text="{Binding SelectedDocument.Title, FallbackValue='Nenhum documento aberto'}"/>
+            </StatusBarItem>
+            <Separator/>
+            <StatusBarItem>
+                <TextBlock Text="{Binding SelectedDocument.PageCountLabel, FallbackValue=''}"/>
+            </StatusBarItem>
+            <Separator/>
+            <StatusBarItem>
+                <TextBlock Text="{Binding SelectedDocument.ZoomPercent, FallbackValue=''}"/>
+            </StatusBarItem>
+            <!-- Task 7: indicador simples durante o await de OpenPath -> OpenAsync (parse PDFium em
+                 Task.Run pode levar um tempo perceptível em arquivo grande/SMB); some sozinho quando
+                 IsOpening volta a false no finally do VM. -->
+            <StatusBarItem Visibility="{Binding IsOpening, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="Abrindo documento…"/>
+            </StatusBarItem>
+            <!-- Task 2 (Plano 5): mesmo padrão do indicador de abertura acima, só que POR DOCUMENTO
+                 (SelectedDocument.IsSaving, não uma flag da janela — ver doc XML da propriedade em
+                 DocumentViewModel) — some sozinho quando o Save/SaveAs em Task.Run termina (sucesso ou
+                 falha, ver finally de MainViewModel.Save/SaveAs). FallbackValue=Collapsed: mesma
+                 disciplina de todo binding SelectedDocument.X nesta StatusBar/janela (ver comentário do
+                 SignedDocumentBanner abaixo) — sem documento algum aberto, o caminho não resolve e o
+                 default de Visibility é Visible, não Collapsed. -->
+            <StatusBarItem Visibility="{Binding SelectedDocument.IsSaving, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
+                <TextBlock Text="Salvando…"/>
+            </StatusBarItem>
+        </StatusBar>
+        <!-- Task 5 (Plano 3a): banner de modo restrito — visível só quando a aba ATIVA está assinada
+             (SelectedDocument.IsSignedDocument). "Editar uma cópia" dispara EditCopyCommand do
+             MainViewModel (não do documento — ele precisa saber ONDE gravar a cópia e ABRIR a nova
+             aba, responsabilidades que vivem lá, mesmo padrão de Save/SaveAs/Print acima).
+             FallbackValue=Collapsed (fix pós-revisão, C1): SEM isso, com SelectedDocument null (app
+             recém-aberto, ou última aba fechada) o caminho da propriedade "SelectedDocument.
+             IsSignedDocument" não resolve (referência nula no meio do caminho) — o Binding nunca chega
+             a chamar o Converter, e cai no valor PADRÃO de Visibility num UIElement, que é Visible, não
+             Collapsed. Sem uma aba aberta o banner aparecia sozinho numa janela vazia. Mesmo padrão de
+             FallbackValue já usado por TODO binding de SelectedDocument.X nesta janela (Title acima,
+             PageCountLabel/ZoomPercent na StatusBar). x:Name só para o teste de regressão em
+             ViewerIntegrationTests (MainWindow_NoDocumentOpen_SignedDocumentBannerIsCollapsed). -->
+        <Border x:Name="SignedDocumentBanner" DockPanel.Dock="Top" Background="#FFF3CD" BorderBrush="#FFECB5" BorderThickness="0,0,0,1" Padding="12,8"
+                Visibility="{Binding SelectedDocument.IsSignedDocument, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="🔒 Documento assinado — edição bloqueada para preservar as assinaturas." VerticalAlignment="Center"/>
+                <Button Margin="12,0,0,0" Padding="8,2" Content="Editar uma cópia" Command="{Binding EditCopyCommand}"/>
+            </StackPanel>
+        </Border>
+        <!-- Task 6 (Plano 3a) / Task 5 (Plano 3b): coluna esquerda colapsável — Visibility no Border
+             (fica no DataContext do Window = MainViewModel, ThumbnailsVisible, NOME/toggle inalterados
+             desde a Task 6) e DataContext de CADA VIEW FILHA é o DOCUMENTO ativo (SelectedDocument),
+             setado individualmente pra não colidir com o binding de Visibility acima (que precisa
+             continuar enxergando o MainViewModel). Task 5 (Plano 3b) troca o miolo do Border por um
+             TabControl COMPACTO de 2 abas — Miniaturas (conteúdo antigo, ThumbnailsRail inalterado) |
+             Sumário (nova, OutlineView) — o toggle da toolbar continua mostrando/ocultando o painel
+             INTEIRO (as abas vivem DENTRO dele, nenhum novo botão). Nenhuma das duas views contém
+             PdfViewerControl — MainWindow.CurrentViewer() (FindDescendant a partir de Tabs) continua
+             achando só o da aba de DOCUMENTO ativa, sem mudança nenhuma. -->
+        <Border DockPanel.Dock="Left" Width="150"
+                Visibility="{Binding ThumbnailsVisible, Converter={StaticResource BoolToVis}}">
+            <TabControl Background="#FF3C3F41" BorderThickness="0" Padding="0">
+                <TabItem Header="Miniaturas" Padding="6,3" FontSize="11">
+                    <views:ThumbnailsPanel x:Name="ThumbnailsRail" DataContext="{Binding SelectedDocument}"/>
+                </TabItem>
+                <TabItem Header="Sumário" Padding="6,3" FontSize="11">
+                    <views:OutlineView DataContext="{Binding SelectedDocument}"/>
+                </TabItem>
+                <!-- Task 2 (Plano 3c): 3ª aba — painel de Campos (formulário), mesmo contrato de
+                     DataContext das 2 acima. -->
+                <TabItem Header="Campos" Padding="6,3" FontSize="11">
+                    <views:FormPanel DataContext="{Binding SelectedDocument}"/>
+                </TabItem>
+                <!-- Task 4 (Plano 4): 4ª aba — painel de Assinaturas (validação), mesmo contrato de
+                     DataContext das 3 acima. -->
+                <TabItem Header="Assinaturas" Padding="6,3" FontSize="11">
+                    <views:SignaturePanel DataContext="{Binding SelectedDocument}"/>
+                </TabItem>
+            </TabControl>
+        </Border>
+        <TabControl x:Name="Tabs" ItemsSource="{Binding Documents}" SelectedItem="{Binding SelectedDocument}">
+            <TabControl.ItemTemplate>
+                <DataTemplate DataType="{x:Type vm:DocumentViewModel}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding Title}" VerticalAlignment="Center"/>
+                        <Button Margin="8,0,0,0" Padding="4,0" Content="✕" BorderThickness="0" Background="Transparent"
+                                Command="{Binding DataContext.CloseDocumentCommand, RelativeSource={RelativeSource AncestorType=TabControl}}"
+                                CommandParameter="{Binding}"/>
+                    </StackPanel>
+                </DataTemplate>
+            </TabControl.ItemTemplate>
+            <TabControl.ContentTemplate>
+                <DataTemplate DataType="{x:Type vm:DocumentViewModel}">
+                    <!-- Task 3 (Plano 3b): organizador SUBSTITUI o leitor na área de conteúdo enquanto
+                         IsOrganizerOpen=true (Grid com os 2 sobrepostos, só um Visible por vez) — a
+                         TOOLBAR/barra de status continuam de fora (MainWindow), só o miolo troca. -->
+                    <Grid>
+                        <views:PdfViewerControl>
+                            <views:PdfViewerControl.Style>
+                                <Style TargetType="views:PdfViewerControl">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsOrganizerOpen}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </views:PdfViewerControl.Style>
+                        </views:PdfViewerControl>
+                        <views:PageOrganizerView Visibility="{Binding IsOrganizerOpen, Converter={StaticResource BoolToVis}}"/>
+                    </Grid>
+                </DataTemplate>
+            </TabControl.ContentTemplate>
+        </TabControl>
+    </DockPanel>
+</Window>

@@ -1,0 +1,36 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\mPdf.Rendering\mPdf.Rendering.csproj" />
+    <ProjectReference Include="..\mPdf.Documents\mPdf.Documents.csproj" />
+    <!-- Referência de projeto apenas: o contrato NEUTRO de mPdf.Editing (sem tipos iText). Nenhum
+         `using iText` pode aparecer aqui — ver AgplGuardTests em mPdf.Editing.Tests. -->
+    <ProjectReference Include="..\mPdf.Editing\mPdf.Editing.csproj" />
+    <!-- Task 3 (Plano 4): 1ª referência de src/mPdf.App a mPdf.Signing — mesmo espírito da referência a
+         mPdf.Editing acima: só o contrato NEUTRO (ISigningEngine/SignRequest/SignatureInfo/
+         DocMdpLevel/VisibleStampSpec/CertificateCatalog/SigningCertificateInfo/exceções tipadas), nunca
+         um tipo iText (mPdf.Signing.csproj usa PrivateAssets=compile no PackageReference de iText — o
+         COMPILADOR recusa `using iText` aqui, CS0246, não só a varredura de texto do AgplGuardTests).
+    -->
+    <ProjectReference Include="..\mPdf.Signing\mPdf.Signing.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- Fonte ÚNICA da versão do produto (Task 4, Plano 5): tools/installer/build-installer.ps1 extrai
+         este valor e passa como /DMyAppVersion pro Inno Setup — não duplicar em mpdf.iss.
+         1.1.0 (Task 2, Plano 6): associação de arquivo .pdf no instalador + instância
+         única/abrir-por-argumento (Task 1, Plano 6) — funcionalidades novas, não patch. -->
+    <Version>1.1.0</Version>
+    <ApplicationIcon>Assets\mpdf.ico</ApplicationIcon>
+  </PropertyGroup>
+
+</Project>
