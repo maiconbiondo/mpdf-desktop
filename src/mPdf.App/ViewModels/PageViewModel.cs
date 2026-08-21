@@ -284,19 +284,44 @@ public sealed partial class PageViewModel : ObservableObject
         // pra reagendar de novo numa realização futura seria trabalho extra sem benefício real.
     }
 
+    /// Task 2 (Plano 9): a escala de RENDER (densidade de pixels do bitmap) ganha o fator de DPI real
+    /// do monitor (`_owner.DpiFactor`, seam testável — nunca `VisualTreeHelper` direto aqui, ver doc XML
+    /// do campo em `DocumentViewModel`) — a escala LÓGICA (`DisplayWidth`/`DisplayHeight` em `ApplyZoom`,
+    /// overlays/hit-testing/seleção/caixa do carimbo, todos abaixo neste arquivo) fica INTOCADA: eles
+    /// continuam usando só `zoom * PtToPx`, sem o fator de DPI — é essa separação que garante o layout
+    /// na tela não mudar 1px quando o monitor muda de escala, só o bitmap nascer mais denso/raro
+    /// (fronteira central da task, ver task-2-brief.md). `dpiFactor`/`dpi` capturados AQUI (não relidos
+    /// dentro do callback do worker) — a TAG do BitmapSource entregue precisa refletir o fator que
+    /// estava em vigor QUANDO este render foi PEDIDO, não um valor (possivelmente já diferente) lido no
+    /// momento em que a entrega chega; o guard de obsolescência abaixo (que RELÊ `_owner.DpiFactor`)
+    /// já cobre o caso de o fator ter mudado no meio do caminho — a entrega vira descartada de qualquer
+    /// forma, então a tag "errada" nunca chega a ser aplicada.
     private void RequestRender(double zoom)
     {
-        double scale = zoom * PtToPx;
+        double dpiFactor = _owner.DpiFactor;
+        double scale = zoom * PtToPx * dpiFactor;
+        double dpi = 96.0 * dpiFactor;
         _scheduler.Request(Index, scale, (i, sc, page) =>
         {
-            var bmp = BitmapConverter.ToBitmapSource(page);   // Freeze() -> pode nascer no worker
+            var bmp = BitmapConverter.ToBitmapSource(page, dpi, dpi);   // Freeze() -> pode nascer no worker
             _dispatcher.BeginInvoke(() =>
             {
-                // descarta resultado obsoleto se o zoom mudou enquanto renderizava
-                if (Math.Abs(_owner.Zoom * PtToPx - sc) < 0.001 && _realized)
+                // descarta resultado obsoleto se o zoom OU o fator de DPI mudou enquanto renderizava
+                if (Math.Abs(_owner.Zoom * PtToPx * _owner.DpiFactor - sc) < 0.001 && _realized)
                     ImageSource = bmp;
             });
         });
+    }
+
+    /// Task 2 (Plano 9): re-renderiza esta página no fator de DPI ATUAL do monitor — chamado por
+    /// `DocumentViewModel.OnDpiFactorChanged` quando a janela migra pra um monitor com DPI diferente
+    /// (`DpiChanged` do viewer, ver `PdfViewerControl.OnDpiChanged`/`ApplyDpiFactor`). Só as páginas
+    /// REALIZADAS precisam recarregar — as demais pegam o fator novo sozinhas na próxima `OnRealized`
+    /// (que já lê `_owner.DpiFactor` através de `RequestRender`). NÃO mexe em overlays/seleção/
+    /// destaques/caixa do carimbo — são puramente LÓGICOS, o fator de DPI nunca entra na conta deles.
+    public void RefreshDpi()
+    {
+        if (_realized) RequestRender(_owner.Zoom);
     }
 
     /// Início de um arrasto de seleção: fixa a âncora (em pt) no ponto de mouse-down (em px de tela,

@@ -549,6 +549,17 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     [ObservableProperty] private double zoom = 1.0;
     [ObservableProperty] private int currentPage = 1;
 
+    /// Task 2 (Plano 9): fator de DPI do MONITOR onde o viewer está sendo exibido (1.0 = 96dpi padrão;
+    /// 1.5 = telas Windows escaladas a 150%, etc.) — SEAM testável de propósito (brief: "não estático").
+    /// `PdfViewerControl` é quem escreve este valor (via `ApplyDpiFactor`, ela mesma lida por
+    /// `VisualTreeHelper.GetDpi(this)` no Loaded/troca de aba, e por `OnDpiChanged` quando a janela migra
+    /// pra um monitor de DPI diferente) — este VM nunca lê o SO diretamente, só expõe a propriedade;
+    /// testes escrevem aqui direto (`doc.DpiFactor = 1.5`), sem precisar de nenhuma janela/monitor real.
+    /// Multiplica a escala de RENDER (`PageViewModel.RequestRender`) — a escala LÓGICA (`ApplyZoom`,
+    /// overlays/hit-testing) fica INTOCADA: só o BITMAP nasce mais denso, o layout na tela não muda um
+    /// px (fronteira central desta task, ver doc XML de `PageViewModel.RequestRender`).
+    [ObservableProperty] private double dpiFactor = 1.0;
+
     public string ZoomPercent => $"{Zoom * 100:0}%";
     public string PageCountLabel => $"Página {CurrentPage} de {Pages.Count}";
 
@@ -1992,6 +2003,19 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(ZoomPercent));
     }
 
+    /// Task 2 (Plano 9): mudança de DPI ao vivo (janela migrou pra um monitor de escala diferente) —
+    /// mesmo padrão de `OnZoomChanged` acima (CancelPending descarta renders em voo no fator ANTIGO,
+    /// evitando entregar um bitmap na densidade errada por corrida), mas NUNCA reconverte os overlays/
+    /// seleção/destaques/caixa do carimbo: eles são puramente LÓGICOS (`zoom * PtToPx`), o fator de DPI
+    /// não entra na conta deles (fronteira do brief) — só o BITMAP de cada página realizada precisa
+    /// nascer de novo, mais denso ou mais raro. `RefreshDpi` (não `ApplyZoom`) é de propósito: pedir um
+    /// ApplyZoom aqui reconverteria overlays que não mudaram de nada, trabalho à toa.
+    partial void OnDpiFactorChanged(double value)
+    {
+        _scheduler.CancelPending();
+        foreach (var p in Pages) p.RefreshDpi();
+    }
+
     partial void OnCurrentPageChanged(int value)
     {
         OnPropertyChanged(nameof(PageCountLabel));
@@ -3125,8 +3149,15 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         target.Add(new StampBoxHandlePoint(new Point(r.Left, cy), Cursors.SizeWE, StampBoxHandle.Left));
     }
 
+    /// Plano 9 (Task 3, brief): a prévia ecoa o layout NOVO do carimbo — "Assinado digitalmente por\n
+    /// &lt;CN&gt;\n&lt;data&gt;" (PadesSigningEngine.ApplyVisibleStamp desenha o texto de verdade nesse
+    /// mesmo espírito, ver StampAppearanceRenderer) — "fiel o suficiente, não idêntico ao appearance do
+    /// motor" (ver doc XML de StampBoxCertificateCn): nome+data ao menos, sem replicar a régua de
+    /// prioridade/CPF/motivo/local/emissor do motor aqui.
     private string BuildStampBoxPreviewText() =>
-        string.IsNullOrEmpty(StampBoxCertificateCn) ? StampBoxDateLabel ?? "" : $"{StampBoxCertificateCn}\n{StampBoxDateLabel}";
+        string.IsNullOrEmpty(StampBoxCertificateCn)
+            ? StampBoxDateLabel ?? ""
+            : $"Assinado digitalmente por\n{StampBoxCertificateCn}\n{StampBoxDateLabel}";
 
     /// Posição (Canvas.Left/Top, px de tela local à página) do grupo de botões flutuantes "✔ Assinar
     /// aqui"/"✖ Cancelar" — LOGO ABAIXO da caixa por padrão; se não couber (caixa encostada na borda de

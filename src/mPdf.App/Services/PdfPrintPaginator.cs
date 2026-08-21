@@ -64,7 +64,12 @@ internal sealed class PdfPrintPaginator : DocumentPaginator, IDisposable
     {
         int pdfIndex = _pageIndices[pageNumber];
         var rendered = _renderer.RenderPage(pdfIndex, _scale);
-        var bmp = BitmapConverter.ToBitmapSource(rendered);
+        // Task 2 (Plano 9): 96 fixo -- a impressão já trata DPI explicitamente por FORA da tag do
+        // BitmapSource: o `Image` abaixo recebe Width/Height calculados em `placement` (pontos de
+        // página -> DIPs do papel via `PrintService.ComputePlacement`), nunca o tamanho "natural" que o
+        // WPF derivaria da tag de DPI do bitmap. A tag aqui é cosmética pra este pipeline (não influencia
+        // o resultado impresso), então 96 continua correto/inofensivo.
+        var bmp = BitmapConverter.ToBitmapSource(rendered, 96, 96);
 
         double pageWpt = rendered.WidthPx / _scale;
         double pageHpt = rendered.HeightPx / _scale;

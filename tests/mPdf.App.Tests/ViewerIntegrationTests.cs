@@ -1312,6 +1312,308 @@ public class ViewerIntegrationTests
         }
     }
 
+    /// Task 1 (Plano 9) — BUG DE CAMPO: usuário real assina com carimbo visível, o carimbo NÃO aparece
+    /// no visualizador do mPDF (some abrindo o MESMO arquivo em outro leitor de PDF). O PDF em si está
+    /// CORRETO — a aceitação por pixel do MOTOR já prova isso (SignCommandTests.
+    /// Sign_Integration_StampBoxDrawAdjustConfirm_RendersExactlyInsideFinalRect renderiza os bytes
+    /// assinados com um `PdfDocumentRenderer` NOVO, por fora da sessão/VM) — o que este teste isola é o
+    /// caminho de REFRESH do VISUALIZADOR: `doc.Pages[0].ImageSource`, a `BitmapSource` REAL que o
+    /// `Image` da `PdfViewerControl` teria na tela, numa `MainWindow` REAL (exemplar:
+    /// RunStampBoxRealMouseWiringScenario acima), com o MOTOR DE PRODUÇÃO (`SigningEngineFactory.
+    /// Create()` — um fake não pinta carimbo nenhum, não serve pra comparar pixel a pixel).
+    ///
+    /// "Verdade fundamental" pro diff: não um `PdfDocumentRenderer` construído à parte (isso só
+    /// provaria o motor de novo), mas a MESMA chamada que `PageViewModel.RequestRender`/`RenderScheduler`
+    /// fariam — `doc.Session.Renderer.RenderPage(0, scale)` — sobre o snapshot JÁ ASSINADO. Se o
+    /// visualizador atualizou de verdade, `doc.Pages[0].ImageSource` tem que bater byte a byte com isso
+    /// dentro do NÚCLEO do rect do carimbo (mesma folga de borda/antialiasing — Margin=4 — do teste de
+    /// aceitação por pixel do motor).
+    [Fact]
+    public void Viewer_AfterSign_PageBitmapReflectsSignedStamp()
+    {
+        Exception? threadEx = null;
+        var thread = new Thread(() =>
+        {
+            try { RunAfterSignBitmapScenario(); }
+            catch (Exception ex) { threadEx = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+
+        bool joined = thread.Join(TimeSpan.FromSeconds(30));
+        Assert.True(joined, "thread STA não terminou dentro de 30s (BLOCKED: possível deadlock/hang do WPF)");
+
+        if (threadEx is not null) ExceptionDispatchInfo.Capture(threadEx).Throw();
+    }
+
+    private static void RunAfterSignBitmapScenario()
+    {
+        // Exemplar: RunStampBoxRealMouseWiringScenario — ConfirmSignatureStampAsync é um
+        // AsyncRelayCommand/método async acionado via .GetAwaiter().GetResult() nesta thread; sem este
+        // SynchronizationContext explícito o `await` interno (Task.Run do motor) retomaria numa thread
+        // do POOL, derrubando o processo ao tentar mexer num DependencyObject fora da thread dona.
+        SynchronizationContext.SetSynchronizationContext(
+            new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
+
+        mPdf.App.MainWindow? window = null;
+        DocumentViewModel? doc = null;
+        string? tmp = null;
+        try
+        {
+            // CRÍTICO (exemplar: SignCommandTests.CopyFixtureToTemp): este teste alcança um Confirmar
+            // BEM-SUCEDIDO -> Session.CommitSigned grava em disco de verdade. NUNCA abrir a fixture
+            // COMPARTILHADA direto aqui — copiar pra um arquivo descartável primeiro.
+            tmp = Path.Combine(Path.GetTempPath(), $"mpdf-viewer-aftersign-{Guid.NewGuid():N}.pdf");
+            File.Copy(Path.Combine(Fixtures.Root, "fixture-a4.pdf"), tmp);
+
+            var realEngine = SigningEngineFactory.Create(); // motor de PRODUÇÃO — nunca um fake, ver doc XML acima
+            using var cert = SignCommandTests.CreateEphemeralRsaCertificate();
+            var dialog = new FakeSignDialogService(new SignDialogResult(cert, "Aprovação", "Escritório", ApplyDocMdp: true, PlaceStamp: true));
+            doc = new DocumentViewModel(
+                DocumentSession.Open(tmp),
+                editor: PdfEditorFactory.Create(), // real -- HasSignatures precisa ler o PDF de verdade
+                notifyError: _ => { }, notifyInfo: _ => { },
+                signDialog: dialog, signingEngine: realEngine,
+                confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
+                listSigningCertificates: () => Array.Empty<SigningCertificateInfo>());
+
+            window = new mPdf.App.MainWindow();
+            window.Show();
+            window.ViewModel.Documents.Add(doc);
+            window.ViewModel.SelectedDocument = doc;
+
+            Pump(() => doc.Pages[0].ImageSource is not null, TimeSpan.FromSeconds(20));
+            Assert.True(doc.Pages[0].ImageSource is not null, "página 0 não renderizou antes de assinar (baseline)");
+
+            // ---- assina com carimbo visível, num rect CONHECIDO -- exemplar: SignCommandTests.
+            // Sign_Integration_StampBoxDrawAdjustConfirm_RendersExactlyInsideFinalRect -----------------
+            _ = doc.SignCommand.ExecuteAsync(null);
+            Pump(() => doc.ActiveTool == AnnotationTool.SignatureStamp, TimeSpan.FromSeconds(5));
+            Assert.Equal(AnnotationTool.SignatureStamp, doc.ActiveTool);
+
+            doc.BeginStampBoxPlacementAsync(0, new PdfPoint(300, 50)).GetAwaiter().GetResult();
+            doc.UpdateDrawTo(new PdfPoint(500, 150)); // 200x100pt -- bem acima do mínimo 60x20pt
+            doc.EndStampDraw();
+            Assert.Equal(StampPlacementPhase.Adjusting, doc.StampPlacementPhase);
+            var stampRect = doc.StampBoxRect;
+            double pageHeightPt = doc.Pages[0].HeightPt;
+
+            // fire-and-forget (mesmo padrão de PRODUÇÃO -- PdfViewerControl.StampBoxConfirm_Click faz
+            // `_ = doc.ConfirmSignatureStampAsync()`, exemplar: RunStampBoxRealMouseWiringScenario via
+            // clique real no botão): `.GetAwaiter().GetResult()` aqui DEADLOCKARIA -- o `await
+            // Task.Run(() => _signingEngine.Sign(...))` dentro de SignCoreAsync sempre cede de verdade
+            // pra uma thread do pool (ao contrário de EnsureRotationCacheFreshAsync, que costuma
+            // completar síncrono com o cache já fresco), e a continuação só volta via o
+            // DispatcherSynchronizationContext armado acima -- bloquear esta MESMA thread (a dona do
+            // Dispatcher) impediria essa continuação de rodar pra sempre.
+            _ = doc.ConfirmSignatureStampAsync();
+            Pump(() => doc.IsSignedDocument, TimeSpan.FromSeconds(15));
+
+            Assert.True(doc.IsSignedDocument, "assinatura não completou -- pré-condição do repro falhou");
+            Assert.Equal(StampPlacementPhase.None, doc.StampPlacementPhase);
+
+            // ---- "verdade fundamental": a MESMA chamada que o RenderScheduler faria, sobre o snapshot
+            // JÁ ASSINADO — nunca um PdfDocumentRenderer construído à parte (ver doc XML da classe). ----
+            double scale = doc.Zoom * PageViewModel.PtToPx;
+            var expected = doc.Session.Renderer.RenderPage(0, scale);
+
+            // Dá tempo generoso pro visualizador re-renderizar sozinho (scheduler -> PDFium -> bitmap ->
+            // dispatcher), mesma disciplina de Pump(ImageSource is not null) do resto da suíte — mas
+            // aqui o alvo (página 0) JÁ estava realizada/visível ANTES de assinar, não é uma página nova
+            // entrando na tela pela primeira vez.
+            Pump(() => doc.Pages[0].ImageSource is not null, TimeSpan.FromSeconds(20));
+            var imageSource = doc.Pages[0].ImageSource;
+            Assert.True(imageSource is not null,
+                "REPRO do bug de campo: doc.Pages[0].ImageSource continua nulo depois de assinar -- o " +
+                "visualizador nunca re-renderizou a página assinada (carimbo commitado no PDF, mas " +
+                "invisível na tela).");
+
+            var actualBmp = (System.Windows.Media.Imaging.BitmapSource)imageSource!;
+            Assert.Equal(expected.WidthPx, actualBmp.PixelWidth);
+            Assert.Equal(expected.HeightPx, actualBmp.PixelHeight);
+            int stride = actualBmp.PixelWidth * 4;
+            var actualBytes = new byte[stride * actualBmp.PixelHeight];
+            actualBmp.CopyPixels(actualBytes, stride, 0);
+
+            // Retângulo do carimbo, em PX DE TELA no MESMO espaço de `expected`/`actualBytes` — mesma
+            // matemática de PageViewModel.PointRectToScreenRect (Y invertido: origem PDF cresce pra
+            // cima, bitmap cresce pra baixo).
+            int stampLeft = (int)(stampRect.LeftPt * scale);
+            int stampRight = (int)(stampRect.RightPt * scale);
+            int stampTop = (int)((pageHeightPt - stampRect.TopPt) * scale);
+            int stampBottom = (int)((pageHeightPt - stampRect.BottomPt) * scale);
+
+            const int Margin = 4; // mesma folga de antialiasing de borda do teste de aceitação por pixel do motor
+            int diffInsideCore = 0;
+            for (int y = stampTop + Margin; y < stampBottom - Margin; y++)
+            {
+                for (int x = stampLeft + Margin; x < stampRight - Margin; x++)
+                {
+                    int i = (y * expected.WidthPx + x) * 4;
+                    if (actualBytes[i] != expected.Bgra[i]
+                        || actualBytes[i + 1] != expected.Bgra[i + 1]
+                        || actualBytes[i + 2] != expected.Bgra[i + 2])
+                        diffInsideCore++;
+                }
+            }
+
+            Assert.Equal(0, diffInsideCore); // CONTRATO: visualizador == render esperado do doc assinado, dentro do rect do carimbo
+        }
+        finally
+        {
+            if (window is not null) window.ViewModel.Documents.Clear(); // doc fica sujo/assinado -- mesmo cinto de RunStampBoxRealMouseWiringScenario
+            window?.Close();
+            doc?.Dispose();
+            try { PendingDisposals.WaitAll(TimeSpan.FromSeconds(5)); }
+            catch (AggregateException) { /* descarte faltoso não pode mascarar o encerramento/falha real; já estamos desligando */ }
+            Dispatcher.CurrentDispatcher.InvokeShutdown();
+            if (tmp is not null)
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                try { if (File.Exists(tmp + ".bak")) File.Delete(tmp + ".bak"); } catch { }
+            }
+        }
+    }
+
+    /// Task 1 (Plano 9) — TENTATIVA 2 da matriz de repro: a Tentativa 1
+    /// (Viewer_AfterSign_PageBitmapReflectsSignedStamp, doc de 1 PÁGINA) passou no head — precisa variar
+    /// o cenário (ver doc XML dela). Variável desta vez: documento MULTI-PÁGINA, carimbo NUMA PÁGINA QUE
+    /// NÃO A 0, rolada pro MEIO da lista — container sujeito a RECICLAGEM de verdade
+    /// (`VirtualizingPanel.VirtualizationMode="Recycling"`, `CacheLength="1,1"` Page — só um punhado de
+    /// páginas ao redor da visível fica realizado), diferente de um doc de 1 página cujo único item
+    /// nunca sai da árvore visual. Mesma "verdade fundamental" de pixel da Tentativa 1.
+    [Fact]
+    public void Viewer_AfterSign_MiddlePageOfMultiPageDoc_PageBitmapReflectsSignedStamp()
+    {
+        Exception? threadEx = null;
+        var thread = new Thread(() =>
+        {
+            try { RunAfterSignMiddlePageBitmapScenario(); }
+            catch (Exception ex) { threadEx = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+
+        bool joined = thread.Join(TimeSpan.FromSeconds(30));
+        Assert.True(joined, "thread STA não terminou dentro de 30s (BLOCKED: possível deadlock/hang do WPF)");
+
+        if (threadEx is not null) ExceptionDispatchInfo.Capture(threadEx).Throw();
+    }
+
+    private static void RunAfterSignMiddlePageBitmapScenario()
+    {
+        SynchronizationContext.SetSynchronizationContext(
+            new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
+
+        const int targetPage = 15; // meio de um doc de 30 páginas -- fora da janela realizada inicial (página 0 ± cache)
+
+        mPdf.App.MainWindow? window = null;
+        DocumentViewModel? doc = null;
+        string? tmp = null;
+        try
+        {
+            tmp = Path.Combine(Path.GetTempPath(), $"mpdf-viewer-aftersign-mid-{Guid.NewGuid():N}.pdf");
+            File.Copy(Path.Combine(Fixtures.Root, "fixture-30p.pdf"), tmp);
+
+            var realEngine = SigningEngineFactory.Create();
+            using var cert = SignCommandTests.CreateEphemeralRsaCertificate();
+            var dialog = new FakeSignDialogService(new SignDialogResult(cert, "Aprovação", "Escritório", ApplyDocMdp: true, PlaceStamp: true));
+            doc = new DocumentViewModel(
+                DocumentSession.Open(tmp),
+                editor: PdfEditorFactory.Create(),
+                notifyError: _ => { }, notifyInfo: _ => { },
+                signDialog: dialog, signingEngine: realEngine,
+                confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
+                listSigningCertificates: () => Array.Empty<SigningCertificateInfo>());
+
+            window = new mPdf.App.MainWindow();
+            window.Show();
+            window.ViewModel.Documents.Add(doc);
+            window.ViewModel.SelectedDocument = doc;
+
+            Pump(() => doc.Pages[0].ImageSource is not null, TimeSpan.FromSeconds(20));
+
+            // Rola até a página-alvo, fora da janela realizada inicial (virtualização/reciclagem real).
+            var control = FindDescendant<PdfViewerControl>(window);
+            Assert.NotNull(control);
+            var scrollViewer = control!.FindPageListScrollViewer();
+            Assert.NotNull(scrollViewer);
+            scrollViewer!.ScrollToVerticalOffset(doc.PageTopOffsetPx(targetPage));
+
+            Pump(() => doc.Pages[targetPage].ImageSource is not null, TimeSpan.FromSeconds(20));
+            Assert.True(doc.Pages[targetPage].ImageSource is not null,
+                $"página {targetPage} não realizou/renderizou após rolar (baseline antes de assinar)");
+
+            _ = doc.SignCommand.ExecuteAsync(null);
+            Pump(() => doc.ActiveTool == AnnotationTool.SignatureStamp, TimeSpan.FromSeconds(5));
+            Assert.Equal(AnnotationTool.SignatureStamp, doc.ActiveTool);
+
+            doc.BeginStampBoxPlacementAsync(targetPage, new PdfPoint(300, 50)).GetAwaiter().GetResult();
+            doc.UpdateDrawTo(new PdfPoint(500, 150));
+            doc.EndStampDraw();
+            Assert.Equal(StampPlacementPhase.Adjusting, doc.StampPlacementPhase);
+            var stampRect = doc.StampBoxRect;
+            double pageHeightPt = doc.Pages[targetPage].HeightPt;
+
+            _ = doc.ConfirmSignatureStampAsync(); // fire-and-forget -- ver doc XML da Tentativa 1
+            Pump(() => doc.IsSignedDocument, TimeSpan.FromSeconds(15));
+            Assert.True(doc.IsSignedDocument, "assinatura não completou -- pré-condição do repro falhou");
+
+            double scale = doc.Zoom * PageViewModel.PtToPx;
+            var expected = doc.Session.Renderer.RenderPage(targetPage, scale);
+
+            Pump(() => doc.Pages[targetPage].ImageSource is not null, TimeSpan.FromSeconds(20));
+            var imageSource = doc.Pages[targetPage].ImageSource;
+            Assert.True(imageSource is not null,
+                $"REPRO: doc.Pages[{targetPage}].ImageSource continua nulo depois de assinar -- o " +
+                "visualizador nunca re-renderizou a página assinada.");
+
+            var actualBmp = (System.Windows.Media.Imaging.BitmapSource)imageSource!;
+            Assert.Equal(expected.WidthPx, actualBmp.PixelWidth);
+            Assert.Equal(expected.HeightPx, actualBmp.PixelHeight);
+            int stride = actualBmp.PixelWidth * 4;
+            var actualBytes = new byte[stride * actualBmp.PixelHeight];
+            actualBmp.CopyPixels(actualBytes, stride, 0);
+
+            int stampLeft = (int)(stampRect.LeftPt * scale);
+            int stampRight = (int)(stampRect.RightPt * scale);
+            int stampTop = (int)((pageHeightPt - stampRect.TopPt) * scale);
+            int stampBottom = (int)((pageHeightPt - stampRect.BottomPt) * scale);
+
+            const int Margin = 4;
+            int diffInsideCore = 0;
+            for (int y = stampTop + Margin; y < stampBottom - Margin; y++)
+            {
+                for (int x = stampLeft + Margin; x < stampRight - Margin; x++)
+                {
+                    int i = (y * expected.WidthPx + x) * 4;
+                    if (actualBytes[i] != expected.Bgra[i]
+                        || actualBytes[i + 1] != expected.Bgra[i + 1]
+                        || actualBytes[i + 2] != expected.Bgra[i + 2])
+                        diffInsideCore++;
+                }
+            }
+
+            Assert.Equal(0, diffInsideCore);
+        }
+        finally
+        {
+            if (window is not null) window.ViewModel.Documents.Clear();
+            window?.Close();
+            doc?.Dispose();
+            try { PendingDisposals.WaitAll(TimeSpan.FromSeconds(5)); }
+            catch (AggregateException) { /* descarte faltoso não pode mascarar o encerramento/falha real; já estamos desligando */ }
+            Dispatcher.CurrentDispatcher.InvokeShutdown();
+            if (tmp is not null)
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                try { if (File.Exists(tmp + ".bak")) File.Delete(tmp + ".bak"); } catch { }
+            }
+        }
+    }
+
     private static IEnumerable<T> FindDescendants<T>(DependencyObject root) where T : DependencyObject
     {
         for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)

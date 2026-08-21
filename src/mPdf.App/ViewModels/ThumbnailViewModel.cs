@@ -62,7 +62,10 @@ public sealed partial class ThumbnailViewModel : ObservableObject
     {
         _scheduler.Request(Index, Scale, (i, sc, page) =>
         {
-            var bmp = BitmapConverter.ToBitmapSource(page);   // Freeze() -> pode nascer no worker
+            // Task 2 (Plano 9): 96 fixo, sempre -- miniatura de escala própria (0.2, INALTERADA pela
+            // nitidez do viewer), pequena o bastante pra o custo de renderizar mais denso não valer o
+            // ganho visual (brief).
+            var bmp = BitmapConverter.ToBitmapSource(page, 96, 96);   // Freeze() -> pode nascer no worker
             _dispatcher.BeginInvoke(() =>
             {
                 // escala é FIXA (sem zoom) — o único jeito de a entrega ficar obsoleta é a miniatura

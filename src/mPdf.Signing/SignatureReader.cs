@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Text.RegularExpressions;
 using iText.Commons.Bouncycastle.Cert;
 using iText.Commons.Exceptions;
 using iText.Forms;
@@ -86,41 +85,14 @@ internal static class SignatureReader
         }
     }
 
-    /// // HIPÓTESE (checklist do brief) + reconciliação: extração de CPF/CNPJ do subject via OIDs
-    /// ICP-Brasil (2.16.76.1.3.x, SubjectAlternativeName/otherName) — a premissa do brief ("o PoC lê")
-    /// NÃO se confirmou: poc/mPdf.Poc.Signer não tem nenhum código de extração de CPF/CNPJ (grep vazio
-    /// em todo poc/); é só aspiracional em docs/superpowers/specs/2026-08-12-mpdf-design.md §5.3.
-    /// Pesquisa direta na fonte oficial (Receita Federal, "Leiaute dos Certificados Digitais da SRF"
-    /// v4.1, seções 2.1.12 e 3.1.12) confirma DUAS convenções paralelas nos certificados e-CPF/e-CNPJ:
-    ///   (a) SubjectAlternativeName/otherName OID 2.16.76.1.3.1 (e-CPF): OCTET STRING compondo
-    ///       8(data nasc. ddMMaaaa)+11(CPF)+11(NIS)+15(RG)+6(órgão+UF); OID 2.16.76.1.3.3 (e-CNPJ):
-    ///       OCTET STRING com o CNPJ puro (14 dígitos). Exigiria decodificar ASN.1 DER da extensão SAN
-    ///       manualmente (otherName é `[0] IMPLICIT SEQUENCE{OID, [0] EXPLICIT ANY}`) — sem API pronta
-    ///       no BCL nem no iText para isso.
-    ///   (b) Common Name do Subject, formato "&lt;NOME&gt;:&lt;CPF|CNPJ&gt;" — MESMA seção do leiaute
-    ///       oficial (não uma alternativa informal): "O Common Name (CN) é composto do nome da pessoa
-    ///       física... acrescido do sinal de dois pontos (:) mais o número de inscrição" — presente em
-    ///       TODOS os perfis PF/PJ (e-CPF, e-CNPJ, e-Aplicação, e-Código); é o MESMO campo que já lemos
-    ///       acima para `SignerName` (`CertificateInfo.GetSubjectFields`, reusado — nenhuma chamada
-    ///       nova), sem parsing ASN.1 nenhum.
-    /// DECISÃO: implementar (b), não (a) — mesma informação exposta pelo contrato (`string? Document`,
-    /// um valor de exibição, não usado em nenhuma verificação criptográfica), zero parsing binário novo
-    /// pra manter, testável sem depender de uma fixture proprietária ICP-Brasil real. Documentado como
-    /// desvio de ESCOPO no relatório da task (não crypto-relevante). **Nesta versão, os OIDs de SAN
-    /// (2.16.76.1.3.x) NÃO são interpretados de forma alguma** — só a convenção do CN acima. Certificados
-    /// que não seguem essa convenção (ex.: os efêmeros self-signed usados nos testes deste módulo, CN
-    /// sem ":NNN" no fim) não casam o padrão -> `Document` fica `null`, `SignerName` é o CN cru, sem
-    /// quebrar nada.
-    private static readonly Regex DocumentSuffixPattern =
-        new(@"^(?<nome>.*):(?<doc>\d{11}|\d{14})$", RegexOptions.Compiled);
-
-    private static (string SignerName, string? Document) SplitNameAndDocument(string cn)
-    {
-        var match = DocumentSuffixPattern.Match(cn);
-        return match.Success
-            ? (match.Groups["nome"].Value.Trim(), match.Groups["doc"].Value)
-            : (cn, null);
-    }
+    /// HIPÓTESE (checklist do brief) + reconciliação completa (Leiaute RFB v4.1, OIDs SAN considerados
+    /// e descartados, etc.) — MOVIDA pra `CnDocumentConvention.cs` (Plano 9, Task 3, revisão): a mesma
+    /// convenção CN "NOME:CPF|CNPJ" passou a ser precisada também do lado da ESCRITA
+    /// (`PadesSigningEngine`/`StampAppearanceRenderer`, o carimbo visível novo), então a regex/split
+    /// consolidaram num helper compartilhado do mesmo assembly (`mPdf.Signing`) — ver XML doc completo
+    /// lá, não duplicado aqui.
+    private static (string SignerName, string? Document) SplitNameAndDocument(string cn) =>
+        CnDocumentConvention.SplitNameAndDocument(cn);
 
     /// Task 4 (Plano 4): página/retângulo do PRIMEIRO widget do campo de assinatura (`GetWidgets()[0]`)
     /// — MESMO padrão EXATO de `PdfEditor.BuildFormFieldData` (mPdf.Editing/PdfEditor.cs), reusado aqui

@@ -40,10 +40,14 @@
             <CheckBox x:Name="DocMdpCheckBox" Content="Proteger contra alterações (recomendado)"
                       Margin="0,12,0,0" IsChecked="True"/>
 
+            <!-- Plano 9 (Task 3, brief): "Posicionar carimbo" passa a vir PRÉ-SELECIONADO — pedido do
+                 usuário (carimbo visível é o caminho mais comum na prática); "Sem carimbo visível"
+                 continua 100% disponível, só deixa de ser o default (ver SignDialogTests). -->
             <TextBlock Text="Carimbo visível:" Margin="0,12,0,4"/>
             <RadioButton x:Name="NoStampRadio" Content="Sem carimbo visível" GroupName="Stamp"
-                         IsChecked="True" Margin="0,0,0,4"/>
-            <RadioButton x:Name="PlaceStampRadio" Content="Posicionar carimbo na página" GroupName="Stamp"/>
+                         Margin="0,0,0,4"/>
+            <RadioButton x:Name="PlaceStampRadio" Content="Posicionar carimbo na página" GroupName="Stamp"
+                         IsChecked="True"/>
         </StackPanel>
     </DockPanel>
 </Window>

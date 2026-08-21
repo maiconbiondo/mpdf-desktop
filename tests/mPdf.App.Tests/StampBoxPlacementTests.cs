@@ -833,6 +833,22 @@ public class StampBoxPlacementTests
         Assert.Contains(d.StampBoxDateLabel!, preview);
     }
 
+    [Fact] // Plano 9 (Task 3, brief): a prévia passa a ecoar o layout NOVO do carimbo -- "Assinado
+    // digitalmente por\n<CN>\n<data>" (mesmo texto, aproximado, que PadesSigningEngine desenha de
+    // verdade; "fiel o suficiente, não idêntico ao appearance do motor", ver doc XML de
+    // StampBoxCertificateCn). Formato EXATO (não só Contains, como o teste acima): prova que a legenda
+    // pt-BR fica na 1ª linha, não só em algum lugar da string.
+    public void Overlay_PreviewText_MatchesNewPortugueseFormat()
+    {
+        var (doc, _) = BuildForStampBox();
+        using var d = doc;
+        d.ActiveTool = AnnotationTool.SignatureStamp;
+        d.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "CN=Fulano de Tal");
+
+        var expected = $"Assinado digitalmente por\nCN=Fulano de Tal\n{d.StampBoxDateLabel}";
+        Assert.Equal(expected, d.Pages[0].StampBoxPreviewText);
+    }
+
     [Fact] // risco declarado no plano: zoom NO MEIO do ajuste -- o rect vive em pontos de página
     // (zoom-invariante); só a projeção de tela precisa reconverter (exemplar: os 3 overlays
     // existentes -- FormField/AnnotationSelection/SignatureStampHighlight -- via ApplyZoom).

@@ -1,4 +1,9 @@
+using System.IO;
 using System.Security.Cryptography.X509Certificates;
+using iText.Kernel.Pdf;
+using iText.Kernel.Pdf.Canvas.Parser;
+using iText.Kernel.Pdf.Canvas.Parser.Listener;
+using iText.Kernel.Pdf.Xobject;
 using iText.Signatures;
 using mPdf.Editing;
 using mPdf.Rendering;
@@ -11,11 +16,34 @@ public class PadesSigningEngineTests
 
     private static byte[] SignFixture(
         X509Certificate2? cert = null, VisibleStampSpec? stamp = null,
-        DocMdpLevel? certificationLevel = null, string? reason = null, byte[]? pdf = null)
+        DocMdpLevel? certificationLevel = null, string? reason = null, string? location = null,
+        byte[]? pdf = null)
     {
         using var certificate = cert ?? TestCertificateFactory.CreateSelfSigned();
         return Engine.Sign(new SignRequest(
-            pdf ?? Fixtures.A4(), certificate, reason, null, stamp, certificationLevel));
+            pdf ?? Fixtures.A4(), certificate, reason, location, stamp, certificationLevel));
+    }
+
+    /// Plano 9 (Task 3): o texto do carimbo visível novo é desenhado DIRETO no `PdfCanvas` do widget
+    /// (`PadesSigningEngine.ApplyVisibleStamp`/`StampAppearanceRenderer`), nunca via o formulário
+    /// interativo em si — `PdfTextExtractor`/`GetTextFromPage` padrão do iText só varre o CONTEÚDO DA
+    /// PÁGINA, nunca o `/AP/N` (appearance stream) de uma anotação de widget (confirmado ao vivo:
+    /// `GetTextFromPage` devolve string vazia pro carimbo). Extrai do stream `/AP/N` do 1º (e único)
+    /// widget da página diretamente — mesmo par `PdfCanvasProcessor`/`LocationTextExtractionStrategy`
+    /// que o iText usa por baixo de `GetTextFromPage`, só apontado pro XObject certo.
+    private static string ExtractStampAppearanceText(byte[] pdf, int pageIndex = 0)
+    {
+        using var doc = new PdfDocument(new PdfReader(new MemoryStream(pdf)));
+        var page = doc.GetPage(pageIndex + 1);
+        var annot = Assert.Single(page.GetAnnotations());
+        var apDict = annot.GetPdfObject().GetAsDictionary(PdfName.AP);
+        var stream = apDict?.GetAsStream(PdfName.N);
+        Assert.NotNull(stream);
+        var xobj = new PdfFormXObject(stream);
+        var strategy = new LocationTextExtractionStrategy();
+        var processor = new PdfCanvasProcessor(strategy);
+        processor.ProcessContent(stream!.GetBytes(), xobj.GetResources());
+        return strategy.GetResultantText();
     }
 
     [Fact] // bytes corrompidos (não é um PDF) -> PdfSigningException neutra, nunca um tipo iText cru —
@@ -382,5 +410,298 @@ public class PadesSigningEngineTests
             }
         Assert.True(diffInsideCore > 100,
             $"carimbo não renderizou no retângulo pedido: só {diffInsideCore} pixels diferentes no núcleo");
+    }
+
+    // ==== Plano 9 (Task 3): carimbo em português + marca d'água ====================================
+    // Layout NOVO da camada de aparência (ApplyVisibleStamp) — texto pt-BR, marca d'água translúcida,
+    // mais campos (CPF/CNPJ, motivo, local, emissor), regra de prioridade em caixas pequenas. NENHUM
+    // destes testes toca a mecânica criptográfica (SignWithBaselineBProfile/DocMDP/nome de campo/
+    // ByteRange) — só a camada visual; as guardas cripto continuam nos testes ACIMA, inalteradas.
+
+    private const double StampLeft = 350, StampBottom = 50, StampRight = 530, StampTop = 110; // 180x60pt
+    // = DefaultStampWidthPt/DefaultStampHeightPt (DocumentViewModel, Plano 8) — mesmo tamanho default
+    // que a caixa ajustável do carimbo produz sem o usuário redimensionar.
+    private const double MinStampLeft = 350, MinStampBottom = 50, MinStampRight = 410, MinStampTop = 70; // 60x20pt
+    // = MinStampBoxWidthPt/MinStampBoxHeightPt (DocumentViewModel, Plano 8) — o menor retângulo que a
+    // UI permite o usuário desenhar.
+
+    [Fact]
+    public void Sign_WithVisibleStamp_AppearanceTextIsPortugueseNotEnglish()
+    {
+        var stamp = new VisibleStampSpec(0, new PdfQuad(StampLeft, StampBottom, StampRight, StampTop));
+        var signed = SignFixture(stamp: stamp);
+
+        var text = ExtractStampAppearanceText(signed);
+        Assert.Contains("Assinado digitalmente por", text);
+        Assert.DoesNotContain("Digitally signed by", text);
+        Assert.Contains("(UTC", text); // brief: data + fuso, ex. "(UTC-03:00)"
+    }
+
+    [Fact] // HIPÓTESE reconciliada (brief): fonte padrão do PDF (Helvetica) + WinAnsiEncoding cobre
+    // ã/ç/é — provado aqui com um nome real acentuado (não um ASCII de teste) + sufixo CPF (Leiaute
+    // RFB v4.1, mesma convenção de SignatureReader.SplitNameAndDocument) — CPF sintético com dígito
+    // verificador inválido de propósito (não é um CPF real de ninguém).
+    public void Sign_WithVisibleStamp_AppearanceTextPreservesAccentsAndMasksCpf()
+    {
+        using var cert = TestCertificateFactory.CreateSelfSignedWithDocumentSuffix("João Conceição:12345678901");
+        var stamp = new VisibleStampSpec(0, new PdfQuad(StampLeft, StampBottom, StampRight, StampTop));
+        var signed = SignFixture(cert: cert, stamp: stamp);
+
+        var text = ExtractStampAppearanceText(signed);
+        Assert.Contains("João Conceição", text);
+        Assert.Contains("CPF: 123.456.789-01", text); // mesma máscara de SignatureRowViewModel.FormatCpf (P4)
+    }
+
+    [Fact]
+    public void Sign_WithVisibleStamp_AppearanceTextMasksCnpj()
+    {
+        using var cert = TestCertificateFactory.CreateSelfSignedWithDocumentSuffix("EMPRESA TESTE LTDA:12345678000199");
+        var stamp = new VisibleStampSpec(0, new PdfQuad(StampLeft, StampBottom, StampRight, StampTop));
+        var signed = SignFixture(cert: cert, stamp: stamp);
+
+        var text = ExtractStampAppearanceText(signed);
+        Assert.Contains("CNPJ: 12.345.678/0001-99", text); // mesma máscara de SignatureRowViewModel.FormatCnpj (P4)
+    }
+
+    [Fact] // Certificado SEM a convenção CN "NOME:CPF|CNPJ" (o caminho comum nos outros testes deste
+    // arquivo, TestCertificateFactory.CreateSelfSigned) + sem motivo/local -- nenhum dos 4 campos
+    // opcionais aparece; só a legenda+nome+data (sempre presentes).
+    public void Sign_WithVisibleStamp_WithoutOptionalFields_OmitsThem()
+    {
+        var stamp = new VisibleStampSpec(0, new PdfQuad(StampLeft, StampBottom, StampRight, StampTop));
+        var signed = SignFixture(stamp: stamp);
+
+        var text = ExtractStampAppearanceText(signed);
+        Assert.DoesNotContain("CPF", text);
+        Assert.DoesNotContain("CNPJ", text);
+        Assert.DoesNotContain("Motivo", text);
+        Assert.DoesNotContain("Local", text);
+    }
+
+    [Fact] // Regra de prioridade (brief): "min 60×20pt: name+date always; then CPF/CNPJ; then
+    // motivo/local; then emissor — drop from the bottom". Testado no tamanho DEFAULT (180x60pt, ver
+    // StampLeft/Top acima) com TODOS os campos opcionais fornecidos -- cabem todos (nome curto, motivo/
+    // local curtos): a régua de prioridade não corta nada que caiba de verdade.
+    public void Sign_WithVisibleStamp_DefaultBox_ShowsCpfMotivoLocalAndIssuer()
+    {
+        using var cert = TestCertificateFactory.CreateSelfSignedWithDocumentSuffix("Joana Petit:01672780838");
+        var stamp = new VisibleStampSpec(0, new PdfQuad(StampLeft, StampBottom, StampRight, StampTop));
+        var signed = SignFixture(cert: cert, stamp: stamp, reason: "Aprovacao", location: "Sao Paulo");
+
+        var text = ExtractStampAppearanceText(signed);
+        Assert.Contains("Assinado digitalmente por", text);
+        Assert.Contains("Joana Petit", text);
+        Assert.Contains("CPF: 016.727.808-38", text);
+        Assert.Contains("Motivo: Aprovacao", text);
+        Assert.Contains("Local: Sao Paulo", text);
+        Assert.Contains("Emitido por:", text);
+    }
+
+    [Fact] // Mesmo cenário acima (motivo+local+CPF fornecidos), mas na caixa MÍNIMA (60x20pt, brief +
+    // MinStampBoxWidthPt/HeightPt do Plano 8) -- só nome+data sobrevivem (a garantia "always" do
+    // brief); CPF/motivo/local/emissor E a legenda "Assinado digitalmente por" ficam de fora por falta
+    // de espaço vertical -- provam a régua de prioridade "drop from the bottom" de verdade, não só a
+    // ausência quando o campo nem foi pedido (teste acima já cobre isso).
+    public void Sign_WithVisibleStamp_MinBox_ShowsOnlyNameAndDate()
+    {
+        using var cert = TestCertificateFactory.CreateSelfSignedWithDocumentSuffix("Ana Reis:01672780838");
+        var stamp = new VisibleStampSpec(0, new PdfQuad(MinStampLeft, MinStampBottom, MinStampRight, MinStampTop));
+        var signed = SignFixture(cert: cert, stamp: stamp, reason: "Aprovacao", location: "Sao Paulo");
+
+        var text = ExtractStampAppearanceText(signed);
+        Assert.Contains("Ana Reis", text); // nome curto -- cabe sem truncar
+        Assert.DoesNotContain("CPF", text);
+        Assert.DoesNotContain("Motivo", text);
+        Assert.DoesNotContain("Local", text);
+        Assert.DoesNotContain("Emitido", text);
+        Assert.DoesNotContain("Assinado digitalmente por", text); // legenda cai antes do CPF na prioridade
+    }
+
+    /// Regressão da revisão final do coordenador (achado real, medido ao vivo, não hipotético):
+    /// `SignatureFieldAppearance` aplica um padding PRÓPRIO default (~2pt de cada lado) antes de
+    /// repassar espaço pro `Div`/`StampAppearanceRenderer` -- o retângulo REALMENTE desenhado
+    /// (`GetOccupiedAreaBBox()`) ficava ~4pt mais estreito/baixo que o retângulo NOMINAL pedido. Na
+    /// caixa MÍNIMA (60×20pt) isso reduzia o orçamento vertical o bastante pra a linha de DATA (uma
+    /// das 2 linhas SEMPRE desenhadas, nunca omitida) colidir com o próprio traço da moldura inferior
+    /// -- medido ao vivo (scan pixel-a-pixel antes do fix): pixels de tinta de texto (média tão escura
+    /// quanto 49/255) na faixa logo ACIMA do traço da moldura, onde deveria haver só espaço livre (ou
+    /// tingimento da marca d'água, nunca glifo). Fix: zera os 4 paddings da APARÊNCIA
+    /// (`ApplyVisibleStamp`, `Property.PADDING_TOP/RIGHT/BOTTOM/LEFT`) -- este teste é a VIGIA
+    /// permanente contra uma reintrodução do problema (por este padding específico ou qualquer causa
+    /// futura que reduza o espaço disponível na caixa mínima).
+    [Fact]
+    public void Sign_WithVisibleStamp_MinBox_NoTextCollidesWithBottomFrameStroke()
+    {
+        var stamp = new VisibleStampSpec(0, new PdfQuad(MinStampLeft, MinStampBottom, MinStampRight, MinStampTop));
+        var signed = SignFixture(stamp: stamp);
+
+        using var renderer = new PdfDocumentRenderer(signed);
+        var page = renderer.RenderPage(0, 1.0);
+        int w = page.WidthPx, h = page.HeightPx;
+
+        // o traço da moldura inferior fica ~1px acima da borda NOMINAL (BorderPt/2 de inset, ver
+        // DrawFrame) -- a "zona de folga" que o fix garante (medida ao vivo: ~3pt) fica logo ACIMA
+        // dele, nas linhas offsetFromBottom=2..3 (offset=0 é a borda nominal em si -- branco fora do
+        // carimbo; offset=1 é o PRÓPRIO traço da moldura, escuro por natureza -- excluído de propósito
+        // desta varredura, que procura só por COLISÃO de texto, não pela moldura).
+        int bottomEdgeRow = h - (int)MinStampBottom;
+        const int ClearanceZoneStartOffset = 2, ClearanceZoneEndOffset = 3;
+        int left = (int)MinStampLeft + 3, right = (int)MinStampRight - 3; // afasta das verticais da moldura
+
+        int darkestInZone = 255;
+        for (int offset = ClearanceZoneStartOffset; offset <= ClearanceZoneEndOffset; offset++)
+        {
+            int y = bottomEdgeRow - offset;
+            for (int x = left; x <= right; x++)
+            {
+                int i = (y * w + x) * 4;
+                int avg = (page.Bgra[i] + page.Bgra[i + 1] + page.Bgra[i + 2]) / 3;
+                darkestInZone = Math.Min(darkestInZone, avg);
+            }
+        }
+
+        Assert.True(darkestInZone > 200,
+            $"texto colidindo com a moldura inferior na caixa mínima (pixel mais escuro na zona de " +
+            $"folga={darkestInZone}, esperado >200 -- só tingimento leve da marca d'água, nunca glifo)");
+    }
+
+    /// Marca d'água (brief: "selo translúcido... alfa ~0.08-0.12", "vetor... NUNCA fora do carimbo"):
+    /// um carimbo SEM marca d'água (o layout ANTIGO, `SignedAppearanceText` puro) só produz pixels
+    /// BIMODAIS na região interior -- branco de fundo (255) ou glifo de texto (preto/cinza de
+    /// antialiasing na borda do traço) -- NUNCA uma faixa de cinza-claro UNIFORME cobrindo uma área
+    /// GRANDE, porque nada ali é desenhado com alfa fracionário. Medido ao vivo contra o layout antigo
+    /// (ver task-3-report.md): banda [215,250) (nem branco puro, nem antialiasing de borda de glifo)
+    /// cobre só ~7% da área interior do carimbo -- ruído de antialiasing de texto, não um tingimento
+    /// deliberado. Limiar 15% fica ACIMA desse ruído.
+    ///
+    /// MARGEM PROPORCIONAL (revisão do coordenador -- achado real, não hipotético): a 1ª versão deste
+    /// teste usava uma margem FIXA (6pt) pra afastar da moldura antes de medir -- calibrada pro
+    /// retângulo DEFAULT (60pt de altura, 6pt é ~10% disso), mas devastadora no MÍNIMO (20pt de altura,
+    /// 6pt de cada lado = 12pt removidos de 20 = 60% da altura descartada, sobrando uma faixa central
+    /// estreita demais pra medir o selo de verdade -- fração medida caiu pra ~13.8%, abaixo do limiar,
+    /// sem o selo ter ficado menos visível). Fix: margem = 10% da ALTURA do próprio retângulo do
+    /// carimbo (escala junto com a caixa, nunca um valor absoluto) -- testado nos DOIS tamanhos que
+    /// importam na prática (`MeasureLightTintFraction`, helper compartilhado abaixo).
+    ///
+    /// RECALIBRAÇÃO (revisão final do coordenador, depois do fix de padding zero em
+    /// `ApplyVisibleStamp`): zerar o padding default de `SignatureFieldAppearance` aumenta o retângulo
+    /// REALMENTE desenhado (antes encolhido ~2pt de cada lado) -- medido ao vivo, a fração no DEFAULT
+    /// subiu (16,7% -> 18,9%, mais área de selo disponível), mas no MÍNIMO CAIU (17,8% -> ~15,0%, perto
+    /// do limiar antigo de 15%): com o retângulo cheio, o texto (sempre nome+data, 2 linhas fixas) fica
+    /// posicionado de forma diferente dentro da caixa mínima, deslocando um pouco a área tingida em
+    /// relação à janela de amostra (que continua fixa em 10% da altura NOMINAL, sem mudança). Limiar
+    /// recalibrado pros 2 testes abaixo: 12% -- continua BEM acima do ruído do layout antigo (~7%, sem
+    /// marca d'água nenhuma) e abaixo das 2 frações medidas de verdade (mínimo ~15,0%, default ~18,9%),
+    /// preservando folga nas duas pontas.
+    private static double MeasureLightTintFraction(byte[] signed, double left, double bottom, double right, double top)
+    {
+        using var renderer = new PdfDocumentRenderer(signed);
+        var page = renderer.RenderPage(0, 1.0);
+        int w = page.WidthPx, h = page.HeightPx;
+
+        double marginPt = (top - bottom) * 0.10; // 10% da ALTURA do retângulo -- nunca um pt fixo
+        int pxLeft = (int)(left + marginPt), pxRight = (int)(right - marginPt);
+        int pxTop = h - (int)(top - marginPt), pxBottom = h - (int)(bottom + marginPt);
+
+        int lightTint = 0, total = 0;
+        for (int y = pxTop; y <= pxBottom; y++)
+            for (int x = pxLeft; x <= pxRight; x++)
+            {
+                int i = (y * w + x) * 4;
+                int avgPix = (page.Bgra[i] + page.Bgra[i + 1] + page.Bgra[i + 2]) / 3;
+                total++;
+                if (avgPix is >= 215 and < 250) lightTint++;
+            }
+        return lightTint / (double)total;
+    }
+
+    // Limiar compartilhado pelos 2 testes abaixo -- ver derivação completa no XML doc de
+    // MeasureLightTintFraction acima (12% fica acima do ruído do layout antigo, ~7%, e abaixo das 2
+    // frações medidas de verdade, mínimo ~15,0% e default ~18,9%).
+    private const double LightTintFractionThreshold = 0.12;
+
+    [Fact]
+    public void Sign_WithVisibleStamp_DefaultBox_ShowsTranslucentWatermarkOverALargeArea()
+    {
+        var stamp = new VisibleStampSpec(0, new PdfQuad(StampLeft, StampBottom, StampRight, StampTop));
+        var signed = SignFixture(stamp: stamp);
+
+        double fraction = MeasureLightTintFraction(signed, StampLeft, StampBottom, StampRight, StampTop);
+        Assert.True(fraction > LightTintFractionThreshold,
+            $"nenhuma região extensa de tingimento translúcido na caixa DEFAULT (180x60pt) -- fração em " +
+            $"[215,250)={fraction:P1} (esperado >{LightTintFractionThreshold:P0})");
+    }
+
+    [Fact] // mesma medida acima, mas no tamanho MÍNIMO real da UI (60x20pt, DocumentViewModel.
+    // MinStampBoxWidthPt/HeightPt) -- prova que o selo continua MENSURAVELMENTE visível mesmo na
+    // caixa mais apertada que o usuário pode desenhar, não só no default espaçoso.
+    public void Sign_WithVisibleStamp_MinBox_ShowsTranslucentWatermarkOverALargeArea()
+    {
+        var stamp = new VisibleStampSpec(0, new PdfQuad(MinStampLeft, MinStampBottom, MinStampRight, MinStampTop));
+        var signed = SignFixture(stamp: stamp);
+
+        double fraction = MeasureLightTintFraction(signed, MinStampLeft, MinStampBottom, MinStampRight, MinStampTop);
+        Assert.True(fraction > LightTintFractionThreshold,
+            $"nenhuma região extensa de tingimento translúcido na caixa MÍNIMA (60x20pt) -- fração em " +
+            $"[215,250)={fraction:P1} (esperado >{LightTintFractionThreshold:P0})");
+    }
+
+    /// Minor #1 da revisão (achado real, verificado ao vivo com um render/crop antes de escrever a
+    /// asserção): o selo escalava só pela ALTURA do retângulo (`bbox.GetHeight() * 0.82`), sem
+    /// considerar a LARGURA -- numa caixa ESTREITA e ALTA (largura menor que altura; nunca exercitada
+    /// pelos 2 tamanhos "de catálogo" acima, que são sempre mais largos que altos), o selo calculado a
+    /// partir da altura ficava mais LARGO que a própria caixa. Como toda anotação PDF é recortada pelo
+    /// PRÓPRIO `/BBox` na hora de renderizar (confirmado ao vivo: um teste de "0 px fora do retângulo"
+    /// como `Sign_WithVisibleStamp_PaintsOnlyInsideStampRegion` continuava passando mesmo com o selo
+    /// sangrando -- o VISOR nunca deixa nada vazar pra fora da página, então esse tipo de prova não
+    /// pega este defeito), o efeito visível não é "vaza pra fora da página": é o selo aparecer CORTADO
+    /// RENTE à moldura de propósito (sem a margem que TODA a extensão vertical do retângulo teria),
+    /// em vez de escalado pra caber inteiro e centralizado.
+    ///
+    /// Prova: existe uma FAIXA de margem sem tingimento nenhum entre a borda do selo e a borda do
+    /// carimbo -- medida perto da borda ESQUERDA (a direita tem o traço da rubrica cruzando por perto,
+    /// que também tinge, e atrapalharia a medida). ACHADO ao vivo (medido com um scan pixel-a-pixel,
+    /// não hipotético): numa caixa 40x150pt a margem escalada é só ~3.6pt (9% de 40pt) -- perto demais
+    /// da moldura pra medir com folga de antialiasing sem ambiguidade. A margem é sempre ~9% da LARGURA
+    /// da caixa (`(1-0.82)/2`) quando escalada pela largura -- pra ter uma margem generosa o bastante
+    /// de medir (a prova precisa de robustez, não de um valor mínimo específico), a caixa deste teste é
+    /// bem mais larga que a mínima estreita possível (200x500pt -- ainda MUITO mais alta que larga,
+    /// aspecto 0.4, bem abaixo da proporção do próprio selo 0.62 -- garante escala por LARGURA, não
+    /// altura) só pra deixar a margem resultante (~18pt) folgada o bastante pra amostrar sem ruído.
+    [Fact]
+    public void Sign_WithVisibleStamp_NarrowTallBox_WatermarkScalesDownWithMarginFromEdge()
+    {
+        const double Left = 350, Bottom = 50, Right = 550, Top = 550; // 200pt largo x 500pt alto
+        var stamp = new VisibleStampSpec(0, new PdfQuad(Left, Bottom, Right, Top));
+        var signed = SignFixture(stamp: stamp);
+
+        using var renderer = new PdfDocumentRenderer(signed);
+        var page = renderer.RenderPage(0, 1.0);
+        int w = page.WidthPx, h = page.HeightPx;
+
+        // altura vertical orçada pro selo (bbox.Height * 0.82) é sempre >= a orçada pela largura numa
+        // caixa mais alta que larga -- logo o CENTRO vertical da caixa é onde o selo (sem o clamp)
+        // ficaria mais largo, o pior caso pra estourar a largura da caixa.
+        double cyPt = (Bottom + Top) / 2;
+        int py = h - (int)cyPt;
+        // margem esperada ~18pt (9% de 200pt) de cada lado -- amostra a 10pt da borda esquerda, dentro
+        // da margem com folga confortável dos dois lados (longe da moldura de 0.75pt E longe da borda
+        // real do selo a ~18pt).
+        int px = (int)Left + 10;
+
+        const int half = 2; // janela 5x5px, robusta a antialiasing
+        long sum = 0; int n = 0;
+        for (int y = py - half; y <= py + half; y++)
+            for (int x = px - half; x <= px + half; x++)
+            {
+                int i = (y * w + x) * 4;
+                sum += page.Bgra[i] + page.Bgra[i + 1] + page.Bgra[i + 2];
+                n++;
+            }
+        double avg = sum / (double)(n * 3);
+
+        Assert.True(avg > 250,
+            $"selo sem margem da borda esquerda numa caixa estreita/alta (média perto da borda={avg:0.0}, " +
+            $"esperado quase branco puro >250) -- selo não escalado pra largura, ficando rente à moldura");
     }
 }

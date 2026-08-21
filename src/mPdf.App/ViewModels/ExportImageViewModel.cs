@@ -192,8 +192,12 @@ public sealed partial class ExportImageViewModel : ObservableObject
 
                 var rendered = renderer.RenderPage(pageIndex, scale);
                 // MESMA conversão usada pelo visualizador/impressão (BitmapConverter.ToBitmapSource) --
-                // pixels exportados == pixels exibidos/impressos, mesma fonte de verdade.
-                var bmp = BitmapConverter.ToBitmapSource(rendered);
+                // pixels exportados == pixels exibidos/impressos, mesma fonte de verdade. 96 fixo aqui
+                // (Task 2, Plano 9): a tag de DPI deste `bmp` INTERMEDIÁRIO é irrelevante -- `EncodeImage`
+                // logo abaixo reembala o MESMO buffer de pixels com o `dpi` REALMENTE escolhido (150/300)
+                // na metadata do arquivo final (ver doc XML de EncodeImage), então 96 aqui nunca vaza pro
+                // arquivo exportado.
+                var bmp = BitmapConverter.ToBitmapSource(rendered, 96, 96);
                 byte[] bytes = EncodeImage(bmp, format, dpi);
                 File.WriteAllBytes(currentOutputPath, bytes);
                 count++;

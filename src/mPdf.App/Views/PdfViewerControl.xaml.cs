@@ -87,7 +87,10 @@ public partial class PdfViewerControl : UserControl
         // rolando, clicando ou navegando por teclado por conta própria.
         PreviewMouseDown += (_, _) => CancelScrollReapply();
         PreviewKeyDown += OnPreviewKeyDown;
-        Loaded += (_, _) => PageList.Focus();   // foco para PageUp/PageDown funcionarem ao trocar de aba
+        // Task 2 (Plano 9): fixa o fator de DPI do monitor ATUAL assim que o controle entra na árvore
+        // visual de verdade (ANTES do Loaded, VisualTreeHelper.GetDpi ainda não reflete o monitor real —
+        // ver doc XML de PushCurrentDpiFactor) — mesmo adiamento de PageList.Focus() logo abaixo.
+        Loaded += (_, _) => { PageList.Focus(); PushCurrentDpiFactor(); };   // foco para PageUp/PageDown funcionarem ao trocar de aba
         PageList.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(OnScrollChanged));
         DataContextChanged += OnDataContextChanged;
     }
@@ -95,6 +98,35 @@ public partial class PdfViewerControl : UserControl
     // largura/altura do viewport para os modos de ajuste (chamado pela MainWindow)
     public double ViewportWidth => PageList.ActualWidth;
     public double ViewportHeight => PageList.ActualHeight;
+
+    // ---- Task 2 (Plano 9): nitidez -- fator de DPI do monitor propagado pro DocumentViewModel --------
+
+    /// Chamado pelo SISTEMA (WPF) quando o DPI efetivo deste Visual muda — o caso real é a janela sendo
+    /// arrastada entre monitores com escalas diferentes (125% -> 150%, etc.). `Visual.OnDpiChanged` é o
+    /// hook per-monitor-DPI-v2 do WPF (desde .NET Core 3.0), disparado pelo próprio framework — nenhum
+    /// polling/timer nosso. Re-renderiza as páginas REALIZADAS na densidade nova (ver
+    /// DocumentViewModel.OnDpiFactorChanged/PageViewModel.RefreshDpi) — "barato de ouvir" (brief): só um
+    /// re-render dos poucos containers hoje na tela, mesmo custo de um zoom.
+    protected override void OnDpiChanged(DpiScale oldDpiScaleInfo, DpiScale newDpiScaleInfo)
+    {
+        base.OnDpiChanged(oldDpiScaleInfo, newDpiScaleInfo);
+        ApplyDpiFactor(newDpiScaleInfo.DpiScaleX);
+    }
+
+    // Lê o DPI do monitor onde este controle está DE VERDADE (precisa estar conectado a um
+    // PresentationSource — Loaded/troca de aba, nunca o construtor) e propaga pro doc CORRENTE.
+    private void PushCurrentDpiFactor() => ApplyDpiFactor(VisualTreeHelper.GetDpi(this).DpiScaleX);
+
+    /// Extraído (mesmo padrão de `ComputeAnchoredOffset`/`IsCurrentDocument` abaixo) pra ser TESTÁVEL
+    /// sem depender de uma mudança de DPI REAL do SO (não simulável em teste — só o Windows real dispara
+    /// `OnDpiChanged`, arrastando a janela entre monitores físicos de escalas diferentes) nem de estar
+    /// conectado a um monitor real (`VisualTreeHelper.GetDpi` exige isso). `internal`: só esta View e os
+    /// testes (`InternalsVisibleTo`) precisam chamar isto diretamente — a UI de produção nunca escolhe o
+    /// fator, só REPASSA o que o SO informou.
+    internal void ApplyDpiFactor(double factor)
+    {
+        if (DataContext is DocumentViewModel doc) doc.DpiFactor = factor;
+    }
 
     private void OnPreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
     {
@@ -210,6 +242,13 @@ public partial class PdfViewerControl : UserControl
             newDoc.ScrollToPageRequested += ScrollToPage;
             newDoc.FitWidthRecalcRequested += OnFitWidthRecalcRequested;
             newDoc.Search.PropertyChanged += OnSearchPropertyChanged;
+            // Task 2 (Plano 9): troca de ABA (DataContext trocado num controle RECICLADO, já conectado a
+            // uma janela/monitor de verdade — ao contrário da 1ª criação, coberta pelo Loaded do
+            // construtor) — o doc NOVO precisa do fator de DPI JÁ CONHECIDO deste monitor na hora, sem
+            // esperar um Loaded que não vai disparar de novo (o controle não sai/entra na árvore visual
+            // numa troca de aba). DataContext já reflete `newDoc` neste ponto (callback roda DEPOIS da
+            // propriedade ser escrita), então PushCurrentDpiFactor resolve pro doc certo.
+            PushCurrentDpiFactor();
         }
     }
 
