@@ -3,12 +3,18 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Assinar documento" Height="500" Width="460" WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize" ShowInTaskbar="False">
+    <Window.Resources>
+        <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — mesmo motivo de MainWindow.xaml/SobreDialog.xaml
+             (Application.Current fica null nas sondas STA que constroem este diálogo direto). -->
+        <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+    </Window.Resources>
     <DockPanel Margin="12">
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button x:Name="CancelButton" Content="Cancelar" Width="90" Margin="0,0,8,0"
-                    IsCancel="True" Click="Cancel_Click"/>
+                    IsCancel="True" Click="Cancel_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
             <Button x:Name="OkButton" Content="Assinar" Width="90" IsDefault="True" Click="Ok_Click"
-                    IsEnabled="{Binding SelectedItem.IsEnabled, ElementName=CertificateListBox, FallbackValue=False}"/>
+                    IsEnabled="{Binding SelectedItem.IsEnabled, ElementName=CertificateListBox, FallbackValue=False}"
+                    Style="{StaticResource mPdf.Button.Dialog}"/>
         </StackPanel>
 
         <StackPanel>

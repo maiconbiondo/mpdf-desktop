@@ -4,11 +4,19 @@
         Title="Sobre o mPDF" Height="440" Width="440" WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False" ResizeMode="NoResize">
     <Window.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — mesmo motivo/mesma nota de MainWindow.xaml
+             (Application.Current fica null nas sondas STA que constroem este diálogo direto,
+             StaticResource nunca alcançaria só o merge de App.xaml sem isto). -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
     </Window.Resources>
     <DockPanel Margin="16">
         <StackPanel DockPanel.Dock="Bottom" HorizontalAlignment="Right" Margin="0,12,0,0">
-            <Button Content="Fechar" Width="90" IsCancel="True"/>
+            <Button Content="Fechar" Width="90" IsCancel="True" Style="{StaticResource mPdf.Button.Dialog}"/>
         </StackPanel>
 
         <!-- Cabeçalho: ícone do app (Assets/mpdf.ico, mesmo ícone do instalador/EXE) + "mPDF <versão>". -->
@@ -32,7 +40,8 @@
         <StackPanel>
             <Button x:Name="VerificarButton" Content="Verificar atualização" Padding="10,5" HorizontalAlignment="Left"
                     Command="{Binding VerificarAtualizacaoCommand}"
-                    Visibility="{Binding PodeVerificar, Converter={StaticResource BoolToVis}}"/>
+                    Visibility="{Binding PodeVerificar, Converter={StaticResource BoolToVis}}"
+                    Style="{StaticResource mPdf.Button.Dialog}"/>
 
             <TextBlock Text="Verificando…" Margin="0,8,0,0"
                        Visibility="{Binding IsVerificando, Converter={StaticResource BoolToVis}}"/>
@@ -52,7 +61,7 @@
                 <TextBlock Text="{Binding AtualizacaoDisponivel.Notas}" TextWrapping="Wrap" MaxHeight="90"
                            Margin="0,4,0,8" TextTrimming="CharacterEllipsis"/>
                 <Button x:Name="BaixarButton" Content="Baixar e instalar" Padding="10,5" HorizontalAlignment="Left"
-                        Command="{Binding BaixarEInstalarCommand}"/>
+                        Command="{Binding BaixarEInstalarCommand}" Style="{StaticResource mPdf.Button.Dialog}"/>
             </StackPanel>
 
             <StackPanel Margin="0,8,0,0" Visibility="{Binding IsBaixando, Converter={StaticResource BoolToVis}}">

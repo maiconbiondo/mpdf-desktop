@@ -4,6 +4,15 @@
              xmlns:local="clr-namespace:mPdf.App"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-         
+        <!-- Plano 12 (Task 1): tema visual central — tokens de cor/espaçamento/raio + estilos de
+             chrome (ToolBar/TabControl/Menu/GroupBox globais; Button/Border KEYED, ver nota de
+             escopo no topo de Themes/mPdfTheme.xaml). Mesclado aqui pra ficar disponível como
+             StaticResource em QUALQUER Window/UserControl do app (App.Resources é a raiz de busca
+             de recursos de toda a árvore visual). -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

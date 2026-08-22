@@ -7,20 +7,34 @@
         Title="{Binding SelectedDocument.Title, FallbackValue=mPDF, StringFormat='mPDF — {0}'}"
         Height="800" Width="1200" WindowStartupLocation="CenterScreen">
     <Window.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE (não só via App.xaml/Application.Resources) —
+             necessário pros Style="{StaticResource mPdf.Button.Toolbar}"/mPdf.Border.Painel abaixo
+             resolverem tanto em produção (App já mescla, redundante mas inofensivo — o dicionário
+             mais próximo na cadeia de busca vence, mesmo conteúdo) QUANTO nas ~20+ sondas STA
+             existentes que constroem `new MainWindow()` direto (sem `new App()`), onde
+             `Application.Current` fica `null` o processo inteiro (achado documentado no report do
+             Task 1) e StaticResource NUNCA alcança Application.Resources — sem esta mescla local,
+             toda sonda que construísse a janela quebraria com XamlParseException na hora do
+             InitializeComponent, não só as sondas de tema. -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
     </Window.Resources>
     <DockPanel>
         <ToolBarTray DockPanel.Dock="Top">
             <ToolBar>
-                <Button Command="{Binding OpenFileCommand}" ToolTip="Abrir PDF (Ctrl+O)" Padding="8,4">
+                <Button Command="{Binding OpenFileCommand}" ToolTip="Abrir PDF (Ctrl+O)" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="📂 Abrir"/>
                 </Button>
                 <!-- Task 3 (Plano 3a): desabilitado sem documento SUJO via CanExecute do SaveCommand
                      (mesmo mecanismo do PrintCommand abaixo). -->
-                <Button Command="{Binding SaveCommand}" ToolTip="Salvar (Ctrl+S)" Padding="8,4">
+                <Button Command="{Binding SaveCommand}" ToolTip="Salvar (Ctrl+S)" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="💾 Salvar"/>
                 </Button>
-                <Button Command="{Binding SaveAsCommand}" ToolTip="Salvar como…" Padding="8,4">
+                <Button Command="{Binding SaveAsCommand}" ToolTip="Salvar como…" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="Salvar como…"/>
                 </Button>
                 <Separator/>
@@ -28,22 +42,22 @@
                      por isso os comandos vêm de SelectedDocument (mesmo padrão dos botões de Zoom
                      abaixo), não de MainViewModel (onde vivem Save/Print, que precisam de diálogo/config
                      compartilhados). CanExecute do próprio comando já desabilita o botão automaticamente. -->
-                <Button Command="{Binding SelectedDocument.UndoCommand}" ToolTip="Desfazer (Ctrl+Z)" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.UndoCommand}" ToolTip="Desfazer (Ctrl+Z)" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="↶ Desfazer"/>
                 </Button>
-                <Button Command="{Binding SelectedDocument.RedoCommand}" ToolTip="Refazer (Ctrl+Y)" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.RedoCommand}" ToolTip="Refazer (Ctrl+Y)" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="↷ Refazer"/>
                 </Button>
                 <!-- Task 8: desabilitado sem documento via CanExecute do PrintCommand (WPF desabilita
                      o Button automaticamente quando ICommand.CanExecute retorna false). -->
-                <Button Command="{Binding PrintCommand}" ToolTip="Imprimir (Ctrl+P)" Padding="8,4">
+                <Button Command="{Binding PrintCommand}" ToolTip="Imprimir (Ctrl+P)" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="🖨 Imprimir"/>
                 </Button>
                 <!-- Task 3 (Plano 4): comando por DOCUMENTO (mesmo padrão de Undo/Redo acima) —
                      habilitado com qualquer doc aberto não-XFA, INCLUSIVE já assinado (assinatura
                      incremental — CanSign deliberadamente NÃO compõe !IsSignedDocument, ver doc XML de
                      DocumentViewModel.CanSign). CanExecute do próprio comando desabilita o botão. -->
-                <Button Command="{Binding SelectedDocument.SignCommand}" ToolTip="Assinar digitalmente" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.SignCommand}" ToolTip="Assinar digitalmente" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="🖊 Assinar"/>
                 </Button>
                 <!-- Task 4 (Plano 7): leitura pura, sem CanExecute — funciona até em documento assinado
@@ -51,7 +65,7 @@
                      (mesmo agrupamento de "ações sobre o documento inteiro"); sonda de overflow
                      (ViewerIntegrationTests.MainWindow_At1200x800_ToolbarsHaveNoOverflowItems) é o
                      critério de aceitação do brief — verde sem precisar mover pra banda 2. -->
-                <Button Command="{Binding SelectedDocument.ExportImageCommand}" ToolTip="Exportar página como imagem" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.ExportImageCommand}" ToolTip="Exportar página como imagem" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="📤 Exportar"/>
                 </Button>
                 <Separator/>
@@ -70,15 +84,15 @@
                 <Separator/>
                 <!-- Task 4 (Plano 3b): Juntar — SEMPRE habilitado (funciona sem nenhum documento aberto,
                      ver MainViewModel.Merge). Dividir — precisa de um documento ativo (CanSplit). -->
-                <Button Command="{Binding MergeCommand}" ToolTip="Juntar vários PDFs em um só" Padding="8,4" Margin="0,0,4,0">
+                <Button Command="{Binding MergeCommand}" ToolTip="Juntar vários PDFs em um só" Padding="8,4" Margin="0,0,4,0" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="🔗 Juntar"/>
                 </Button>
-                <Button Command="{Binding SplitCommand}" ToolTip="Dividir o documento em vários arquivos" Padding="8,4">
+                <Button Command="{Binding SplitCommand}" ToolTip="Dividir o documento em vários arquivos" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="✂ Dividir"/>
                 </Button>
                 <!-- Task 5 (Plano 4): opera sobre arquivos externos escolhidos dentro do próprio diálogo,
                      SEMPRE habilitado (nenhum CanExecute), mesmo espírito de Juntar acima. -->
-                <Button Command="{Binding BatchSignCommand}" ToolTip="Assinar vários PDFs em lote" Padding="8,4">
+                <Button Command="{Binding BatchSignCommand}" ToolTip="Assinar vários PDFs em lote" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="🖊 Assinar em lote"/>
                 </Button>
                 <Separator/>
@@ -95,15 +109,15 @@
                 </Menu>
                 <!-- Task 2 (Plano 11): "Sobre" — versão, licenças, verificar/baixar/instalar atualização.
                      SEMPRE habilitado (nenhum CanExecute), mesmo agrupamento de "ações do app, não de
-                     UM documento" de Juntar/Dividir/Assinar em lote acima. Colocado na 1ª banda (não na
-                     2ª, onde entrou primeiro): a sonda de overflow (ViewerIntegrationTests.
-                     MainWindow_At1200x800_ToolbarsHaveNoOverflowItems) reprovou tanto a 2ª banda (26
-                     itens, 1172px > ~1126px úteis) QUANTO a 1ª com "ℹ Sobre" + Separator (20 itens,
-                     1154px) — as DUAS já estavam no limite a 1200px. Ícone SÓ (sem rótulo "Sobre", sem
-                     Separator dedicado) — brief pedia literalmente "botão 'ℹ'" — e ToolTip continua
-                     nomeando a ação por extenso; medido: cabe nos ~1126px úteis da 1ª banda (ver sonda
-                     verde). -->
-                <Button Command="{Binding SobreCommand}" ToolTip="Sobre o mPDF" Padding="8,4">
+                     UM documento" de Juntar/Dividir/Assinar em lote acima. Ícone SÓ (sem rótulo "Sobre",
+                     sem Separator dedicado) — brief pedia literalmente "botão 'ℹ'" — ToolTip continua
+                     nomeando a ação por extenso. Task 2 (Plano 12): cabe de volta na 1ª banda depois do
+                     fix de BorderThickness ocioso em mPdf.Button.Toolbar (ver nota no tema) — a sonda de
+                     overflow ficou vermelha na 1ª tentativa de fiar os estilos (19 itens, 1157px >
+                     ~1126px úteis) por causa de um BorderThickness=1 TRANSPARENTE (invisível, mas
+                     custando layout) herdado por padrão; zerar isso no estado ocioso recuperou espaço
+                     suficiente pra "Sobre" continuar aqui, sem precisar mudar a POSIÇÃO de nenhum botão. -->
+                <Button Command="{Binding SobreCommand}" ToolTip="Sobre o mPDF" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="ℹ"/>
                 </Button>
             </ToolBar>
@@ -140,17 +154,17 @@
                      tanto num documento assinado quanto sem nenhuma seleção. -->
                 <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}"
                         CommandParameter="{x:Static editing:AnnotationKind.Highlight}"
-                        ToolTip="Marca-texto" Padding="8,4">
+                        ToolTip="Marca-texto" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="🖍 Marca-texto"/>
                 </Button>
                 <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}"
                         CommandParameter="{x:Static editing:AnnotationKind.Underline}"
-                        ToolTip="Sublinhar" Padding="8,4">
+                        ToolTip="Sublinhar" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="U̲ Sublinhar"/>
                 </Button>
                 <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}"
                         CommandParameter="{x:Static editing:AnnotationKind.Strikeout}"
-                        ToolTip="Riscar" Padding="8,4">
+                        ToolTip="Riscar" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="S̶ Riscar"/>
                 </Button>
                 <!-- Conjunto de cor (brief): 3 swatches fixos — não aplicam nada sozinhos, só trocam
@@ -159,13 +173,13 @@
                      depende). Sem indicador visual de "cor corrente" nesta v1 (fora do pedido do
                      brief — evitado de propósito pra não precisar de um IValueConverter novo só pra
                      isso; ToolTip já nomeia cada cor). -->
-                <Button Command="{Binding SelectedDocument.SelectColorAmareloCommand}" ToolTip="Amarelo" Margin="4,0,0,0" Padding="2" Width="22" Height="22">
+                <Button Command="{Binding SelectedDocument.SelectColorAmareloCommand}" ToolTip="Amarelo" Margin="4,0,0,0" Padding="2" Width="22" Height="22" Style="{StaticResource mPdf.Button.Toolbar}">
                     <Border Background="#FFFF00" BorderBrush="Black" BorderThickness="1"/>
                 </Button>
-                <Button Command="{Binding SelectedDocument.SelectColorVerdeCommand}" ToolTip="Verde" Margin="2,0,0,0" Padding="2" Width="22" Height="22">
+                <Button Command="{Binding SelectedDocument.SelectColorVerdeCommand}" ToolTip="Verde" Margin="2,0,0,0" Padding="2" Width="22" Height="22" Style="{StaticResource mPdf.Button.Toolbar}">
                     <Border Background="#00FF66" BorderBrush="Black" BorderThickness="1"/>
                 </Button>
-                <Button Command="{Binding SelectedDocument.SelectColorVermelhoCommand}" ToolTip="Vermelho" Margin="2,0,0,0" Padding="2" Width="22" Height="22">
+                <Button Command="{Binding SelectedDocument.SelectColorVermelhoCommand}" ToolTip="Vermelho" Margin="2,0,0,0" Padding="2" Width="22" Height="22" Style="{StaticResource mPdf.Button.Toolbar}">
                     <Border Background="#FF5555" BorderBrush="Black" BorderThickness="1"/>
                 </Button>
                 <Separator/>
@@ -175,10 +189,10 @@
                      Button simples (não ToggleButton), mesma escolha já registrada pros swatches de cor
                      acima ("sem indicador visual de ferramenta CORRENTE nesta v1", Task 6). Habilitados
                      só com CanEdit (mesmo gate de ApplyMarkupCommand). -->
-                <Button Command="{Binding SelectedDocument.ToggleStickyNoteToolCommand}" ToolTip="Nota adesiva" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.ToggleStickyNoteToolCommand}" ToolTip="Nota adesiva" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="📝 Nota"/>
                 </Button>
-                <Button Command="{Binding SelectedDocument.ToggleFreeTextToolCommand}" ToolTip="Caixa de texto" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.ToggleFreeTextToolCommand}" ToolTip="Caixa de texto" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="🅰 Texto"/>
                 </Button>
                 <!-- Task 8 (Plano 3a): ferramentas de DESENHO — ✏ Desenho livre (Ink), ▢ Retângulo,
@@ -188,16 +202,16 @@
                      PdfViewerControl.Page_MouseLeftButtonDown/CommitDrawingAsync). Cor reusa o MESMO
                      seletor de cor da toolbar (SelectedMarkupColorArgb, swatches acima); espessura de
                      traço é uma constante fixa 2pt (brief v1), sem controle na UI. -->
-                <Button Command="{Binding SelectedDocument.ToggleInkToolCommand}" ToolTip="Desenho livre" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.ToggleInkToolCommand}" ToolTip="Desenho livre" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="✏ Desenho"/>
                 </Button>
-                <Button Command="{Binding SelectedDocument.ToggleRectangleToolCommand}" ToolTip="Retângulo" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.ToggleRectangleToolCommand}" ToolTip="Retângulo" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="▢ Retângulo"/>
                 </Button>
-                <Button Command="{Binding SelectedDocument.ToggleLineToolCommand}" ToolTip="Linha" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.ToggleLineToolCommand}" ToolTip="Linha" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="─ Linha"/>
                 </Button>
-                <Button Command="{Binding SelectedDocument.ToggleArrowToolCommand}" ToolTip="Seta" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.ToggleArrowToolCommand}" ToolTip="Seta" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="↗ Seta"/>
                 </Button>
                 <Separator/>
@@ -256,7 +270,7 @@
                      escolhida NUNCA vai pra dentro da StampGallery (carimbo avulso, não persistente).
                      Button simples (não ToggleButton), mesmo padrão "sem indicador visual de ferramenta
                      CORRENTE" de Nota/Texto/Desenho acima. -->
-                <Button Command="{Binding SelectedDocument.ToggleImageToolCommand}" ToolTip="Inserir imagem" Padding="8,4">
+                <Button Command="{Binding SelectedDocument.ToggleImageToolCommand}" ToolTip="Inserir imagem" Padding="8,4" Style="{StaticResource mPdf.Button.Toolbar}">
                     <TextBlock Text="🖼 Imagem"/>
                 </Button>
                 <!-- Task 3 (Plano 5): zoom + ajuste de página migraram pra cá (2ª linha) na reorganização
@@ -268,12 +282,12 @@
                      `MainWindow_At1200x800_ToolbarsHaveNoOverflowItems`, que reprovou até este ajuste
                      entrar. Mesmos Command/Click de sempre, zero mudança de binding. -->
                 <Separator/>
-                <Button Command="{Binding SelectedDocument.ZoomOutCommand}" Padding="8,4" ToolTip="Reduzir zoom">−</Button>
+                <Button Command="{Binding SelectedDocument.ZoomOutCommand}" Padding="8,4" ToolTip="Reduzir zoom" Style="{StaticResource mPdf.Button.Toolbar}">−</Button>
                 <TextBlock Text="{Binding SelectedDocument.ZoomPercent, FallbackValue=''}" VerticalAlignment="Center" MinWidth="42" TextAlignment="Center"/>
-                <Button Command="{Binding SelectedDocument.ZoomInCommand}" Padding="8,4" ToolTip="Ampliar zoom">+</Button>
+                <Button Command="{Binding SelectedDocument.ZoomInCommand}" Padding="8,4" ToolTip="Ampliar zoom" Style="{StaticResource mPdf.Button.Toolbar}">+</Button>
                 <Separator/>
-                <Button Click="FitWidth_Click" Padding="8,4" ToolTip="Ajustar à largura">↔ Largura</Button>
-                <Button Click="FitPage_Click" Padding="8,4" ToolTip="Página inteira">▭ Página</Button>
+                <Button Click="FitWidth_Click" Padding="8,4" ToolTip="Ajustar à largura" Style="{StaticResource mPdf.Button.Toolbar}">↔ Largura</Button>
+                <Button Click="FitPage_Click" Padding="8,4" ToolTip="Página inteira" Style="{StaticResource mPdf.Button.Toolbar}">▭ Página</Button>
             </ToolBar>
         </ToolBarTray>
         <StatusBar DockPanel.Dock="Bottom">
@@ -343,8 +357,18 @@
              PdfViewerControl — MainWindow.CurrentViewer() (FindDescendant a partir de Tabs) continua
              achando só o da aba de DOCUMENTO ativa, sem mudança nenhuma. -->
         <Border DockPanel.Dock="Left" Width="150"
+                Style="{StaticResource mPdf.Border.Painel}"
                 Visibility="{Binding ThumbnailsVisible, Converter={StaticResource BoolToVis}}">
-            <TabControl Background="#FF3C3F41" BorderThickness="0" Padding="0">
+            <!-- Task 2 (Plano 12): Background dark (#FF3C3F41) local REMOVIDO — era um valor LOCAL
+                 (sempre vence Setter de Style, WPF) que impedia o Style GLOBAL de TabControl (Task 1,
+                 Cor.Superficie) de pegar aqui; a faixa de abas volta a seguir o tema claro em vez de
+                 ficar presa no cinza-escuro herdado do visual antigo. Conteúdo de cada aba
+                 (ThumbnailsPanel/OutlineView/FormPanel/SignaturePanel) ficou de fora DESTA task (só o
+                 Border CONTAINER do painel e os botões nomeados no brief, não uma repintura de cada View
+                 interna) — passou a seguir o tema claro também, mas só depois, no commit 8b358b4
+                 ("interior dos paineis no tema claro e dialogos completos"); nenhum painel mantém mais
+                 paleta escura própria. -->
+            <TabControl BorderThickness="0" Padding="0">
                 <TabItem Header="Miniaturas" Padding="6,3" FontSize="11">
                     <views:ThumbnailsPanel x:Name="ThumbnailsRail" DataContext="{Binding SelectedDocument}"/>
                 </TabItem>

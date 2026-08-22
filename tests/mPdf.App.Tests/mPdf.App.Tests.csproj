@@ -25,6 +25,18 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Item A (Task 3, Plano 12 fixes finais): a mescla do tema (Task 2) faz TODA janela/diálogo WPF
+         construído por esta suíte puxar a mesma PackagePart `mpdftheme.baml` — coleções de teste xUnit
+         rodando em paralelo batem no bug conhecido do WPF (não thread-safe) em
+         `PackagePart.CleanUpRequestedStreamsList`, causando `NullReferenceException` intermitente
+         quando duas construções de janela colidem entre threads (revisão viu 2 falhas em 8 corridas
+         completas). `CopyToOutputDirectory` é necessário aqui: SDK-style csproj não copia `None`/
+         conteúdo pro diretório de saída por padrão, e o runtime do xUnit só lê `xunit.runner.json` do
+         lado do assembly de teste (`bin/.../mPdf.App.Tests.dll`), nunca da raiz do projeto fonte. -->
+    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\mPdf.App\mPdf.App.csproj" />
   </ItemGroup>
 

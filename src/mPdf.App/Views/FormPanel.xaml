@@ -9,19 +9,29 @@
          formulário") | normal (lista de editores + "Aplicar alterações") — exemplar: OutlineView
          (estado vazio via Style/DataTrigger em HasOutline). -->
     <UserControl.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — este UserControl nunca é construído sozinho
+             em teste (grep confirma, ver report), mas StaticResource resolve no MOMENTO em que o
+             próprio InitializeComponent deste arquivo roda (antes de ser anexado como filho de
+             MainWindow), então precisa da própria mescla — mesmo motivo/mesma nota de
+             MainWindow.xaml. -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
     </UserControl.Resources>
-    <Grid Background="#FF3C3F41">
+    <Grid Background="{StaticResource Cor.Superficie}">
         <!-- Estado XFA (brief, texto EXATO da spec) — checado ANTES do vazio (2 TextBlocks nunca
              visíveis ao mesmo tempo: XFA sempre tem HasFormFields=False também, mas o aviso XFA é mais
              ESPECÍFICO e deve vencer). -->
         <TextBlock Text="Formulário XFA não é suportado; o documento abre para leitura."
-                   Foreground="#FFCCCCCC" FontSize="12" TextWrapping="Wrap" Margin="12"
+                   Foreground="{StaticResource Cor.TextoSecundario}" FontSize="12" TextWrapping="Wrap" Margin="12"
                    TextAlignment="Center" VerticalAlignment="Top"
                    Visibility="{Binding IsXfaForm, Converter={StaticResource BoolToVis}}"/>
         <!-- Estado vazio (brief, texto EXATO) — só quando NÃO é XFA (aviso mais específico acima) E não
              há campos editáveis (AcroForm ausente, ou só campos Other/botão/assinatura). -->
-        <TextBlock Text="Este documento não tem formulário." Foreground="#FFCCCCCC" FontSize="12"
+        <TextBlock Text="Este documento não tem formulário." Foreground="{StaticResource Cor.TextoSecundario}" FontSize="12"
                    TextWrapping="Wrap" Margin="12" TextAlignment="Center" VerticalAlignment="Top">
             <TextBlock.Style>
                 <Style TargetType="TextBlock">
@@ -49,7 +59,7 @@
                  mesma bandeira que desabilita o ScrollViewer/botão abaixo — o banner GENÉRICO de
                  documento assinado (MainWindow) continua cobrindo esse caso, como sempre cobriu. -->
             <TextBlock DockPanel.Dock="Top" Text="Documento assinado: o preenchimento será adicionado sem invalidar a assinatura."
-                       Foreground="#FFCCCCCC" FontSize="11" TextWrapping="Wrap" Margin="8,8,8,0"
+                       Foreground="{StaticResource Cor.TextoSecundario}" FontSize="11" TextWrapping="Wrap" Margin="8,8,8,0"
                        Visibility="{Binding ShowSignedFormFillNotice, Converter={StaticResource BoolToVis}}"/>
             <!-- M2 (revisão, Task 6/Plano 4): documento CERTIFICADO com DocMDP P=1 — nenhuma alteração é
                  permitida. Mutuamente exclusivo com o aviso ACIMA (dependem de valores diferentes de
@@ -57,7 +67,7 @@
                  "documento assinado" por trás — o usuário não tinha como saber SE o motivo era XFA,
                  DocMDP, ou outra coisa; este texto nomeia a causa específica. Texto EXATO da revisão. -->
             <TextBlock DockPanel.Dock="Top" Text="Documento certificado: alterações não são permitidas (nível de proteção máximo)."
-                       Foreground="#FFCCCCCC" FontSize="11" TextWrapping="Wrap" Margin="8,8,8,0"
+                       Foreground="{StaticResource Cor.TextoSecundario}" FontSize="11" TextWrapping="Wrap" Margin="8,8,8,0"
                        Visibility="{Binding ShowDocMdpDeniedNotice, Converter={StaticResource BoolToVis}}"/>
             <!-- Doc assinado SEM permissão de preenchimento (XFA) -> painel somente-leitura (brief):
                  CanFillForms já cobre botão + cada editor (IsEnabled cascateia — desabilitar aqui já
@@ -74,15 +84,17 @@
                  PREENCHIMENTO, nunca pro achatamento de um documento assinado (fora de escopo, spec §5.2). -->
             <Button DockPanel.Dock="Bottom" Content="Achatar formulário"
                     Command="{Binding FlattenFormCommand}"
-                    IsEnabled="{Binding CanEdit}" Margin="8,0,8,8" Padding="8,4" HorizontalAlignment="Stretch"/>
+                    IsEnabled="{Binding CanEdit}" Margin="8,0,8,8" Padding="8,4" HorizontalAlignment="Stretch"
+                    Style="{StaticResource mPdf.Button.Dialog}"/>
             <Button DockPanel.Dock="Bottom" Content="Aplicar alterações"
                     Command="{Binding ApplyFormValuesCommand}"
-                    IsEnabled="{Binding CanFillForms}" Margin="8" Padding="8,4" HorizontalAlignment="Stretch"/>
+                    IsEnabled="{Binding CanFillForms}" Margin="8" Padding="8,4" HorizontalAlignment="Stretch"
+                    Style="{StaticResource mPdf.Button.Dialog}"/>
             <ScrollViewer VerticalScrollBarVisibility="Auto" IsEnabled="{Binding CanFillForms}">
                 <ItemsControl ItemsSource="{Binding FormFieldEditors}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="{x:Type vm:FormFieldViewModel}">
-                            <Border Margin="8,4,8,8" BorderBrush="#FF555555" BorderThickness="0,0,0,1"
+                            <Border Margin="8,4,8,8" BorderBrush="{StaticResource Cor.Borda}" BorderThickness="0,0,0,1"
                                     Padding="0,0,0,8">
                                 <StackPanel>
                                     <!-- MouseLeftButtonUp NA PRÓPRIA TextBlock (exemplar EXATO:
@@ -93,7 +105,7 @@
                                          um IsEnabled=false; por isso o gate `IsEditable` abaixo envolve
                                          só o StackPanel INTERNO dos 5 editores, nunca este label). -->
                                     <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="Bold"
-                                               Foreground="#FFCCCCCC" Margin="0,0,0,4" Cursor="Hand"
+                                               Foreground="{StaticResource Cor.TextoPrimario}" Margin="0,0,0,4" Cursor="Hand"
                                                MouseLeftButtonUp="FieldBlock_MouseLeftButtonUp"/>
 
                                     <!-- Doc assinado -> painel somente-leitura (brief) via CanEdit no
@@ -176,7 +188,7 @@
                                             <DataTemplate>
                                                 <RadioButton Content="{Binding}"
                                                              GroupName="{Binding RelativeSource={RelativeSource AncestorType=ItemsControl}, Path=DataContext.Name}"
-                                                             Foreground="#FFCCCCCC"
+                                                             Foreground="{StaticResource Cor.TextoPrimario}"
                                                              Loaded="RadioOption_Loaded"
                                                              Checked="RadioOption_Checked"/>
                                             </DataTemplate>

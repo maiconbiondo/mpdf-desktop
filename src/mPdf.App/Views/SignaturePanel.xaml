@@ -8,21 +8,30 @@
          próximo: OutlineView (lista + estado vazio via Style/DataTrigger em HasOutline). Rodapé
          "Validação oficial" SEMPRE visível (brief) — fora do Grid condicional vazio/populado, DockPanel
          garante isso sem duplicar o TextBlock nos 2 estados. -->
+    <!-- Task 2 (Plano 12, rider) — mescla o tema LOCALMENTE, mesmo motivo de ThumbnailsPanel.xaml/
+         OutlineView.xaml (construído EAGER dentro de MainWindow.xaml). -->
     <UserControl.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
     </UserControl.Resources>
-    <DockPanel Background="#FF3C3F41">
+    <DockPanel Background="{StaticResource Cor.Superficie}">
         <!-- Rodapé fixo (brief, texto EXATO) — DockPanel.Dock="Bottom" garante presença em QUALQUER
-             estado (vazio ou com lista), nunca escondido atrás do estado vazio/populado abaixo. -->
+             estado (vazio ou com lista), nunca escondido atrás do estado vazio/populado abaixo.
+             Foreground era #FF999999 (2.65:1 contra o novo Cor.Superficie claro — FALHA AA, recomputado
+             ao revisar este rider); Cor.TextoSecundario já é 6.02:1 comprovado (ThemeContrastTests). -->
         <TextBlock DockPanel.Dock="Bottom" Text="Validação oficial: validar.iti.gov.br"
-                   Foreground="#FF999999" FontSize="10" TextWrapping="Wrap" Margin="8"
+                   Foreground="{StaticResource Cor.TextoSecundario}" FontSize="10" TextWrapping="Wrap" Margin="8"
                    TextAlignment="Center"/>
 
         <!-- Estado vazio pt-BR (brief, texto EXATO) — visível por padrão, Collapsed via DataTrigger
              quando HasSignatures=True. Documento sem assinatura nenhuma (fixture-a4, por exemplo) ou o
              1º refresh assíncrono ainda em voo (ver doc XML de DocumentViewModel.SignatureRows) caem
              aqui — mesmo exemplar de OutlineView. -->
-        <TextBlock Text="Este documento não tem assinaturas." Foreground="#FFCCCCCC" FontSize="12"
+        <TextBlock Text="Este documento não tem assinaturas." Foreground="{StaticResource Cor.TextoSecundario}" FontSize="12"
                    TextWrapping="Wrap" Margin="12" TextAlignment="Center" VerticalAlignment="Top">
             <TextBlock.Style>
                 <Style TargetType="TextBlock">
@@ -50,7 +59,7 @@
             <ItemsControl ItemsSource="{Binding SignatureRows}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="{x:Type vm:SignatureRowViewModel}">
-                        <Border Margin="8,4,8,8" BorderBrush="#FF555555" BorderThickness="0,0,0,1" Padding="0,0,0,8">
+                        <Border Margin="8,4,8,8" BorderBrush="{StaticResource Cor.Borda}" BorderThickness="0,0,0,1" Padding="0,0,0,8">
                             <StackPanel>
                                 <!-- Signatário + tipo do certificado (brief: "kind icon e-CPF/e-CNPJ") —
                                      texto composto em DocumentViewModel.SignatureRowViewModel.SignerLine
@@ -65,7 +74,7 @@
                                      "invisível" — clicável mas sem navegação/destaque, ver
                                      DocumentViewModel.SelectSignature). -->
                                 <TextBlock Text="{Binding SignerLine}" FontSize="12" FontWeight="Bold"
-                                           Foreground="#FFCCCCCC" Margin="0,0,0,4"
+                                           Foreground="{StaticResource Cor.TextoPrimario}" Margin="0,0,0,4"
                                            MouseLeftButtonUp="Row_MouseLeftButtonUp">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
@@ -84,12 +93,12 @@
                                      como campo próprio ficava invisível pro usuário). Ausente por
                                      inteiro (nunca um rótulo vazio) quando o certificado não segue a
                                      convenção RFB — HasDocumentNumber gateia a Visibility. -->
-                                <TextBlock Text="{Binding DocumentNumberLabel}" FontSize="11" Foreground="#FFCCCCCC"
+                                <TextBlock Text="{Binding DocumentNumberLabel}" FontSize="11" Foreground="{StaticResource Cor.TextoSecundario}"
                                            Margin="0,0,0,2"
                                            Visibility="{Binding HasDocumentNumber, Converter={StaticResource BoolToVis}}"/>
 
-                                <TextBlock Text="{Binding DateLabel}" FontSize="11" Foreground="#FFCCCCCC" Margin="0,0,0,2"/>
-                                <TextBlock Text="{Binding ReasonLabel}" FontSize="11" Foreground="#FFCCCCCC"
+                                <TextBlock Text="{Binding DateLabel}" FontSize="11" Foreground="{StaticResource Cor.TextoSecundario}" Margin="0,0,0,2"/>
+                                <TextBlock Text="{Binding ReasonLabel}" FontSize="11" Foreground="{StaticResource Cor.TextoSecundario}"
                                            TextWrapping="Wrap" Margin="0,0,0,4"/>
 
                                 <!-- Indicador LOAD-BEARING (brief) — ✔/✖ Íntegra, cor reforça o sinal
@@ -97,10 +106,10 @@
                                 <TextBlock Text="{Binding IntegrityLabel}" FontSize="12" FontWeight="Bold" Margin="0,0,0,2">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
-                                            <Setter Property="Foreground" Value="#FF4CAF50"/>
+                                            <Setter Property="Foreground" Value="{StaticResource Cor.Sucesso}"/>
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding Data.IntegrityValid}" Value="False">
-                                                    <Setter Property="Foreground" Value="#FFE53935"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource Cor.Erro}"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>
@@ -112,16 +121,16 @@
                                      adições depois desta assinatura) — assinatura N de M") — sem
                                      TextWrapping="Wrap" ficava clipado a ~25 caracteres nos ~150px do
                                      painel (exemplar: ReasonLabel acima, mesmo padrão). -->
-                                <TextBlock Text="{Binding CoverageLabel}" FontSize="11" Foreground="#FFCCCCCC"
+                                <TextBlock Text="{Binding CoverageLabel}" FontSize="11" Foreground="{StaticResource Cor.TextoSecundario}"
                                            TextWrapping="Wrap" Margin="0,0,0,2"/>
 
                                 <!-- "Cadeia confiável" com tooltip explicando não != forjada (brief). -->
-                                <TextBlock Text="{Binding ChainTrustedLabel}" FontSize="11" Foreground="#FFCCCCCC"
+                                <TextBlock Text="{Binding ChainTrustedLabel}" FontSize="11" Foreground="{StaticResource Cor.TextoSecundario}"
                                            Margin="0,0,0,2" ToolTip="{Binding ChainTrustedTooltip}"/>
 
                                 <!-- DocMDP — só aparece quando HasCertificationLabel (brief: FormsAndSignatures). -->
                                 <TextBlock Text="{Binding CertificationLabel}" FontSize="11" FontStyle="Italic"
-                                           Foreground="#FFCCCCCC"
+                                           Foreground="{StaticResource Cor.TextoSecundario}"
                                            Visibility="{Binding HasCertificationLabel, Converter={StaticResource BoolToVis}}"/>
                             </StackPanel>
                         </Border>

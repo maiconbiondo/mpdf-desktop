@@ -4,21 +4,29 @@
         Title="Exportar página como imagem" Height="420" Width="460" WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize" ShowInTaskbar="False" Closing="Window_Closing">
     <Window.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — mesmo motivo de MainWindow.xaml (Application.
+             Current fica null nas sondas STA que constroem este diálogo direto). -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
     </Window.Resources>
     <DockPanel Margin="12">
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <!-- Cancelar (durante a exportação): só habilitado em IsRunning (ver CanCancel do VM). -->
             <Button Content="Cancelar exportação" Width="140" Margin="0,0,8,0"
                     Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
-                    Command="{Binding CancelCommand}"/>
+                    Command="{Binding CancelCommand}" Style="{StaticResource mPdf.Button.Dialog}"/>
             <!-- IsCancel=True: Esc/clique fecham a janela; Window_Closing bloqueia enquanto IsRunning (ver
                  code-behind), mesmo padrão de BatchSignDialog: nunca abandona uma exportação em voo. -->
-            <Button Content="Fechar" Width="90" Margin="0,0,8,0" IsCancel="True"/>
+            <Button Content="Fechar" Width="90" Margin="0,0,8,0" IsCancel="True" Style="{StaticResource mPdf.Button.Dialog}"/>
             <!-- "Exportar" só aparece na fase de opções, desabilitado até um destino ser escolhido
                  (StartCommand.CanExecute). -->
             <Button Content="Exportar" Width="90" IsDefault="True" Command="{Binding StartCommand}"
-                    Visibility="{Binding CanEditOptions, Converter={StaticResource BoolToVis}}"/>
+                    Visibility="{Binding CanEditOptions, Converter={StaticResource BoolToVis}}"
+                    Style="{StaticResource mPdf.Button.Dialog}"/>
         </StackPanel>
 
         <!-- Fase OPÇÕES: formato / alcance / resolução / destino. -->
@@ -49,7 +57,7 @@
 
             <TextBlock Text="Destino:" Margin="0,0,0,4" FontWeight="Bold"/>
             <DockPanel Margin="0,0,0,4">
-                <Button DockPanel.Dock="Right" Content="Escolher…" Padding="8,2" Margin="8,0,0,0" Click="PickDestination_Click"/>
+                <Button DockPanel.Dock="Right" Content="Escolher…" Padding="8,2" Margin="8,0,0,0" Click="PickDestination_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
                 <TextBox x:Name="DestinationTextBox" IsReadOnly="True"/>
             </DockPanel>
             <!-- Página atual -> arquivo único (SaveFileDialog); todas as páginas -> pasta (OpenFolderDialog,

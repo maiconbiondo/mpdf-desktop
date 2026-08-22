@@ -36,18 +36,31 @@ public partial class ExportImageDialog : Window
     // páginas", nem uma PASTA serve pra "página atual") -- limpa os dois lados (VM + TextBox) pra forçar
     // o usuário a escolher de novo, em vez de deixar StartCommand.CanExecute mentir sobre um destino que
     // não faz mais sentido pro alcance atual.
+    //
+    // Guarda de nulidade em `DestinationTextBox` (achado da revisão, Task 3/Plano 12 fixes finais): os
+    // dois RadioButtons deste grupo têm `Checked="...Checked"` no XAML e `CurrentPageRadio` tem
+    // `IsChecked="True"` -- WPF dispara `Checked` SINCRONAMENTE no momento em que o parser do BAML seta
+    // essa propriedade, dentro do próprio `InitializeComponent()`, ANTES do parser alcançar a seção
+    // "Destino:" mais abaixo no mesmo arquivo onde `DestinationTextBox` é declarado. Nesse instante o
+    // campo ainda não foi conectado (`Connect()` gerado só roda quando o parser CHEGA no nó) -- sem a
+    // guarda, `DestinationTextBox.Text = ""` lançava `NullReferenceException` toda vez que o diálogo era
+    // construído, derrubando "📤 Exportar" pro diálogo global de crash em produção (bug pré-existente
+    // desde Plano 7/v1.3, invisível porque nenhum teste construía este `Window` de verdade -- ver
+    // `ExportImageDialogTests`). Depois que `InitializeComponent()` termina o campo já está conectado,
+    // então qualquer clique real do usuário nestes radios (a única forma de disparar `Checked` de novo)
+    // sempre encontra `DestinationTextBox` não-nulo -- o `if` nunca pula o clear em uso normal.
     private void CurrentPageRadio_Checked(object sender, RoutedEventArgs e)
     {
         ViewModel.Range = ExportImageRange.CurrentPage;
         ViewModel.Destination = null;
-        DestinationTextBox.Text = "";
+        if (DestinationTextBox is not null) DestinationTextBox.Text = "";
     }
 
     private void AllPagesRadio_Checked(object sender, RoutedEventArgs e)
     {
         ViewModel.Range = ExportImageRange.AllPages;
         ViewModel.Destination = null;
-        DestinationTextBox.Text = "";
+        if (DestinationTextBox is not null) DestinationTextBox.Text = "";
     }
 
     private void Dpi150Radio_Checked(object sender, RoutedEventArgs e) => ViewModel.Dpi = 150;

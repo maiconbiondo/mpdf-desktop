@@ -8,11 +8,17 @@
          TreeView.SelectedItem não é bindable direto em WPF (sem propriedade de dependência própria) —
          SelectedItemChanged no code-behind chama NavigateToOutlineNodeCommand, mesmo espírito de
          Thumb_MouseLeftButtonUp em ThumbnailsPanel.xaml.cs (evento cru da View vira comando do VM). -->
-    <Grid Background="#FF3C3F41">
+    <!-- Task 2 (Plano 12, rider) — mescla o tema LOCALMENTE, mesmo motivo de ThumbnailsPanel.xaml
+         (construído EAGER dentro de MainWindow.xaml — todo `new MainWindow()` de teste passa por
+         aqui). -->
+    <UserControl.Resources>
+        <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+    </UserControl.Resources>
+    <Grid Background="{StaticResource Cor.Superficie}">
         <!-- Estado vazio pt-BR (brief) — visível por padrão, Collapsed via DataTrigger quando
              HasOutline=True. Documento sem /Outlines nenhum (fixture-a4, por exemplo) ou o 1º refresh
              assíncrono ainda em voo (ver doc XML de DocumentViewModel.Outline) caem aqui. -->
-        <TextBlock Text="Este documento não tem sumário." Foreground="#FFCCCCCC" FontSize="12"
+        <TextBlock Text="Este documento não tem sumário." Foreground="{StaticResource Cor.TextoSecundario}" FontSize="12"
                    TextWrapping="Wrap" Margin="12" TextAlignment="Center" VerticalAlignment="Top">
             <TextBlock.Style>
                 <Style TargetType="TextBlock">
@@ -25,7 +31,7 @@
                 </Style>
             </TextBlock.Style>
         </TextBlock>
-        <TreeView x:Name="Tree" ItemsSource="{Binding Outline}" Background="#FF3C3F41" BorderThickness="0"
+        <TreeView x:Name="Tree" ItemsSource="{Binding Outline}" Background="{StaticResource Cor.Superficie}" BorderThickness="0"
                   SelectedItemChanged="Tree_SelectedItemChanged">
             <TreeView.Style>
                 <Style TargetType="TreeView">
@@ -43,7 +49,7 @@
                      cabem confortavelmente expandidos no painel de 150px. -->
                 <Style TargetType="TreeViewItem">
                     <Setter Property="IsExpanded" Value="True"/>
-                    <Setter Property="Foreground" Value="#FFCCCCCC"/>
+                    <Setter Property="Foreground" Value="{StaticResource Cor.TextoPrimario}"/>
                 </Style>
             </TreeView.ItemContainerStyle>
             <TreeView.ItemTemplate>

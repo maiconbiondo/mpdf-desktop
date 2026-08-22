@@ -5,23 +5,31 @@
         Title="Assinar em lote" Height="560" Width="520" WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False" Closing="Window_Closing">
     <Window.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!-- Task 2 (Plano 12, rider) — mescla o tema LOCALMENTE, mesmo motivo dos outros diálogos
+             (Application.Current fica null nas sondas STA que constroem este diálogo direto). -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
     </Window.Resources>
     <DockPanel Margin="12">
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <!-- Cancelar (durante a execução): só habilitado em IsRunning (ver CanCancel do VM). -->
             <Button Content="Cancelar assinatura" Width="130" Margin="0,0,8,0"
                     Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
-                    Command="{Binding CancelCommand}"/>
+                    Command="{Binding CancelCommand}" Style="{StaticResource mPdf.Button.Dialog}"/>
             <!-- IsCancel=True: Esc/clique fecham a janela (DialogResult=false); Window_Closing ainda
                  bloqueia o fechamento em IsRunning (ver code-behind), então isto nunca abandona um lote
                  em voo. -->
-            <Button Content="Fechar" Width="90" Margin="0,0,8,0" IsCancel="True"/>
+            <Button Content="Fechar" Width="90" Margin="0,0,8,0" IsCancel="True" Style="{StaticResource mPdf.Button.Dialog}"/>
             <!-- "Assinar" só aparece na fase de edição: a View nunca reoferece depois de Running/Done
                  (rodar o lote de novo exigiria reabrir o diálogo, mesmo espírito "one-shot" dos outros
                  fluxos de assinatura deste app). -->
             <Button Content="Assinar" Width="90" IsDefault="True" Command="{Binding StartCommand}"
-                    Visibility="{Binding CanEditList, Converter={StaticResource BoolToVis}}"/>
+                    Visibility="{Binding CanEditList, Converter={StaticResource BoolToVis}}"
+                    Style="{StaticResource mPdf.Button.Dialog}"/>
         </StackPanel>
 
         <!-- Aviso de arquivo(s) recusado(s) por já estar(em) aberto(s) numa aba (risco do plano); só
@@ -35,8 +43,8 @@
             <TextBlock Text="Arquivos a assinar:" Margin="0,0,0,4" FontWeight="Bold"/>
             <ListBox x:Name="FilesList" ItemsSource="{Binding Files}" Height="110" Margin="0,0,0,4"/>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                <Button Content="➕ Adicionar arquivos…" Padding="8,4" Margin="0,0,8,0" Command="{Binding AddFilesCommand}"/>
-                <Button Content="Remover" Padding="8,4" Click="Remove_Click"/>
+                <Button Content="➕ Adicionar arquivos…" Padding="8,4" Margin="0,0,8,0" Command="{Binding AddFilesCommand}" Style="{StaticResource mPdf.Button.Dialog}"/>
+                <Button Content="Remover" Padding="8,4" Click="Remove_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
             </StackPanel>
 
             <TextBlock Text="Certificado:" Margin="0,0,0,4" FontWeight="Bold"/>
