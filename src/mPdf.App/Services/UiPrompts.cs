@@ -103,6 +103,25 @@ public static class UiPrompts
     /// `DocumentViewModel`.</summary>
     public static Func<IExportImageDialogService> CreateExportImageDialog { get; set; } = () => new ExportImageDialogService();
 
+    /// <summary>Janela "Sobre" (Task 2, Plano 11 — <see cref="SobreDialogService"/>) — default do
+    /// parâmetro `sobreDialog` de `MainViewModel`.</summary>
+    public static Func<ISobreDialogService> CreateSobreDialog { get; set; } = () => new SobreDialogService();
+
+    /// <summary>Fonte de dados de atualização (Task 2, Plano 11 — <see cref="GitHubUpdateSource"/>, a
+    /// ÚNICA implementação que bate na rede de verdade) — default do parâmetro `createSource` de
+    /// `SobreViewModel`. DIFERENTE dos demais membros desta classe (que produzem um SERVIÇO DE DIÁLOGO):
+    /// este produz a fonte de RESULTADO de rede consumida por `UpdateService.VerificarAsync` — mesma
+    /// classe de risco que um `MessageBox`/`OpenFileDialog` real (uma chamada de rede não mockada numa
+    /// suíte supostamente hermética é tão indesejável quanto travar num diálogo), por isso a MESMA
+    /// disciplina: `UiPromptsTestGuard` troca por uma versão que LANÇA.</summary>
+    public static Func<IUpdateSource> CreateUpdateSource { get; set; } = () => new GitHubUpdateSource();
+
+    /// <summary>Prompt "Fechar o mPDF e instalar a atualização agora?" (Task 2, Plano 11 —
+    /// <see cref="MessageBoxConfirmInstallUpdateService"/>) — default do parâmetro `confirmInstall` de
+    /// `SobreViewModel`.</summary>
+    public static Func<IConfirmInstallUpdateService> CreateConfirmInstallUpdate { get; set; } =
+        () => new MessageBoxConfirmInstallUpdateService();
+
     // ---- Implementações de PRODUÇÃO (texto/ícone preservados byte-a-byte dos VMs originais) ---------
 
     private static void ProductionNotifyInfo(string message) =>

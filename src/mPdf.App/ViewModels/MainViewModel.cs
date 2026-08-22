@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -63,6 +64,8 @@ public sealed partial class MainViewModel : ObservableObject
     // NÃO passa pela seam UiPrompts (enumerar o repositório do Windows é read-only, sem PIN/senha, não
     // mostra UI nenhuma — ver doc XML de UiPrompts/decisão registrada na Task 3).
     private readonly Func<IReadOnlyList<SigningCertificateInfo>> _listSigningCertificates;
+    // Diálogo "Sobre" (Task 2, Plano 11) — mesma disciplina de injeção via UiPrompts.
+    private readonly ISobreDialogService _sobreDialog;
     // Injetável SÓ para Merge/Split (revisão pós-Task 4, achado "Important"): as demais chamadas a
     // IPdfEditor deste VM (EditCopy) continuam usando `PdfEditorFactory.Create()` INLINE (precedente
     // original, não mexido aqui) — este campo existe especificamente para permitir testar o catch de
@@ -197,7 +200,8 @@ public sealed partial class MainViewModel : ObservableObject
         ISplitDialogService? splitDialog = null,
         IPdfEditor? editor = null,
         IBatchSignDialogService? batchSignDialog = null,
-        Func<IReadOnlyList<SigningCertificateInfo>>? listSigningCertificates = null)
+        Func<IReadOnlyList<SigningCertificateInfo>>? listSigningCertificates = null,
+        ISobreDialogService? sobreDialog = null)
     {
         _dialogs = dialogs;
         _recent = recent;
@@ -214,6 +218,8 @@ public sealed partial class MainViewModel : ObservableObject
         // Task 5 (Plano 4): defaults do lote de assinatura.
         _batchSignDialog = batchSignDialog ?? UiPrompts.CreateBatchSignDialog();
         _listSigningCertificates = listSigningCertificates ?? CertificateCatalog.ListSigningCertificates;
+        // Task 2 (Plano 11): diálogo "Sobre" — mesma disciplina de injeção via UiPrompts.
+        _sobreDialog = sobreDialog ?? UiPrompts.CreateSobreDialog();
         RefreshStampItems();
     }
 
@@ -840,6 +846,24 @@ public sealed partial class MainViewModel : ObservableObject
             Multiselect = true,
         };
         return dlg.ShowDialog() == true ? dlg.FileNames : null;
+    }
+
+    // ---- Task 2 (Plano 11): "ℹ Sobre" — versão, licenças, verificar/baixar/instalar atualização -------
+    //
+    // SEMPRE habilitado (nenhum CanExecute), mesmo espírito de Merge/BatchSign acima — não depende de
+    // documento algum aberto. Este comando só COORDENA: constrói o `SobreViewModel` com os 3 delegates
+    // de produção do fluxo de instalação (fechar sujos pelo MESMO `ConfirmCloseAll` que fechar a janela
+    // já usa, iniciar o instalador via `Process.Start` interativo — UAC claro, nunca silencioso —, e
+    // encerrar via `Application.Current.Shutdown()`) e delega toda a lógica pro VM/diálogo (ver
+    // `SobreViewModel`, testável sem esta VM/sem janela nenhuma).
+    [RelayCommand]
+    private void Sobre()
+    {
+        var vm = new SobreViewModel(
+            confirmCloseAllDocuments: ConfirmCloseAll,
+            startInstaller: path => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }),
+            shutdown: () => Application.Current.Shutdown());
+        _sobreDialog.ShowSobreDialog(vm);
     }
 
     // ---- Task 9 (Plano 3a): galeria de carimbos de imagem --------------------------------------------

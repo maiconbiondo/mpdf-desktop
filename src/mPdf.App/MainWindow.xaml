@@ -93,6 +93,19 @@
                         </MenuItem.ItemContainerStyle>
                     </MenuItem>
                 </Menu>
+                <!-- Task 2 (Plano 11): "Sobre" — versão, licenças, verificar/baixar/instalar atualização.
+                     SEMPRE habilitado (nenhum CanExecute), mesmo agrupamento de "ações do app, não de
+                     UM documento" de Juntar/Dividir/Assinar em lote acima. Colocado na 1ª banda (não na
+                     2ª, onde entrou primeiro): a sonda de overflow (ViewerIntegrationTests.
+                     MainWindow_At1200x800_ToolbarsHaveNoOverflowItems) reprovou tanto a 2ª banda (26
+                     itens, 1172px > ~1126px úteis) QUANTO a 1ª com "ℹ Sobre" + Separator (20 itens,
+                     1154px) — as DUAS já estavam no limite a 1200px. Ícone SÓ (sem rótulo "Sobre", sem
+                     Separator dedicado) — brief pedia literalmente "botão 'ℹ'" — e ToolTip continua
+                     nomeando a ação por extenso; medido: cabe nos ~1126px úteis da 1ª banda (ver sonda
+                     verde). -->
+                <Button Command="{Binding SobreCommand}" ToolTip="Sobre o mPDF" Padding="8,4">
+                    <TextBlock Text="ℹ"/>
+                </Button>
             </ToolBar>
             <!-- Task 3 (Plano 5): 2ª linha da ToolBarTray — ferramentas de ANOTAÇÃO (marca-texto/
                  sublinhado/riscado + swatches de cor + nota/texto + desenho/retângulo/linha/seta +

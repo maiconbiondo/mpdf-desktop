@@ -50,6 +50,19 @@ public class UiPromptsCoverageTests
         [("MainViewModel", "mergeDialog")] = "UiPrompts.CreateMergeDialog",
         [("MainViewModel", "splitDialog")] = "UiPrompts.CreateSplitDialog",
         [("MainViewModel", "batchSignDialog")] = "UiPrompts.CreateBatchSignDialog",
+        // Task 2 (Plano 11): diálogo "Sobre".
+        [("MainViewModel", "sobreDialog")] = "UiPrompts.CreateSobreDialog",
+        // Task 2 (Plano 11): prompt "fechar e instalar agora?" do fluxo de atualização de SobreViewModel.
+        // `createSource` (Func<IUpdateSource>) NÃO entra aqui de propósito — é um parâmetro FUNC (fábrica
+        // deferida), não um tipo de serviço direto; a reflexão abaixo só varre parâmetros cujo PRÓPRIO
+        // tipo mora em mPdf.App.Services (Namespace de Func<IUpdateSource> é "System", não
+        // "mPdf.App.Services" — a forma Func é DELIBERADA, ver doc XML de SobreViewModel: precisa ser
+        // deferida até o clique em "Verificar atualização", não resolvida no momento da construção do
+        // VM/abertura do diálogo, diferente de todo outro default `?? UiPrompts.CreateXxx()` desta
+        // classe). Cobertura equivalente vem de `UiPromptsGuardTests` (fire/negative-control) +
+        // `SobreViewModelTests`/`UpdateNetworkConfinementTests` (prova comportamental/textual de
+        // "rede só por clique").
+        [("SobreViewModel", "confirmInstall")] = "UiPrompts.CreateConfirmInstallUpdate",
         // ISENÇÃO DELIBERADA: StampGallery só toca disco (Directory.CreateDirectory/File.Copy) — nenhum
         // ShowDialog/MessageBox.Show no caminho, mesmo exemplar de AppConfig/RecentFilesStore (que nem
         // entram nesta varredura por não estarem em mPdf.App.Services). Ver doc XML de UiPrompts.
@@ -58,7 +71,7 @@ public class UiPromptsCoverageTests
 
     private static readonly Type[] TargetVmTypes =
     [
-        typeof(DocumentViewModel), typeof(OrganizerViewModel), typeof(MainViewModel),
+        typeof(DocumentViewModel), typeof(OrganizerViewModel), typeof(MainViewModel), typeof(SobreViewModel),
     ];
 
     [Fact]

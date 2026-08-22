@@ -48,6 +48,10 @@ internal static class UiPromptsTestGuard
         UiPrompts.CreateBatchSignDialog = () => new ThrowingBatchSignDialogService();
         UiPrompts.CreateConfirmOrganizerScale = () => new ThrowingConfirmOrganizerScaleService();
         UiPrompts.CreateExportImageDialog = () => new ThrowingExportImageDialogService();
+        // Task 2 (Plano 11):
+        UiPrompts.CreateSobreDialog = () => new ThrowingSobreDialogService();
+        UiPrompts.CreateUpdateSource = () => new ThrowingUpdateSource();
+        UiPrompts.CreateConfirmInstallUpdate = () => new ThrowingConfirmInstallUpdateService();
     }
 
     /// <summary>Mensagem PADRONIZADA — nomeia o membro da seam alcançado E o tipo de fake a injetar no
@@ -127,4 +131,22 @@ internal sealed class ThrowingExportImageDialogService : IExportImageDialogServi
 {
     public void ShowExportImageDialog(mPdf.App.ViewModels.ExportImageViewModel viewModel) =>
         throw UiPromptsTestGuard.Guard(nameof(UiPrompts.CreateExportImageDialog), "um IExportImageDialogService fake");
+}
+
+internal sealed class ThrowingSobreDialogService : ISobreDialogService
+{
+    public void ShowSobreDialog(mPdf.App.ViewModels.SobreViewModel viewModel) =>
+        throw UiPromptsTestGuard.Guard(nameof(UiPrompts.CreateSobreDialog), "um ISobreDialogService fake");
+}
+
+internal sealed class ThrowingUpdateSource : IUpdateSource
+{
+    public Task<LatestRelease?> GetLatestAsync(CancellationToken ct) =>
+        throw UiPromptsTestGuard.Guard(nameof(UiPrompts.CreateUpdateSource), "um IUpdateSource fake");
+}
+
+internal sealed class ThrowingConfirmInstallUpdateService : IConfirmInstallUpdateService
+{
+    public bool Confirm(string message) =>
+        throw UiPromptsTestGuard.Guard(nameof(UiPrompts.CreateConfirmInstallUpdate), "um IConfirmInstallUpdateService fake");
 }

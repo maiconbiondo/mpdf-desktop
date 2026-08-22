@@ -19,6 +19,13 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Task 2 (Plano 11): ícone reusado pelo SobreDialog via pack URI (WPF decodifica .ico
+         nativamente) — ApplicationIcon abaixo só embute o recurso Win32 do .exe, não o expõe pro pack
+         URI; precisa ser listado como Resource separadamente para Views/SobreDialog.xaml carregar. -->
+    <Resource Include="Assets\mpdf.ico" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -29,7 +36,7 @@
          este valor e passa como /DMyAppVersion pro Inno Setup — não duplicar em mpdf.iss.
          1.1.0 (Task 2, Plano 6): associação de arquivo .pdf no instalador + instância
          única/abrir-por-argumento (Task 1, Plano 6) — funcionalidades novas, não patch. -->
-    <Version>1.4.1</Version>
+    <Version>1.5.0</Version>
     <ApplicationIcon>Assets\mpdf.ico</ApplicationIcon>
   </PropertyGroup>
 

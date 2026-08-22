@@ -135,6 +135,10 @@ public class UiPromptsGuardTests
         AssertFactorySwapped<ThrowingBatchSignDialogService>(() => UiPrompts.CreateBatchSignDialog(), nameof(UiPrompts.CreateBatchSignDialog));
         AssertFactorySwapped<ThrowingConfirmOrganizerScaleService>(() => UiPrompts.CreateConfirmOrganizerScale(), nameof(UiPrompts.CreateConfirmOrganizerScale));
         AssertFactorySwapped<ThrowingExportImageDialogService>(() => UiPrompts.CreateExportImageDialog(), nameof(UiPrompts.CreateExportImageDialog));
+        // Task 2 (Plano 11):
+        AssertFactorySwapped<ThrowingSobreDialogService>(() => UiPrompts.CreateSobreDialog(), nameof(UiPrompts.CreateSobreDialog));
+        AssertFactorySwapped<ThrowingUpdateSource>(() => UiPrompts.CreateUpdateSource(), nameof(UiPrompts.CreateUpdateSource));
+        AssertFactorySwapped<ThrowingConfirmInstallUpdateService>(() => UiPrompts.CreateConfirmInstallUpdate(), nameof(UiPrompts.CreateConfirmInstallUpdate));
     }
 
     private static string A4Path => Path.Combine(Fixtures.Root, "fixture-a4.pdf");
@@ -721,4 +725,147 @@ public class UiPromptsGuardTests
         var ioe = Assert.IsType<InvalidOperationException>(ex);
         Assert.Contains(nameof(UiPrompts.CreateConfirmClose), ioe.Message);
     }
+
+    [Fact] // Task 2 (Plano 11): sobreDialog OMITIDO -> SobreCommand alcança o diálogo de produção via
+    // UiPrompts.CreateSobreDialog, trocado pelo guard pra uma versão que LANÇA.
+    public void MainViewModel_SobreDialogOmitted_SobreCommand_ThrowsViaUiPrompts()
+    {
+        AssertFactorySwapped<ThrowingSobreDialogService>(() => UiPrompts.CreateSobreDialog(), nameof(UiPrompts.CreateSobreDialog));
+
+        var vm = BuildMain(TempDir()); // sobreDialog OMITIDO
+
+        var ex = Record.Exception(() => vm.SobreCommand.Execute(null));
+
+        var ioe = Assert.IsType<InvalidOperationException>(ex);
+        Assert.Contains(nameof(UiPrompts.CreateSobreDialog), ioe.Message);
+    }
+
+    [Fact] // controle negativo (sobreDialog): fake benigno local -> não lança, diálogo "mostrado" 1x.
+    public void MainViewModel_SobreDialogOmitted_NegativeControl_WithBenignFactory_DoesNotThrow()
+    {
+        var original = UiPrompts.CreateSobreDialog;
+        try
+        {
+            var spy = new SpySobreDialogService();
+            UiPrompts.CreateSobreDialog = () => spy;
+            var vm = BuildMain(TempDir());
+
+            var ex = Record.Exception(() => vm.SobreCommand.Execute(null));
+
+            Assert.Null(ex);
+            Assert.Equal(1, spy.CallCount);
+        }
+        finally { UiPrompts.CreateSobreDialog = original; }
+    }
+
+    // ==================================================================================================
+    // SobreViewModel — 2 defaults via UiPrompts: createSource, confirmInstall (os 3 delegates de
+    // instalação — confirmCloseAllDocuments/startInstaller/shutdown — são OBRIGATÓRIOS, sem default `??`,
+    // mesma disciplina de BatchSignViewModel.pickFiles/isPathOpen — ver doc XML de SobreViewModel).
+    // ==================================================================================================
+
+    private static SobreViewModel BuildSobre(
+        Func<IUpdateSource>? createSource = null,
+        IConfirmInstallUpdateService? confirmInstall = null,
+        Func<bool>? confirmCloseAllDocuments = null,
+        Action<string>? startInstaller = null,
+        Action? shutdown = null) => new(
+        confirmCloseAllDocuments ?? (() => true),
+        startInstaller ?? (_ => { }),
+        shutdown ?? (() => { }),
+        createSource,
+        confirmInstall);
+
+    [Fact] // createSource OMITIDO -> VerificarAtualizacaoCommand alcança UiPrompts.CreateUpdateSource,
+    // trocado pelo guard pra uma versão que LANÇA (a MESMA disciplina de risco que os diálogos: uma
+    // suíte headless não pode bater rede real por engano).
+    public async Task SobreViewModel_CreateSourceOmitted_VerificarAtualizacao_ThrowsViaUiPrompts()
+    {
+        AssertFactorySwapped<ThrowingUpdateSource>(() => UiPrompts.CreateUpdateSource(), nameof(UiPrompts.CreateUpdateSource));
+
+        var vm = BuildSobre(); // createSource OMITIDO
+
+        var ex = await Record.ExceptionAsync(() => vm.VerificarAtualizacaoCommand.ExecuteAsync(null));
+
+        var ioe = Assert.IsType<InvalidOperationException>(ex);
+        Assert.Contains(nameof(UiPrompts.CreateUpdateSource), ioe.Message);
+    }
+
+    [Fact] // controle negativo (createSource): fake benigno local -> não lança.
+    public async Task SobreViewModel_CreateSourceOmitted_NegativeControl_WithBenignFactory_DoesNotThrow()
+    {
+        var original = UiPrompts.CreateUpdateSource;
+        try
+        {
+            UiPrompts.CreateUpdateSource = () => new SpyUpdateSource(null);
+            var vm = BuildSobre();
+
+            var ex = await Record.ExceptionAsync(() => vm.VerificarAtualizacaoCommand.ExecuteAsync(null));
+
+            Assert.Null(ex);
+        }
+        finally { UiPrompts.CreateUpdateSource = original; }
+    }
+
+    [Fact] // confirmInstall OMITIDO -> ProsseguirComInstalacaoAsync alcança UiPrompts.CreateConfirmInstallUpdate.
+    public async Task SobreViewModel_ConfirmInstallOmitted_ProsseguirComInstalacao_ThrowsViaUiPrompts()
+    {
+        AssertFactorySwapped<ThrowingConfirmInstallUpdateService>(() => UiPrompts.CreateConfirmInstallUpdate(), nameof(UiPrompts.CreateConfirmInstallUpdate));
+
+        var vm = BuildSobre(); // confirmInstall OMITIDO
+        var arquivo = WriteRealVerifiedFile();
+        try
+        {
+            var ex = await Record.ExceptionAsync(() => vm.ProsseguirComInstalacaoAsync(arquivo));
+
+            var ioe = Assert.IsType<InvalidOperationException>(ex);
+            Assert.Contains(nameof(UiPrompts.CreateConfirmInstallUpdate), ioe.Message);
+        }
+        finally { File.Delete(arquivo.CaminhoArquivo); }
+    }
+
+    [Fact] // controle negativo (confirmInstall): fake benigno local devolvendo `false` -> não lança.
+    public async Task SobreViewModel_ConfirmInstallOmitted_NegativeControl_WithBenignFactory_DoesNotThrow()
+    {
+        var original = UiPrompts.CreateConfirmInstallUpdate;
+        var arquivo = WriteRealVerifiedFile();
+        try
+        {
+            UiPrompts.CreateConfirmInstallUpdate = () => new SpyConfirmInstallUpdateService(false);
+            var vm = BuildSobre();
+
+            var ex = await Record.ExceptionAsync(() => vm.ProsseguirComInstalacaoAsync(arquivo));
+
+            Assert.Null(ex);
+        }
+        finally
+        {
+            UiPrompts.CreateConfirmInstallUpdate = original;
+            File.Delete(arquivo.CaminhoArquivo);
+        }
+    }
+
+    private static UpdateService.VerifiedUpdateFile WriteRealVerifiedFile()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"mpdf-uiprompts-update-{Guid.NewGuid():N}.exe");
+        File.WriteAllText(path, "instalador simulado");
+        string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();
+        return UpdateService.VerifyAndFinalize(path, hash).Arquivo!;
+    }
+}
+
+file sealed class SpySobreDialogService : ISobreDialogService
+{
+    public int CallCount { get; private set; }
+    public void ShowSobreDialog(SobreViewModel viewModel) => CallCount++;
+}
+
+file sealed class SpyUpdateSource(LatestRelease? result) : IUpdateSource
+{
+    public Task<LatestRelease?> GetLatestAsync(CancellationToken ct) => Task.FromResult(result);
+}
+
+file sealed class SpyConfirmInstallUpdateService(bool result) : IConfirmInstallUpdateService
+{
+    public bool Confirm(string message) => result;
 }

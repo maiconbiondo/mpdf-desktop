@@ -13,6 +13,11 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Task 2 (Plano 11): [SkippableFact] pra integração de rede REAL opcional (env var
+         MPDF_TESTE_REDE=1) contra a release v1.4.1 publicada de verdade na Task 1 — mesmo pacote/
+         precedente já usado em tests/mPdf.Signing.Tests/mPdf.Signing.Tests.csproj. Só neste projeto de
+         teste, nunca em src/**. -->
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
   </ItemGroup>
 
   <ItemGroup>

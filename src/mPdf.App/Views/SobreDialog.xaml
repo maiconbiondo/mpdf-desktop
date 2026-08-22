@@ -1,0 +1,71 @@
+<Window x:Class="mPdf.App.Views.SobreDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Sobre o mPDF" Height="440" Width="440" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False" ResizeMode="NoResize">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </Window.Resources>
+    <DockPanel Margin="16">
+        <StackPanel DockPanel.Dock="Bottom" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Fechar" Width="90" IsCancel="True"/>
+        </StackPanel>
+
+        <!-- Cabeçalho: ícone do app (Assets/mpdf.ico, mesmo ícone do instalador/EXE) + "mPDF <versão>". -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
+            <Image Source="pack://application:,,,/Assets/mpdf.ico" Width="48" Height="48" Margin="0,0,12,0"/>
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="{Binding VersaoAtual, StringFormat='mPDF {0}'}" FontWeight="Bold" FontSize="16"/>
+                <TextBlock Text="Leitor e editor de PDF" FontSize="11" Foreground="Gray"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Aviso AGPL/licenças (Task 2, Plano 11 — texto "Sobre" que a spec original previa, ADAPTADO
+             pós-código-aberto: a conformidade com a AGPL da iText hoje vem da PUBLICAÇÃO do código-fonte
+             no repositório público, não mais de uma restrição de distribuição do instalador — ver
+             docs/rollout.md §"Senha do instalador"). -->
+        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,16" FontSize="11" Foreground="#FF555555"
+                   Text="mPDF é software livre, distribuído sob a licença GNU AGPL-3.0 (por incorporar o iText, componente de assinatura digital de PDF). O código-fonte completo está publicado em github.com/maiconbiondo/mpdf-desktop. Avisos de licença de todos os componentes de terceiros (iText, PDFium, Docnet) estão em docs/licencas, na raiz do repositório."/>
+
+        <!-- Área de atualização: um bloco por estado (SobreEstado), mesmo padrão de BatchSignDialog
+             (Visibility ligada a bools computados do VM, nunca ao enum direto — sem IValueConverter novo). -->
+        <StackPanel>
+            <Button x:Name="VerificarButton" Content="Verificar atualização" Padding="10,5" HorizontalAlignment="Left"
+                    Command="{Binding VerificarAtualizacaoCommand}"
+                    Visibility="{Binding PodeVerificar, Converter={StaticResource BoolToVis}}"/>
+
+            <TextBlock Text="Verificando…" Margin="0,8,0,0"
+                       Visibility="{Binding IsVerificando, Converter={StaticResource BoolToVis}}"/>
+
+            <TextBlock Text="Você já está na versão mais recente." Foreground="#FF2E7D32" Margin="0,8,0,0"
+                       Visibility="{Binding IsAtualizado, Converter={StaticResource BoolToVis}}"/>
+
+            <TextBlock x:Name="ErroText" Text="{Binding MensagemErro}" Foreground="#FFB00020" TextWrapping="Wrap"
+                       Margin="0,8,0,0"
+                       Visibility="{Binding IsErro, Converter={StaticResource BoolToVis}}"/>
+
+            <StackPanel Margin="0,8,0,0" Visibility="{Binding IsDisponivel, Converter={StaticResource BoolToVis}}">
+                <TextBlock FontWeight="Bold">
+                    <Run Text="Nova versão disponível: "/>
+                    <Run Text="{Binding AtualizacaoDisponivel.TagVersao}"/>
+                </TextBlock>
+                <TextBlock Text="{Binding AtualizacaoDisponivel.Notas}" TextWrapping="Wrap" MaxHeight="90"
+                           Margin="0,4,0,8" TextTrimming="CharacterEllipsis"/>
+                <Button x:Name="BaixarButton" Content="Baixar e instalar" Padding="10,5" HorizontalAlignment="Left"
+                        Command="{Binding BaixarEInstalarCommand}"/>
+            </StackPanel>
+
+            <StackPanel Margin="0,8,0,0" Visibility="{Binding IsBaixando, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="Baixando atualização…" Margin="0,0,0,4"/>
+                <ProgressBar Height="14" Minimum="0" Maximum="{Binding BytesTotais}" Value="{Binding BytesBaixados}"/>
+            </StackPanel>
+
+            <TextBlock Margin="0,8,0,0" TextWrapping="Wrap"
+                       Visibility="{Binding IsAguardandoInstalacao, Converter={StaticResource BoolToVis}}">
+                <Run Text="Atualização baixada e verificada. Você pode instalá-la mais tarde executando:"/>
+                <LineBreak/>
+                <Run Text="{Binding CaminhoArquivoBaixado}" FontFamily="Consolas"/>
+            </TextBlock>
+        </StackPanel>
+    </DockPanel>
+</Window>
