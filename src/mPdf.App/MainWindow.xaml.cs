@@ -1,0 +1,149 @@
+using System.ComponentModel;
+using System.Windows;
+using System.Windows.Input;
+using CommunityToolkit.Mvvm.Input;
+using mPdf.App.Services;
+using mPdf.App.ViewModels;
+using mPdf.Documents; // PendingDisposals mora aqui desde a Task 3 do Plano 3a (ver doc XML da classe)
+
+namespace mPdf.App;
+
+public partial class MainWindow : Window
+{
+    public MainViewModel ViewModel { get; }
+
+    public MainWindow()
+    {
+        InitializeComponent();
+        // Rider (revisão pós-Task 4, Plano 3a): varredura best-effort de pastas ÓRFÃS de undo/redo
+        // (%TEMP%\mPDF\undo-*, mais de 24h) deixadas por sessões que crasharam/perderam energia antes
+        // do Dispose rodar — ver doc XML de DocumentSession.SweepOrphanUndoSpillDirectories. try/catch
+        // aqui é redundante com o try/catch INTERNO do método (que já nunca lança), mas documenta a
+        // garantia no PRÓPRIO call site: uma falha de limpeza JAMAIS pode impedir a janela de abrir.
+        try { DocumentSession.SweepOrphanUndoSpillDirectories(); }
+        catch { /* melhor esforço — nunca pode impedir a janela de abrir */ }
+        // Task 2 (Plano 7, fix Important 1 pós-revisão): MESMO raciocínio/MESMO try-catch acima, agora
+        // também pros PDFs temporários de imagem convertida (%TEMP%\mPDF\open-*, mais de 24h) deixados
+        // por MainViewModel.OpenImageAsNewDocument quando o usuário nunca dá "Salvar como" (ou o app
+        // crasha/fecha antes) — ver doc XML de DocumentSession.SweepOrphanConvertedImageDirectories.
+        try { DocumentSession.SweepOrphanConvertedImageDirectories(); }
+        catch { /* melhor esforço — nunca pode impedir a janela de abrir */ }
+        ViewModel = new MainViewModel(new FileDialogService());
+        DataContext = ViewModel;
+        InputBindings.Add(new KeyBinding(ViewModel.OpenFileCommand, Key.O, ModifierKeys.Control));
+        // Ctrl+S salva a aba ATIVA (Task 3, Plano 3a) — SaveCommand já tem CanExecute (documento
+        // limpo/nenhum documento, o KeyBinding simplesmente não dispara nada, mesmo comportamento do
+        // botão desabilitado).
+        InputBindings.Add(new KeyBinding(ViewModel.SaveCommand, Key.S, ModifierKeys.Control));
+        // Ctrl+P imprime a aba ATIVA (Task 8) — PrintCommand já tem CanExecute (sem documento, o
+        // KeyBinding simplesmente não dispara nada, mesmo comportamento do botão desabilitado).
+        InputBindings.Add(new KeyBinding(ViewModel.PrintCommand, Key.P, ModifierKeys.Control));
+        // Ctrl+C copia o texto selecionado (Task 3). Cada DocumentViewModel guarda sua PRÓPRIA
+        // seleção (_pageWithSelection); o atalho só lê a do documento da aba ATIVA
+        // (ViewModel.SelectedDocument) — é assim que trocar de aba naturalmente copia a seleção
+        // daquela aba, sem precisar limpar a seleção das abas inativas.
+        // Nota (Task 5): com foco no TextBox da busca e NADA selecionado nele, o TextBox não marca o
+        // evento como tratado (Ctrl+C sem seleção não copia nada) — o KeyBinding da Window abaixo
+        // ainda recebe o evento na borbulha e copia a seleção do PDF normalmente; comportamento aceito.
+        InputBindings.Add(new KeyBinding(new RelayCommand(CopySelectedText), Key.C, ModifierKeys.Control));
+        // Ctrl+F abre/foca a barra de busca (Task 5) da aba ATIVA — mesma lógica de "sempre a aba
+        // corrente" do Ctrl+C acima.
+        InputBindings.Add(new KeyBinding(new RelayCommand(OpenSearch), Key.F, ModifierKeys.Control));
+        // Ctrl+Z/Ctrl+Y desfazem/refazem na aba ATIVA (Task 4, Plano 3a) — UndoCommand/RedoCommand
+        // vivem no DocumentViewModel (pilha de undo/redo é POR DOCUMENTO), então não dá pra fazer
+        // `new KeyBinding(ViewModel.SelectedDocument.UndoCommand, ...)` uma vez só no construtor
+        // (SelectedDocument muda ao trocar de aba, e pode ser null ao abrir a janela) — mesma técnica
+        // de wrapper já usada por Ctrl+C/Ctrl+F acima: lê ViewModel.SelectedDocument NA HORA do atalho.
+        InputBindings.Add(new KeyBinding(new RelayCommand(Undo), Key.Z, ModifierKeys.Control));
+        InputBindings.Add(new KeyBinding(new RelayCommand(Redo), Key.Y, ModifierKeys.Control));
+        // Clique na miniatura (Task 6) rola o viewer da aba ATIVA até a página — ThumbnailsRail.DataContext
+        // é o MESMO SelectedDocument da aba corrente (ver MainWindow.xaml), então não há ambiguidade de
+        // "qual aba" aqui, diferente de CopySelectedText/OpenSearch que leem o VM antes de agir.
+        ThumbnailsRail.ThumbnailClicked += pageIndex => CurrentViewer()?.ScrollToPage(pageIndex);
+    }
+
+    private void OpenSearch()
+    {
+        if (ViewModel.SelectedDocument is not { } doc) return;
+        doc.Search.IsOpen = true;
+        CurrentViewer()?.FocusSearchBar();
+    }
+
+    private void CopySelectedText()
+    {
+        if (ViewModel.SelectedDocument?.SelectedText is not { Length: > 0 } text) return;
+        try { Clipboard.SetText(text); }
+        catch (System.Runtime.InteropServices.ExternalException) { /* clipboard preso por outro app — não derrubar o app por causa de uma cópia */ }
+    }
+
+    // Task 4 (Plano 3a): CanExecute checado explicitamente aqui — o RelayCommand do KeyBinding em si
+    // (`new RelayCommand(Undo)`) não tem predicado próprio, então SEMPRE "dispara" ao apertar Ctrl+Z;
+    // é este guard que faz o atalho respeitar o mesmo CanUndo do botão ↶ da toolbar (sem documento, ou
+    // documento sem histórico de undo, o atalho simplesmente não faz nada — mesmo comportamento de um
+    // botão desabilitado).
+    private void Undo()
+    {
+        if (ViewModel.SelectedDocument?.UndoCommand is { } cmd && cmd.CanExecute(null)) cmd.Execute(null);
+    }
+
+    private void Redo()
+    {
+        if (ViewModel.SelectedDocument?.RedoCommand is { } cmd && cmd.CanExecute(null)) cmd.Execute(null);
+    }
+
+    // I3 (revisão pós-Task 3, Plano 3a): fechar a JANELA inteira (✕ da barra de título, Alt+F4) tinha
+    // o MESMO risco de perda de dados que fechar uma aba (CloseDocument já perguntava; a janela não).
+    // ConfirmCloseAll pergunta (via o MESMO IConfirmCloseService) por CADA documento sujo; qualquer
+    // recusa (Cancelar, ou Salvar que falha) cancela o fechamento da janela inteira — e.Cancel=true
+    // PÁRA aqui, ANTES de OnClosed rodar, então nenhum documento é descartado nesse caso.
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (!ViewModel.ConfirmCloseAll())
+        {
+            e.Cancel = true;
+            return;
+        }
+        base.OnClosing(e);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        foreach (var doc in ViewModel.Documents.ToArray())
+            doc.Dispose();
+        // Drena os descartes de sessão descarregados p/ thread-pool (ver PendingDisposals) antes
+        // de deixar o processo morrer — teardown nativo do PDFium correndo durante o exit do
+        // processo causa access violation. Limitado no tempo: nunca trava o encerramento.
+        try { PendingDisposals.WaitAll(TimeSpan.FromSeconds(3)); }
+        catch (AggregateException) { /* descarte faltoso não pode mascarar o encerramento/falha real; já estamos desligando */ }
+        base.OnClosed(e);
+    }
+
+    private Views.PdfViewerControl? CurrentViewer()
+    {
+        // HIPÓTESE de implementação: achar o PdfViewerControl do item selecionado no visual tree.
+        // Alternativa mais simples se falhar: guardar referência no Loaded do controle.
+        if (Tabs.SelectedItem is null) return null;
+        return FindDescendant<Views.PdfViewerControl>(Tabs);
+    }
+
+    private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
+    {
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            if (child is T t) return t;
+            if (FindDescendant<T>(child) is { } found) return found;
+        }
+        return null;
+    }
+
+    private void FitWidth_Click(object sender, RoutedEventArgs e)
+    {
+        if (CurrentViewer() is { } v && ViewModel.SelectedDocument is { } d) d.FitWidth(v.ViewportWidth);
+    }
+
+    private void FitPage_Click(object sender, RoutedEventArgs e)
+    {
+        if (CurrentViewer() is { } v && ViewModel.SelectedDocument is { } d) d.FitPage(v.ViewportWidth, v.ViewportHeight);
+    }
+}

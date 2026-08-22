@@ -1,0 +1,59 @@
+<Window x:Class="mPdf.App.Views.SignDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Assinar documento" Height="500" Width="460" WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False">
+    <Window.Resources>
+        <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — mesmo motivo de MainWindow.xaml/SobreDialog.xaml
+             (Application.Current fica null nas sondas STA que constroem este diálogo direto). -->
+        <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+    </Window.Resources>
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button x:Name="CancelButton" Content="Cancelar" Width="90" Margin="0,0,8,0"
+                    IsCancel="True" Click="Cancel_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
+            <Button x:Name="OkButton" Content="Assinar" Width="90" IsDefault="True" Click="Ok_Click"
+                    IsEnabled="{Binding SelectedItem.IsEnabled, ElementName=CertificateListBox, FallbackValue=False}"
+                    Style="{StaticResource mPdf.Button.Dialog}"/>
+        </StackPanel>
+
+        <StackPanel>
+            <TextBlock Text="Certificado:" Margin="0,0,0,4" FontWeight="Bold"/>
+            <!-- Certificados ECC aparecem LISTADOS (nunca filtrados) mas DESABILITADOS com a explicação
+                 pt-BR — o usuário precisa VER que o certificado existe e por que não pode ser usado
+                 (ver ISignDialogService.PromptForSignature). ListBoxItem navega por Tab/setas, mesma
+                 acessibilidade de teclado de qualquer outro ListBox desta janela. -->
+            <ListBox x:Name="CertificateListBox" Height="150" DisplayMemberPath="DisplayText"
+                     SelectionMode="Single" KeyboardNavigation.TabNavigation="Continue">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="IsEnabled" Value="{Binding IsEnabled}"/>
+                        <Setter Property="ToolTip" Value="{Binding DisabledReason}"/>
+                        <Setter Property="IsTabStop" Value="True"/>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+            </ListBox>
+
+            <TextBlock Text="Motivo (opcional):" Margin="0,12,0,4"/>
+            <TextBox x:Name="ReasonTextBox"/>
+
+            <TextBlock Text="Local (opcional):" Margin="0,8,0,4"/>
+            <TextBox x:Name="LocationTextBox"/>
+
+            <!-- DocMDP: só oferecido na 1ª assinatura do documento (ver SignDialog(certificates,
+                 allowDocMdp) e ISignDialogService) — o motor RECUSA CertificationLevel != None num doc
+                 já assinado. Default LIGADO (brief: "exatamente o aprovado no ITI"). -->
+            <CheckBox x:Name="DocMdpCheckBox" Content="Proteger contra alterações (recomendado)"
+                      Margin="0,12,0,0" IsChecked="True"/>
+
+            <!-- Plano 9 (Task 3, brief): "Posicionar carimbo" passa a vir PRÉ-SELECIONADO — pedido do
+                 usuário (carimbo visível é o caminho mais comum na prática); "Sem carimbo visível"
+                 continua 100% disponível, só deixa de ser o default (ver SignDialogTests). -->
+            <TextBlock Text="Carimbo visível:" Margin="0,12,0,4"/>
+            <RadioButton x:Name="NoStampRadio" Content="Sem carimbo visível" GroupName="Stamp"
+                         Margin="0,0,0,4"/>
+            <RadioButton x:Name="PlaceStampRadio" Content="Posicionar carimbo na página" GroupName="Stamp"
+                         IsChecked="True"/>
+        </StackPanel>
+    </DockPanel>
+</Window>

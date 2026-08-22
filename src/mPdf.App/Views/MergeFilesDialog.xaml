@@ -1,0 +1,38 @@
+<Window x:Class="mPdf.App.Views.MergeFilesDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:mPdf.App.Views"
+        Title="Juntar documentos" Height="420" Width="480" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — mesmo motivo de MainWindow.xaml
+                     (Application.Current fica null nas sondas STA que constroem este diálogo direto). -->
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <!-- Task 2 (Plano 7): sufixo "(imagem)" nas linhas de imagem — ver doc XML de ImageFileLabelConverter. -->
+            <local:ImageFileLabelConverter x:Key="ImageFileLabelConverter"/>
+        </ResourceDictionary>
+    </Window.Resources>
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Cancelar" Width="80" Margin="0,0,8,0" IsCancel="True" Click="Cancel_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
+            <Button Content="OK" Width="80" IsDefault="True" Click="Ok_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+            <Button Content="➕ Adicionar arquivos…" Padding="8,4" Margin="0,0,8,0" Click="Add_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
+            <Button Content="Remover" Padding="8,4" Margin="0,0,8,0" Click="Remove_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
+            <Button Content="↑ Mover" Padding="8,4" Margin="0,0,8,0" Click="MoveUp_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
+            <Button Content="↓ Mover" Padding="8,4" Click="MoveDown_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
+        </StackPanel>
+        <TextBlock DockPanel.Dock="Top" Text="Arquivos a juntar, na ordem desejada (imagens são convertidas em PDF):" Margin="0,0,0,8"/>
+        <ListBox x:Name="FilesList" ItemsSource="{Binding Files}">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding Converter={StaticResource ImageFileLabelConverter}}"/>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </DockPanel>
+</Window>
