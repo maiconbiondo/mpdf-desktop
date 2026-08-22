@@ -12,6 +12,11 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Task 1 (Plano 10, review I3): [SkippableFact] pro cinto de campo contra o contrato real —
+         xunit 2.9.3 não tem skip condicional nativo; este pacote é o padrão da comunidade pra isso
+         (Assert.SkipUnless/SkipWhen só chegou no xunit v3). Só neste projeto de teste, nunca em
+         src/**. -->
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
     <!-- Revisão 2 (item 1): PackageReference DIRETA (mesmo precedente de
          tests/mPdf.Editing.Tests/mPdf.Editing.Tests.csproj:21 — não herdada da ProjectReference pra
          mPdf.Signing abaixo, que continua com PrivateAssets=compile) só pra Fixtures.PasswordProtected

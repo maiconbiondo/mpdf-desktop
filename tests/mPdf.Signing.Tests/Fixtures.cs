@@ -42,6 +42,18 @@ public static class Fixtures
     // ler uma assinatura gerada pelo PoC, não só as que este motor gera.
     public static byte[] Carimbo() => File.ReadAllBytes(Path.Combine(Root, "fixture-carimbo.pdf"));
 
+    // Task 1 (Plano 10 — hotfix híbrido): doc HÍBRIDO sintético (1 página, 1 campo de texto "campo1")
+    // — rev1 é uma revisão clássica normal (offsets reais, iText puro) com um stream de xref construído
+    // À MÃO logo em seguida, cobrindo os MESMOS objetos que a tabela clássica (é isso que faz rev1 ser
+    // híbrida DE VERDADE — os mesmos dados alcançáveis por 2 caminhos, não só uma ponte vazia); rev2 é
+    // uma ponte clássica de 0 objetos novos cujo trailer carrega `/Prev` (-> tabela clássica de rev1,
+    // texto "xref" de verdade) E `/XRefStm` (-> o stream à mão, offset DIFERENTE) — mesma forma de
+    // 2-ponteiros-distintos do contrato real do usuário (gerador temporário deletado, ver git log da
+    // task-1; descoberta ao vivo documentada em task-1-report.md: uma 1ª tentativa com a ponte carregando
+    // SÓ /XRefStm, sem /Prev, também reproduzia 0% no PDFium, mas por um motivo ERRADO — beco sem saída
+    // pra qualquer leitor que não entenda /XRefStm, não a mesma classe de bug do contrato real).
+    public static byte[] Hibrido() => File.ReadAllBytes(Path.Combine(Root, "fixture-hibrido.pdf"));
+
     // Revisão 2 (item 1): PDF criptografado (senha de USUÁRIO exigida pra abrir — não só senha de
     // dono), gerado EM MEMÓRIA via WriterProperties.SetStandardEncryption (mesma API que qualquer
     // documento real protegido por senha usaria) — não existe fixture pronta pra isso no repositório;
@@ -56,6 +68,30 @@ public static class Fixtures
         using (var pdf = new PdfDocument(new PdfWriter(ms, writerProperties)))
         {
             pdf.AddNewPage();
+        }
+        return ms.ToArray();
+    }
+
+    // Task 1 (Plano 10, review — lacuna de corpus que escondeu o achado C1): doc xref-STREAM PURO
+    // (SetFullCompressionMode), NUNCA híbrido — o formato "moderno comum" mais frequente na prática
+    // (qualquer PDF escrito com compressão total, sem ponte clássica nenhuma por trás). Gerado EM
+    // MEMÓRIA, mesmo padrão de PasswordProtected acima — nenhuma fixture existente cobria este caso
+    // sendo assinado através do ISigningEngine completo, o que deixou passar a 1ª versão do fix desta
+    // task (zerava `xrefStm` incondicionalmente, corrompendo exatamente este formato — ver
+    // HybridXrefSafePdfReader.cs). 1 campo de texto "campoFC" — usado pelo teste de
+    // SetFormFieldsIncremental.
+    public static byte[] FullCompression()
+    {
+        using var ms = new MemoryStream();
+        var writerProperties = new WriterProperties().SetFullCompressionMode(true);
+        using (var pdf = new PdfDocument(new PdfWriter(ms, writerProperties)))
+        {
+            var page = pdf.AddNewPage();
+            var field = new iText.Forms.Fields.TextFormFieldBuilder(pdf, "campoFC")
+                .SetWidgetRectangle(new iText.Kernel.Geom.Rectangle(50, 600, 150, 20))
+                .CreateText();
+            field.SetValue("");
+            iText.Forms.PdfAcroForm.GetAcroForm(pdf, true).AddField(field, page);
         }
         return ms.ToArray();
     }

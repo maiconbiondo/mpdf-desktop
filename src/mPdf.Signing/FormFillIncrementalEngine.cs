@@ -93,7 +93,11 @@ internal static class FormFillIncrementalEngine
         using var output = new MemoryStream();
         try
         {
-            var reader = new PdfReader(input);
+            // Task 1 (Plano 10): ver HybridXrefSafePdfReader.cs (mPdf.Signing) pro diagnóstico completo
+            // — mesmo fix de PadesSigningEngine.Sign, mesmo bug de classe (append sobre doc híbrido
+            // propaga um 2º nível de hibridez pra revisão nova; valor preenchido fica invisível pro
+            // PDFium/mPdf.Rendering).
+            var reader = new HybridXrefSafePdfReader(input);
             var writer = new PdfWriter(output);
             // SEMPRE append — a assinatura existente nunca é tocada/reescrita, só uma revisão NOVA é
             // acrescentada por cima (mesma mecânica de `PadesSigningEngine.Sign`). PROVA CENTRAL

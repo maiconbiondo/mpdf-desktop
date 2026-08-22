@@ -103,7 +103,11 @@ internal sealed class PadesSigningEngine : ISigningEngine
             using var input = new MemoryStream(request.Pdf);
             using var output = new MemoryStream();
 
-            var reader = new PdfReader(input);
+            // Task 1 (Plano 10): ver HybridXrefSafePdfReader.cs pro diagnóstico completo — sem isto, um
+            // documento HÍBRIDO de entrada faz o iText propagar um 2º nível de hibridez pra revisão
+            // nova (preservando o /XRefStm da entrada, atualizado ou não), e o carimbo fica invisível
+            // pro PDFium (mPdf.Rendering), mesmo a assinatura continuando íntegra.
+            var reader = new HybridXrefSafePdfReader(input);
             var padesSigner = new PdfPadesSigner(reader, output);
             padesSigner.SetStampingProperties(new StampingProperties().UseAppendMode()); // SEMPRE append
 
