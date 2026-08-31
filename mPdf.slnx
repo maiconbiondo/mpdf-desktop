@@ -1,0 +1,22 @@
+<Solution>
+  <Folder Name="/poc/">
+    <Project Path="poc/mPdf.Poc.Signer.Tests/mPdf.Poc.Signer.Tests.csproj" />
+    <Project Path="poc/mPdf.Poc.Signer/mPdf.Poc.Signer.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/mPdf.App/mPdf.App.csproj" />
+    <Project Path="src/mPdf.Documents/mPdf.Documents.csproj" />
+    <Project Path="src/mPdf.Editing/mPdf.Editing.csproj" />
+    <Project Path="src/mPdf.Ocr/mPdf.Ocr.csproj" />
+    <Project Path="src/mPdf.Rendering/mPdf.Rendering.csproj" />
+    <Project Path="src/mPdf.Signing/mPdf.Signing.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/mPdf.App.Tests/mPdf.App.Tests.csproj" />
+    <Project Path="tests/mPdf.Documents.Tests/mPdf.Documents.Tests.csproj" />
+    <Project Path="tests/mPdf.Editing.Tests/mPdf.Editing.Tests.csproj" />
+    <Project Path="tests/mPdf.Ocr.Tests/mPdf.Ocr.Tests.csproj" />
+    <Project Path="tests/mPdf.Rendering.Tests/mPdf.Rendering.Tests.csproj" />
+    <Project Path="tests/mPdf.Signing.Tests/mPdf.Signing.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,128 @@
+<UserControl x:Class="mPdf.App.Views.WelcomeView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:icons="clr-namespace:mPdf.App.Icons"
+             xmlns:conv="clr-namespace:mPdf.App.Converters"
+             AllowDrop="True" Drop="Welcome_Drop" DragOver="Welcome_DragOver">
+    <!-- Estado vazio / boas-vindas (Plano 14 T3) — mostrado quando NÃO há documento aberto. DataContext
+         herdado = MainViewModel (mesmo dos comandos da command bar). Fie ao existente: "Abrir arquivo…"
+         e o drop -> OpenFileCommand/OpenPath; "Juntar"/"Assinar em lote" -> MergeCommand/BatchSignCommand;
+         "Recentes" -> RecentFiles/OpenRecentCommand (a MESMA lista do menu Recentes).
+         Mescla o tema LOCALMENTE (construído EAGER dentro de MainWindow, como os demais painéis). -->
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <conv:CaminhoParaNomeConverter x:Key="CaminhoParaNome"/>
+            <conv:CaminhoParaPastaConverter x:Key="CaminhoParaPasta"/>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.Background>
+            <RadialGradientBrush Center="0.5,-0.1" GradientOrigin="0.5,-0.1" RadiusX="1.1" RadiusY="0.95">
+                <GradientStop Color="#FF1B2544" Offset="0"/>
+                <GradientStop Color="#FF12131B" Offset="0.62"/>
+            </RadialGradientBrush>
+        </Grid.Background>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="40">
+
+                <!-- Logo com glow (drop-shadow — chrome, permitido) -->
+                <Image Source="{StaticResource Logo.mPDF}" Width="74" Height="74" HorizontalAlignment="Center">
+                    <Image.Effect>
+                        <DropShadowEffect Color="#4D8FD6" BlurRadius="30" ShadowDepth="0" Opacity="0.55"/>
+                    </Image.Effect>
+                </Image>
+                <TextBlock Text="mPDF" FontSize="28" FontWeight="SemiBold" Foreground="{DynamicResource Cor.TextoPrimario}"
+                           HorizontalAlignment="Center" Margin="0,20,0,6"/>
+                <TextBlock Text="Leitor, editor e assinador de PDF · padrão ICP-Brasil" FontSize="13"
+                           Foreground="{DynamicResource Cor.TextoSecundario}" HorizontalAlignment="Center" Margin="0,0,0,34"/>
+
+                <!-- Drop zone azul (o Border do WPF não traceja; borda contínua azul translúcida — nota
+                     no report; o tracejado do mockup é cosmético). Recebe o Drop via AllowDrop no
+                     UserControl raiz. -->
+                <Border Width="440" CornerRadius="14" Padding="32" Background="#0D4D8FD6" BorderThickness="1.5">
+                    <Border.BorderBrush>
+                        <SolidColorBrush Color="#4D8FD6" Opacity="0.5"/>
+                    </Border.BorderBrush>
+                    <StackPanel HorizontalAlignment="Center">
+                        <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="32" Foreground="#FF6BA3E0"
+                                   Text="{icons:PhosphorIcon file-arrow-up}" HorizontalAlignment="Center"/>
+                        <TextBlock Text="Arraste um PDF aqui para começar" FontSize="13"
+                                   Foreground="{DynamicResource Cor.TextoSecundario}" HorizontalAlignment="Center" Margin="0,14,0,0"/>
+                        <Button Command="{Binding OpenFileCommand}" Style="{StaticResource mPdf.Button.Primario}"
+                                HorizontalAlignment="Center" Margin="0,14,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="15" Text="{icons:PhosphorIcon folder-open}" VerticalAlignment="Center"/>
+                                <TextBlock Text="Abrir arquivo…" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Border>
+
+                <!-- Juntar / Assinar em lote -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,16,0,0">
+                    <Button Command="{Binding MergeCommand}" Style="{StaticResource mPdf.Button.Contornado}" Margin="0,0,5,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="15" Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon arrows-merge}" VerticalAlignment="Center"/>
+                            <TextBlock Text="Juntar PDFs" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding BatchSignCommand}" Style="{StaticResource mPdf.Button.Contornado}" Margin="5,0,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="15" Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon stack}" VerticalAlignment="Center"/>
+                            <TextBlock Text="Assinar em lote" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+
+                <!-- Recentes (mesma lista do menu Recentes) -->
+                <StackPanel Width="440" Margin="0,34,0,0">
+                    <TextBlock Text="RECENTES" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource Cor.TextoSecundario}"
+                               Opacity="0.8" Margin="2,0,0,10"/>
+                    <ItemsControl ItemsSource="{Binding RecentFiles}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Button Command="{Binding DataContext.OpenRecentCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                        CommandParameter="{Binding}" HorizontalContentAlignment="Stretch"
+                                        Cursor="Hand" Margin="0,0,0,4">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="Bd" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                                                    BorderThickness="1" CornerRadius="9" Padding="11,10">
+                                                <ContentPresenter/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="18"
+                                                   Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon file-text}"
+                                                   VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Converter={StaticResource CaminhoParaNome}}" FontSize="12.5"
+                                                       Foreground="{DynamicResource Cor.TextoPrimario}" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding Converter={StaticResource CaminhoParaPasta}}" FontSize="10.5"
+                                                       Foreground="{DynamicResource Cor.TextoSecundario}" Opacity="0.75" TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </Button>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

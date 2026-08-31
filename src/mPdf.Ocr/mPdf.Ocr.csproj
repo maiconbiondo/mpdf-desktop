@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- win-x64 apenas: o wrapper Tesseract traz binarios nativos so para win-x64 (o app e
+         self-contained win-x64 — ver mpdf.iss ArchitecturesAllowed=x64compatible). Fixar o RID
+         garante que o restore/publish tragam runtimes/win-x64/native (libleptonica/libtesseract). -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Wrapper Tesseract .NET (charlesw), Apache 2.0. A versao 5.2.0 empacota os binarios NATIVOS
+         win-x64 (leptonica-1.82.0.dll + tesseract50.dll) sob runtimes/win-x64/native — copiados
+         para o output e para o publish self-contained sem passo manual. SEM rede, SEM iText/Docnet.
+         Licenca em docs/licencas/LICENCA-Tesseract-Apache-2.0.txt. -->
+    <PackageReference Include="Tesseract" Version="5.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Dados de idioma tessdata (por+eng, variante tessdata_fast, Apache 2.0 do projeto
+         tesseract-ocr). Content + PreserveNewest + Link com a pasta "tessdata": copiados para
+         `tessdata/` ao lado do assembly no output E no publish self-contained, e — por serem
+         Content — fluem TRANSITIVAMENTE para qualquer projeto que referencie mPdf.Ocr (o test
+         project e, na T4, o mPdf.App). O TesseractOcrEngine resolve essa pasta a partir de
+         AppContext.BaseDirectory em runtime (dev e publicado), nunca de um caminho de dev. -->
+    <Content Include="tessdata\*.traineddata">
+      <Link>tessdata\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>
