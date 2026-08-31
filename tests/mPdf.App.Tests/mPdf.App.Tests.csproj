@@ -1,0 +1,43 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Task 2 (Plano 11): [SkippableFact] pra integração de rede REAL opcional (env var
+         MPDF_TESTE_REDE=1) contra a release v1.4.1 publicada de verdade na Task 1 — mesmo pacote/
+         precedente já usado em tests/mPdf.Signing.Tests/mPdf.Signing.Tests.csproj. Só neste projeto de
+         teste, nunca em src/**. -->
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Item A (Task 3, Plano 12 fixes finais): a mescla do tema (Task 2) faz TODA janela/diálogo WPF
+         construído por esta suíte puxar a mesma PackagePart `mpdftheme.baml` — coleções de teste xUnit
+         rodando em paralelo batem no bug conhecido do WPF (não thread-safe) em
+         `PackagePart.CleanUpRequestedStreamsList`, causando `NullReferenceException` intermitente
+         quando duas construções de janela colidem entre threads (revisão viu 2 falhas em 8 corridas
+         completas). `CopyToOutputDirectory` é necessário aqui: SDK-style csproj não copia `None`/
+         conteúdo pro diretório de saída por padrão, e o runtime do xUnit só lê `xunit.runner.json` do
+         lado do assembly de teste (`bin/.../mPdf.App.Tests.dll`), nunca da raiz do projeto fonte. -->
+    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\mPdf.App\mPdf.App.csproj" />
+  </ItemGroup>
+
+</Project>

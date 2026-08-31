@@ -1,0 +1,29 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Bump 2.6.0 -> 2.7.0-alpha.1: 2.6.0's PageReader.WriteImageToBufferInternal lazily creates a
+         managed, MOVABLE FPDF_FORMFILLINFO and passes it directly to FPDFDOC_InitFormFillEnvironment,
+         which retains the pointer until Exit; a compacting GC between render and Dispose can move the
+         object, leaving PDFium's retained pointer dangling (AV 0xC0000005 in
+         FPDFDOC_ExitFormFillEnvironment). Upstream commit 184a2f0f ("different form fill info
+         allocation to fix mem read issues", 2023-09-27) fixes exactly this in 2.7.0-alpha.1: the new
+         FormWrapper allocates the FORMFILLINFO struct in UNMANAGED memory (Marshal.AllocHGlobal +
+         Marshal.StructureToPtr) and passes the fixed IntPtr to Init, freeing it only after
+         FPDF_ExitFormFillEnvironment — confirmed by reflecting the shipped DLL (not just source/
+         changelog): FPDFDOCInitFormFillEnvironment's second parameter is System.IntPtr (was the
+         managed FPDF_FORMFILLINFO class in 2.6.0), and DocumentWrapper.GetFormHandle (the old
+         lazy-cached-on-document code path) no longer exists — replaced by the per-render-scoped
+         FormWrapper used inside PageReader.WriteImageToBufferInternal. Public API surface used by
+         mPdf.Rendering (DocLib, IDocReader, IPageReader, RenderFlags, PageDimensions, Character/
+         BoundBox) is unchanged except for an additive RenderFlags.None member. See
+         task-1-report.md for the full investigation trail (IL/reflection diffs against 2.6.0). -->
+    <PackageReference Include="Docnet.Core" Version="2.7.0-alpha.1" />
+  </ItemGroup>
+
+</Project>
