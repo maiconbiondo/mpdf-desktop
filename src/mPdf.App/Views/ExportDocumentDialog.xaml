@@ -1,0 +1,118 @@
+<Window x:Class="mPdf.App.Views.ExportDocumentDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        xmlns:conv="clr-namespace:mPdf.App.Converters"
+        Title="Exportar" Height="470" Width="494" WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" FontFamily="{DynamicResource Fonte.Inter}" Closing="Window_Closing">
+    <Window.Resources>
+        <!-- Task 3 (Plano 16): mescla o tema LOCALMENTE — mesmo motivo de ExportImageDialog.xaml. -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+            <conv:NullToVisibilityConverter x:Key="NullToVis"/>
+        </ResourceDictionary>
+    </Window.Resources>
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <DockPanel>
+            <!-- Header: título/subtítulo dependem do Kind (Word/Excel). -->
+            <Border DockPanel.Dock="Top" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                    BorderThickness="0,0,0,1" Padding="22,18" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <StackPanel Orientation="Horizontal">
+                    <Border Style="{StaticResource mPdf.Dialog.IconeHeader}">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="17" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon file-text}"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,0,0">
+                        <TextBlock Text="{Binding DialogTitle}" Style="{StaticResource mPdf.Dialog.Titulo}"/>
+                        <TextBlock Text="{Binding DialogSubtitle}" Style="{StaticResource mPdf.Dialog.Subtitulo}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Rodapé: Fechar / Cancelar (em execução) / Exportar. -->
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Cor.FundoDialogoRodape}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,13,13" Padding="22,16">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancelar exportação" Margin="0,0,10,0"
+                            Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
+                            Command="{Binding CancelCommand}" Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                    <Button Content="Fechar" Margin="0,0,10,0" IsCancel="True" Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                    <Button Command="{Binding StartCommand}"
+                            Visibility="{Binding CanEditOptions, Converter={StaticResource BoolToVis}}"
+                            Style="{StaticResource mPdf.Button.DialogPrimario}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="14" VerticalAlignment="Center"
+                                       Margin="0,0,7,0" Text="{icons:PhosphorIcon export}"/>
+                            <TextBlock Text="Exportar" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <!-- As 3 fases (opções/execução/concluído) num Grid que ocupa o corpo — só uma visível por vez. -->
+            <Grid>
+                <!-- Fase OPÇÕES: alcance (inteiro/intervalo) + destino + nota honesta. -->
+                <StackPanel Margin="22,20" Visibility="{Binding CanEditOptions, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Alcance" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,7"/>
+                    <UniformGrid Columns="2" Margin="0,0,0,10">
+                        <RadioButton x:Name="AllPagesRadio" Content="Documento inteiro" GroupName="Range" IsChecked="True"
+                                     Checked="AllPagesRadio_Checked" Margin="0,0,4,0" Style="{StaticResource mPdf.Segmento}"/>
+                        <RadioButton x:Name="CustomRangeRadio" Content="Intervalo" GroupName="Range"
+                                     Checked="CustomRangeRadio_Checked" Margin="4,0,0,0" Style="{StaticResource mPdf.Segmento}"/>
+                    </UniformGrid>
+                    <!-- Caixa do intervalo: habilitada só quando "Intervalo" está selecionado. -->
+                    <TextBox x:Name="RangeTextBox" Style="{StaticResource mPdf.Input}"
+                             IsEnabled="{Binding IsChecked, ElementName=CustomRangeRadio}"
+                             Text="{Binding RangeText, UpdateSourceTrigger=PropertyChanged}"/>
+                    <TextBlock Text="Ex.: 1-5, 8, 10-12" FontSize="11" Margin="2,4,0,0"
+                               Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                    <!-- Erro de validação do intervalo (parser). -->
+                    <TextBlock Text="{Binding RangeError}" Foreground="{DynamicResource Cor.Erro}" TextWrapping="Wrap"
+                               Margin="2,6,0,0" FontSize="11"
+                               Visibility="{Binding RangeError, Converter={StaticResource NullToVis}}"/>
+
+                    <TextBlock Text="Destino" Style="{StaticResource mPdf.Dialog.Label}" Margin="0,16,0,0"/>
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="Escolher…" Margin="8,0,0,0" Click="PickDestination_Click"
+                                Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+                        <TextBox x:Name="DestinationTextBox" IsReadOnly="True" Style="{StaticResource mPdf.Input}"/>
+                    </DockPanel>
+
+                    <!-- Nota honesta discreta (limites do Word/Excel). -->
+                    <TextBlock Text="{Binding HonestNote}" TextWrapping="Wrap" Margin="0,18,0,0" FontSize="11" LineHeight="16"
+                               Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                </StackPanel>
+
+                <!-- Fase EXECUÇÃO: progresso "página N de M". -->
+                <StackPanel Margin="22,20" VerticalAlignment="Center"
+                            Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="{Binding ProgressText}" FontSize="14" TextAlignment="Center" Margin="0,0,0,12"
+                               Foreground="{DynamicResource Cor.TextoPrimario}"/>
+                    <ProgressBar IsIndeterminate="True" Height="18"/>
+                </StackPanel>
+
+                <!-- Fase CONCLUÍDO: resultado. -->
+                <StackPanel Margin="22,20" VerticalAlignment="Center"
+                            Visibility="{Binding IsDone, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Exportação cancelada. Nenhum arquivo foi gerado."
+                               Foreground="{DynamicResource Cor.Erro}" TextWrapping="Wrap" Margin="0,0,0,8" TextAlignment="Center"
+                               Visibility="{Binding WasCancelled, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Text="Este documento não tem texto pesquisável no alcance escolhido. Use &quot;Reconhecer texto (OCR)&quot; primeiro."
+                               Foreground="{DynamicResource Cor.Erro}" TextWrapping="Wrap" Margin="0,0,0,8" TextAlignment="Center"
+                               Visibility="{Binding NoTextInRange, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Text="{Binding ErrorMessage, StringFormat='Falha ao exportar: {0}'}"
+                               Foreground="{DynamicResource Cor.Erro}" TextWrapping="Wrap" Margin="0,0,0,8" TextAlignment="Center"
+                               Visibility="{Binding ErrorMessage, Converter={StaticResource NullToVis}}"/>
+                    <TextBlock Text="{Binding ExportedPageCount, StringFormat='Arquivo gerado a partir de {0} página(s).'}"
+                               TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource Cor.TextoPrimario}"
+                               Visibility="{Binding Succeeded, Converter={StaticResource BoolToVis}}"/>
+                </StackPanel>
+            </Grid>
+        </DockPanel>
+    </Border>
+</Window>
