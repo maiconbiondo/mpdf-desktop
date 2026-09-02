@@ -1,0 +1,55 @@
+<Window x:Class="mPdf.App.Views.SplitDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        Title="Dividir documento" Width="484" SizeToContent="Height" WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" FontFamily="{DynamicResource Fonte.Inter}">
+    <Window.Resources>
+        <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — mesmo motivo de MainWindow.xaml (Application.
+             Current fica null nas sondas STA que constroem este diálogo direto). -->
+        <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+    </Window.Resources>
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <DockPanel>
+            <!-- Header: scissors. -->
+            <Border DockPanel.Dock="Top" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                    BorderThickness="0,0,0,1" Padding="22,18" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <StackPanel Orientation="Horizontal">
+                    <Border Style="{StaticResource mPdf.Dialog.IconeHeader}">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="17" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon scissors}"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,0,0">
+                        <TextBlock Text="Dividir documento" Style="{StaticResource mPdf.Dialog.Titulo}"/>
+                        <TextBlock Text="Cada intervalo vira um arquivo" Style="{StaticResource mPdf.Dialog.Subtitulo}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Rodapé: Cancelar / OK. -->
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Cor.FundoDialogoRodape}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,13,13" Padding="22,16">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancelar" Margin="0,0,10,0" IsCancel="True" Click="Cancel_Click"
+                            Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                    <Button Content="OK" IsDefault="True" Click="Ok_Click" Style="{StaticResource mPdf.Button.DialogPrimario}"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Corpo: intervalos + pasta de destino. -->
+            <StackPanel Margin="22,20">
+                <TextBlock Text="Intervalos de página (ex.: 1-5, 8, 10-12)" Style="{StaticResource mPdf.Dialog.Label}"/>
+                <TextBox x:Name="RangesTextBox" Style="{StaticResource mPdf.Input}" FontSize="13"/>
+
+                <TextBlock Text="Pasta de destino" Style="{StaticResource mPdf.Dialog.Label}" Margin="0,16,0,6"/>
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="Escolher…" Margin="8,0,0,0" Click="PickFolder_Click"
+                            Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+                    <TextBox x:Name="FolderTextBox" IsReadOnly="True" Style="{StaticResource mPdf.Input}"/>
+                </DockPanel>
+            </StackPanel>
+        </DockPanel>
+    </Border>
+</Window>

@@ -1,0 +1,139 @@
+<UserControl x:Class="mPdf.App.Views.AnnotationToolsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:icons="clr-namespace:mPdf.App.Icons"
+             xmlns:local="clr-namespace:mPdf.App.Views"
+             xmlns:editing="clr-namespace:mPdf.Editing;assembly=mPdf.Editing">
+    <!-- Plano 17 (Task 3): as MESMAS ferramentas da pílula flutuante (Plano 14 T5), agora num controle
+         reutilizável apresentado em 2 layouts (Orientation Horizontal = pílula; Vertical = tira do rail).
+         Cada botão liga aos comandos de anotação EXISTENTES (nenhum handler/lógica nova). DynamicResource
+         nos estilos/tokens (mesma convenção de SearchBar/PageOrganizerView — um UserControl separado não
+         enxerga o Window.Resources em StaticResource). -->
+    <UserControl.Resources>
+        <!-- Divisória: em layout HORIZONTAL é uma barrinha vertical (1×22); em VERTICAL vira horizontal
+             (22×1). Um único estilo, trocado por DataTrigger na Orientation do próprio UserControl. -->
+        <Style x:Key="Divisor" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource Cor.Borda}"/>
+            <Setter Property="Width" Value="1"/>
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="Margin" Value="4,0"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Orientation, RelativeSource={RelativeSource AncestorType={x:Type local:AnnotationToolsView}}}" Value="Vertical">
+                    <Setter Property="Width" Value="22"/>
+                    <Setter Property="Height" Value="1"/>
+                    <Setter Property="Margin" Value="0,4"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+
+    <StackPanel Orientation="{Binding Orientation, RelativeSource={RelativeSource AncestorType={x:Type local:AnnotationToolsView}}}"
+                HorizontalAlignment="Center" VerticalAlignment="Center">
+        <!-- Marcação a partir da seleção de texto (ApplyMarkup + AnnotationKind tipado). -->
+        <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}" CommandParameter="{x:Static editing:AnnotationKind.Highlight}"
+                ToolTip="Marca-texto" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon highlighter}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}" CommandParameter="{x:Static editing:AnnotationKind.Underline}"
+                ToolTip="Sublinhar" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon text-underline}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}" CommandParameter="{x:Static editing:AnnotationKind.Strikeout}"
+                ToolTip="Riscar" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon text-strikethrough}"/>
+        </Button>
+
+        <Border Style="{StaticResource Divisor}"/>
+
+        <!-- Ferramentas de colocação/desenho (ActiveTool no VM — mutuamente exclusivas, "clicar de novo desliga"). -->
+        <Button Command="{Binding SelectedDocument.ToggleStickyNoteToolCommand}" ToolTip="Nota adesiva" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon note}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ToggleFreeTextToolCommand}" ToolTip="Caixa de texto" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon text-t}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ToggleInkToolCommand}" ToolTip="Desenho livre" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon scribble-loop}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ToggleRectangleToolCommand}" ToolTip="Retângulo" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon rectangle}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ToggleLineToolCommand}" ToolTip="Linha" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon line-segment}"/>
+        </Button>
+        <!-- Seta: existe no app, não aparece no mockup — mantida acessível (brief). -->
+        <Button Command="{Binding SelectedDocument.ToggleArrowToolCommand}" ToolTip="Seta" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon arrow-up-right}"/>
+        </Button>
+
+        <Border Style="{StaticResource Divisor}"/>
+
+        <!-- Swatches de cor: fundo = cor do redesenho (visual); Command = a cor de anotação EXISTENTE
+             (SelectedMarkupColorArgb via SelectColor*). Sub-painel segue a orientação do controle. -->
+        <StackPanel Orientation="{Binding Orientation, RelativeSource={RelativeSource AncestorType={x:Type local:AnnotationToolsView}}}"
+                    HorizontalAlignment="Center" VerticalAlignment="Center" Margin="4,0">
+            <Button Command="{Binding SelectedDocument.SelectColorAmareloCommand}" ToolTip="Amarelo" Background="#FFFFD43B" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectColorVerdeCommand}" ToolTip="Verde" Background="#FF51CF66" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectColorVermelhoCommand}" ToolTip="Vermelho" Background="#FFFF6B6B" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+        </StackPanel>
+
+        <Border Style="{StaticResource Divisor}"/>
+
+        <!-- Carimbo de imagem (galeria — Popup) + inserir imagem avulsa. -->
+        <ToggleButton x:Name="StampGalleryToggle" ToolTip="Carimbos de imagem" Style="{DynamicResource mPdf.Anota.FerramentaToggle}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon stamp}"/>
+        </ToggleButton>
+        <Popup PlacementTarget="{Binding ElementName=StampGalleryToggle}" IsOpen="{Binding IsChecked, ElementName=StampGalleryToggle}"
+               StaysOpen="False" Placement="Top" AllowsTransparency="True"
+               DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+            <Border Background="{DynamicResource Cor.Superficie}" BorderBrush="{DynamicResource Cor.Borda}" BorderThickness="1"
+                    CornerRadius="9" Padding="8" MinWidth="240" MaxHeight="320" Margin="0,0,0,8">
+                <Border.Effect>
+                    <DropShadowEffect Color="#000000" BlurRadius="28" ShadowDepth="8" Opacity="0.5"/>
+                </Border.Effect>
+                <DockPanel>
+                    <Button DockPanel.Dock="Top" Command="{Binding AddStampCommand}" Margin="0,0,0,6"
+                            HorizontalContentAlignment="Left" Style="{DynamicResource mPdf.Button.Command}" Padding="10,0" Height="34">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="15" Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon plus}"/>
+                            <TextBlock Text="Adicionar carimbo…" Margin="9,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl x:Name="StampItemsList" ItemsSource="{Binding StampItems}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Button Grid.Column="0" HorizontalContentAlignment="Left" Padding="6" Height="44"
+                                                Style="{DynamicResource mPdf.Button.Command}"
+                                                ToolTip="Clique para colocar este carimbo na página"
+                                                Command="{Binding DataContext.SelectStampCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding Name}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <Image Source="{Binding Thumbnail}" Width="32" Height="32" Stretch="Uniform"/>
+                                                <TextBlock Text="{Binding Name}" Margin="8,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Grid.Column="1" Padding="6,0" Margin="4,0,0,0" Style="{DynamicResource mPdf.Button.Status}"
+                                                ToolTip="Remover carimbo da galeria"
+                                                Command="{Binding DataContext.RemoveStampCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding Name}">
+                                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="13" Text="{icons:PhosphorIcon x}"/>
+                                        </Button>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Popup>
+        <Button Command="{Binding SelectedDocument.ToggleImageToolCommand}" ToolTip="Inserir imagem" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon image}"/>
+        </Button>
+    </StackPanel>
+</UserControl>
