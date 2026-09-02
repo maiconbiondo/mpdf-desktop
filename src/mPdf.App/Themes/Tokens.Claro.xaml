@@ -1,0 +1,83 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+    Plano 14 (Task 1) — TOKENS de cor do TEMA CLARO. São EXATAMENTE os valores `Cor.*` do Plano 12
+    (paleta derivada da logo: azul-marinho #1D4E89 + verde-água #3EC1A7), PRESERVADOS sem mudança — o
+    tema claro continua disponível, alternável pelo toggle em Sobre. MESMO conjunto de x:Key que
+    Tokens.Escuro.xaml (o par escuro é o default); só os valores diferem.
+
+    Os 5 tokens `Cor.Fundo*` (estruturais do shell, novos no Plano 14) NÃO existiam no Plano 12 — aqui
+    recebem equivalentes CLAROS coerentes (superfícies neutras claras) porque o shell do T2 usa esses
+    tokens e AMBOS os temas precisam defini-los. O viewer claro fica com um cinza neutro (#D8DEE7) atrás
+    das páginas, como em qualquer leitor claro; painel = a própria Superficie.
+
+    Contraste AA: todos os pares texto/fundo do tema claro já batiam >= 4.5:1 no Plano 12
+    (ThemeContrastTests os recomputa lendo estes brushes) — inalterados.
+    -->
+
+    <SolidColorBrush x:Key="Cor.Primaria" Color="#FF1D4E89"/>
+    <SolidColorBrush x:Key="Cor.Acento" Color="#FF3EC1A7"/>
+
+    <SolidColorBrush x:Key="Cor.Superficie" Color="#FFF5F7FA"/>
+    <SolidColorBrush x:Key="Cor.Borda" Color="#FFC7D1DC"/>
+
+    <SolidColorBrush x:Key="Cor.TextoPrimario" Color="#FF0F2E52"/>
+    <SolidColorBrush x:Key="Cor.TextoSecundario" Color="#FF52606D"/>
+    <SolidColorBrush x:Key="Cor.TextoDesabilitado" Color="#FFAEB4BC"/>
+
+    <SolidColorBrush x:Key="Cor.SuperficieHover" Color="#FFE3ECF5"/>
+    <SolidColorBrush x:Key="Cor.SuperficiePressionada" Color="#FFCFE0F0"/>
+
+    <SolidColorBrush x:Key="Cor.Sucesso" Color="#FF2E7D32"/>
+    <SolidColorBrush x:Key="Cor.Erro" Color="#FFB00020"/>
+
+    <!-- Fundos estruturais do shell — equivalentes CLAROS (novos no Plano 14, ver nota acima). -->
+    <SolidColorBrush x:Key="Cor.FundoJanela" Color="#FFECF0F5"/>
+    <SolidColorBrush x:Key="Cor.FundoViewer" Color="#FFD8DEE7"/>
+    <SolidColorBrush x:Key="Cor.FundoRail" Color="#FFE4EAF1"/>
+    <SolidColorBrush x:Key="Cor.FundoPainel" Color="#FFF5F7FA"/>
+    <SolidColorBrush x:Key="Cor.FundoTitulo" Color="#FFE8EDF3"/>
+
+    <!-- ===== SHELL (Plano 14 T2): equivalentes CLAROS dos tokens de chrome (mesmos x:Key do Escuro) ===== -->
+    <SolidColorBrush x:Key="Cor.FundoDocTabs" Color="#FFDCE3EC"/>
+    <SolidColorBrush x:Key="Cor.DocTabAtiva" Color="#FFF5F7FA"/>
+    <SolidColorBrush x:Key="Cor.BordaSutil" Color="#FFD5DEE8"/>
+    <SolidColorBrush x:Key="Cor.IconeAzul" Color="#FF1D4E89"/>
+    <SolidColorBrush x:Key="Cor.MarcadorAtivo" Color="#FF1D4E89"/>
+    <SolidColorBrush x:Key="Cor.AssinarBorda" Color="#FF1D4E89"/>
+    <SolidColorBrush x:Key="Cor.AssinarTexto" Color="#FFFFFFFF"/>
+    <SolidColorBrush x:Key="Cor.FecharHover" Color="#FFB00020"/>
+    <SolidColorBrush x:Key="Cor.PrimariaTextoSobre" Color="#FFFFFFFF"/>
+
+    <!-- ===== DIÁLOGOS (Plano 14 T4): equivalentes CLAROS (mesmos x:Key do Escuro). ===== -->
+    <SolidColorBrush x:Key="Cor.FundoDialogo" Color="#FFF5F7FA"/>
+    <SolidColorBrush x:Key="Cor.FundoDialogoRodape" Color="#FFECF0F5"/>
+    <LinearGradientBrush x:Key="Cor.DialogoIconeGrad" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#FF2A5D96" Offset="0"/>
+        <GradientStop Color="#FF1D4E89" Offset="1"/>
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="Cor.FundoTituloGrad" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#FFEEF2F7" Offset="0"/>
+        <GradientStop Color="#FFE3EAF2" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="Cor.AssinarFundo" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#FF2A5D96" Offset="0"/>
+        <GradientStop Color="#FF1D4E89" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="Cor.AssinarFundoHover" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#FF356BA6" Offset="0"/>
+        <GradientStop Color="#FF255A97" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- ===== ORGANIZADOR + BARRA DE ANOTAÇÃO + BUSCA (Plano 14 T5), equivalentes CLAROS ===== -->
+    <SolidColorBrush x:Key="Cor.AnotacaoPilula" Color="#F2FFFFFF"/>
+    <SolidColorBrush x:Key="Cor.OrganizadorCelula" Color="#FFE4EAF1"/>
+    <SolidColorBrush x:Key="Cor.OrganizadorAcaoFundo" Color="#0F0F2E52"/>
+
+    <!-- ===== SCROLLBAR FINA (Plano 18 T1) ===== equivalente CLARO: cinza translúcido (preto com alpha
+         baixo) — mesma mecânica do escuro (troca de Background sólida, nunca Opacity/Effect). -->
+    <SolidColorBrush x:Key="Cor.ScrollThumb" Color="#26000000"/>
+    <SolidColorBrush x:Key="Cor.ScrollThumbHover" Color="#3D000000"/>
+
+</ResourceDictionary>

@@ -1,0 +1,67 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\mPdf.Rendering\mPdf.Rendering.csproj" />
+    <ProjectReference Include="..\mPdf.Documents\mPdf.Documents.csproj" />
+    <!-- Referência de projeto apenas: o contrato NEUTRO de mPdf.Editing (sem tipos iText). Nenhum
+         `using iText` pode aparecer aqui — ver AgplGuardTests em mPdf.Editing.Tests. -->
+    <ProjectReference Include="..\mPdf.Editing\mPdf.Editing.csproj" />
+    <!-- Task 3 (Plano 4): 1ª referência de src/mPdf.App a mPdf.Signing — mesmo espírito da referência a
+         mPdf.Editing acima: só o contrato NEUTRO (ISigningEngine/SignRequest/SignatureInfo/
+         DocMdpLevel/VisibleStampSpec/CertificateCatalog/SigningCertificateInfo/exceções tipadas), nunca
+         um tipo iText (mPdf.Signing.csproj usa PrivateAssets=compile no PackageReference de iText — o
+         COMPILADOR recusa `using iText` aqui, CS0246, não só a varredura de texto do AgplGuardTests).
+    -->
+    <ProjectReference Include="..\mPdf.Signing\mPdf.Signing.csproj" />
+    <!-- Task 4 (Plano 15): 1ª referência de src/mPdf.App a mPdf.Ocr — o App é a RAIZ DE COMPOSIÇÃO do
+         OCR (renderiza via mPdf.Rendering, chama IOcrEngine aqui, mapeia OcrEngineResult->OcrTextLayer e
+         grava via mPdf.Editing.ApplyOcrTextLayer). O contrato de mPdf.Ocr é NEUTRO (IOcrEngine/
+         OcrEngineResult/OcrWord — nenhum tipo Tesseract cruza). A T1 deixou esta referência para cá de
+         propósito: os nativos do Tesseract (x64\*.dll) fluem como <None> e o tessdata como <Content>,
+         ambos TRANSITIVAMENTE para o output/publish deste App (a T1 provou o fluxo transitivo). AGPL:
+         mPdf.Ocr não referencia iText/Docnet (AgplGuardTests). -->
+    <ProjectReference Include="..\mPdf.Ocr\mPdf.Ocr.csproj" />
+    <!-- Task 3 (Plano 16): 1ª referência de src/mPdf.App a mPdf.Export — o App é a RAIZ DE COMPOSIÇÃO da
+         exportação Word/Excel (extrai texto+posições via mPdf.Rendering.GetTextPage, mapeia
+         PdfCharacter->ExportChar, monta ExportPage e chama IDocxExporter/IXlsxExporter). O contrato de
+         mPdf.Export é NEUTRO (ExportPage/ExportChar/IDocxExporter/IXlsxExporter — nenhum tipo OpenXML
+         cruza a fronteira do App). AGPL: mPdf.Export não referencia iText/Docnet (AgplGuardTests). A
+         dependência única DocumentFormat.OpenXml (MIT) flui transitivamente pro output/publish do App. -->
+    <ProjectReference Include="..\mPdf.Export\mPdf.Export.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Task 2 (Plano 11): ícone reusado pelo SobreDialog via pack URI (WPF decodifica .ico
+         nativamente) — ApplicationIcon abaixo só embute o recurso Win32 do .exe, não o expõe pro pack
+         URI; precisa ser listado como Resource separadamente para Views/SobreDialog.xaml carregar. -->
+    <Resource Include="Assets\mpdf.ico" />
+    <!-- Plano 14 (Task 1): fontes embarcadas (fidelidade + offline). Inter (OFL) 400/500/600/700 —
+         WPF agrupa os 4 estáticos sob a família tipográfica "Inter" e escolhe por FontWeight
+         (Normal/Medium/SemiBold/Bold, verificado por GlyphTypeface.Weight). Phosphor (MIT) em 3
+         famílias SEPARADAS por variante (Phosphor / Phosphor-Fill / Phosphor-Bold — os Win32 family
+         names REAIS lidos das fontes) — o MESMO code point por nome de ícone, a variante é a família.
+         Build Action = Resource: embarca no assembly, acessível via pack URI (.../Assets/Fonts/#Inter).
+         Licenças em docs/licencas (LICENCA-Inter-OFL.txt / LICENCA-Phosphor-MIT.txt) — no instalador
+         (Source "docs/licencas/*") e no export público (git ls-files sobre src e docs/licencas). -->
+    <Resource Include="Assets\Fonts\*.ttf" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- Fonte ÚNICA da versão do produto (Task 4, Plano 5): tools/installer/build-installer.ps1 extrai
+         este valor e passa como /DMyAppVersion pro Inno Setup — não duplicar em mpdf.iss.
+         1.1.0 (Task 2, Plano 6): associação de arquivo .pdf no instalador + instância
+         única/abrir-por-argumento (Task 1, Plano 6) — funcionalidades novas, não patch. -->
+    <Version>2.4.0</Version>
+    <ApplicationIcon>Assets\mpdf.ico</ApplicationIcon>
+  </PropertyGroup>
+
+</Project>

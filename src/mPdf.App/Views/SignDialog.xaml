@@ -1,0 +1,120 @@
+<Window x:Class="mPdf.App.Views.SignDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        Title="Assinar documento" Width="498" SizeToContent="Height" WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" FontFamily="{DynamicResource Fonte.Inter}">
+    <Window.Resources>
+        <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — mesmo motivo de MainWindow.xaml/SobreDialog.xaml
+             (Application.Current fica null nas sondas STA que constroem este diálogo direto). -->
+        <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+    </Window.Resources>
+    <!-- Plano 14 (Task 4): superfície de diálogo escura, rounded/flutuante (só VISUAL — toda a lógica/
+         bindings/x:Name preservados). Margem = espaço pra sombra de chrome (AllowsTransparency). -->
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <DockPanel>
+            <!-- Header: ícone pen-nib em quadrado-gradiente + título/subtítulo (arrasta a janela). -->
+            <Border DockPanel.Dock="Top" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                    BorderThickness="0,0,0,1" Padding="22,18" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <StackPanel Orientation="Horizontal">
+                    <Border Style="{StaticResource mPdf.Dialog.IconeHeader}">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="17" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon pen-nib}"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,0,0">
+                        <TextBlock Text="Assinar documento" Style="{StaticResource mPdf.Dialog.Titulo}"/>
+                        <TextBlock Text="Padrão PAdES · ICP-Brasil" Style="{StaticResource mPdf.Dialog.Subtitulo}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Rodapé: Cancelar / Assinar. -->
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Cor.FundoDialogoRodape}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,13,13" Padding="22,16">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="CancelButton" Content="Cancelar" Margin="0,0,10,0"
+                            IsCancel="True" Click="Cancel_Click" Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                    <Button x:Name="OkButton" IsDefault="True" Click="Ok_Click"
+                            IsEnabled="{Binding SelectedItem.IsEnabled, ElementName=CertificateListBox, FallbackValue=False}"
+                            Style="{StaticResource mPdf.Button.DialogPrimario}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="14" VerticalAlignment="Center"
+                                       Margin="0,0,7,0" Text="{icons:PhosphorIcon pen-nib}"/>
+                            <TextBlock Text="Assinar" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <!-- Corpo. -->
+            <StackPanel Margin="22,20">
+                <TextBlock Text="Certificado" Style="{StaticResource mPdf.Dialog.LabelForte}"/>
+                <!-- Certificados ECC aparecem LISTADOS (nunca filtrados) mas DESABILITADOS com a explicação
+                     pt-BR (ver ISignDialogService.PromptForSignature). Cartões: selecionado = borda/véu azul
+                     + check; ECC = mudo + ph prohibit (ver mPdf.CertCard.* em mPdfTheme). -->
+                <ListBox x:Name="CertificateListBox" MaxHeight="188"
+                         SelectionMode="Single" KeyboardNavigation.TabNavigation="Continue"
+                         Style="{StaticResource mPdf.CertCard.ListBox}"/>
+
+                <Grid Margin="0,16,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Motivo (opcional)" Style="{StaticResource mPdf.Dialog.Label}"/>
+                        <TextBox x:Name="ReasonTextBox" Style="{StaticResource mPdf.Input}"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2">
+                        <TextBlock Text="Local (opcional)" Style="{StaticResource mPdf.Dialog.Label}"/>
+                        <TextBox x:Name="LocationTextBox" Style="{StaticResource mPdf.Input}"/>
+                    </StackPanel>
+                </Grid>
+
+                <!-- DocMDP: só oferecido na 1ª assinatura do documento (ver SignDialog(certificates,
+                     allowDocMdp) e ISignDialogService) — o motor RECUSA CertificationLevel != None num doc
+                     já assinado. Default LIGADO. -->
+                <CheckBox x:Name="DocMdpCheckBox" Margin="0,16,0,0" IsChecked="True"
+                          Style="{StaticResource mPdf.CheckCard}">
+                    <StackPanel>
+                        <TextBlock FontSize="12.5" Foreground="{DynamicResource Cor.TextoPrimario}">
+                            <Run Text="Proteger contra alterações "/><Run Text="(recomendado)" Foreground="#FFA9CDF1"/>
+                        </TextBlock>
+                        <TextBlock Text="DocMDP — bloqueia edições após esta assinatura" FontSize="10.5"
+                                   Foreground="{DynamicResource Cor.TextoSecundario}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </CheckBox>
+
+                <!-- Plano 9 (Task 3): "Posicionar carimbo" vem PRÉ-SELECIONADO; "Sem carimbo" continua
+                     disponível. RadioButtons preservados (x:Name/GroupName/IsChecked — ver SignDialogTests). -->
+                <TextBlock Text="Carimbo visível" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,16,0,8"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="9"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <RadioButton x:Name="NoStampRadio" Grid.Column="0" GroupName="Stamp"
+                                 Style="{StaticResource mPdf.CarimboCard}">
+                        <StackPanel>
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" HorizontalAlignment="Center"
+                                       Text="{icons:PhosphorIcon eye-slash}"/>
+                            <TextBlock Text="Sem carimbo visível" FontSize="11.5" HorizontalAlignment="Center" Margin="0,5,0,0"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="PlaceStampRadio" Grid.Column="2" GroupName="Stamp" IsChecked="True"
+                                 Style="{StaticResource mPdf.CarimboCard}">
+                        <StackPanel>
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" HorizontalAlignment="Center"
+                                       Text="{icons:PhosphorIcon seal}"/>
+                            <TextBlock Text="Posicionar na página" FontSize="11.5" HorizontalAlignment="Center" Margin="0,5,0,0"/>
+                        </StackPanel>
+                    </RadioButton>
+                </Grid>
+            </StackPanel>
+        </DockPanel>
+    </Border>
+</Window>
