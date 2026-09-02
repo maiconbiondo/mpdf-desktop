@@ -1,0 +1,142 @@
+<UserControl x:Class="mPdf.App.Views.PageOrganizerView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:icons="clr-namespace:mPdf.App.Icons"
+             xmlns:vm="clr-namespace:mPdf.App.ViewModels">
+    <!-- Organizador de páginas (Task 3, Plano 3b) — DataContext esperado: um DocumentViewModel (mesmo
+         padrão de ThumbnailsPanel, exemplar direto deste controle), lido através de `Organizer.*`
+         (nulo fora do modo organizador — este controle só fica Visible quando IsOrganizerOpen=true,
+         ver MainWindow.xaml, então `Organizer` já é não-nulo sempre que ele é realmente mostrado).
+         Plano 14 (Task 5): restilizado para o tema escuro (barra de ações + grade). TODA a lógica
+         (seleção/girar/excluir/mover/extrair/inserir/concluir) é INTOCADA — só o VISUAL. -->
+    <DockPanel Background="{DynamicResource Cor.FundoViewer}">
+        <!-- ░░░ BARRA DE AÇÕES (#1A1C29) ░░░ -->
+        <Border DockPanel.Dock="Top" Background="{DynamicResource Cor.Superficie}"
+                BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,0,0,1" Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Ações à esquerda -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Command="{Binding Organizer.RotateSelectedCommand}" ToolTip="Girar 90° as páginas selecionadas" Style="{DynamicResource mPdf.Organizador.Acao}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon arrow-clockwise}" VerticalAlignment="Center"/>
+                            <TextBlock Text="Girar 90°" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding Organizer.DeleteSelectedCommand}" ToolTip="Excluir páginas selecionadas" Style="{DynamicResource mPdf.Organizador.Acao}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon trash}" VerticalAlignment="Center"/>
+                            <TextBlock Text="Excluir" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+
+                    <Border Style="{DynamicResource mPdf.Divisoria.Vertical}" Height="20" Margin="2,0,8,0"/>
+
+                    <!-- Drag-reorder v1 = botões (decisão registrada no relatório) — habilitados só com
+                         EXATAMENTE 1 página selecionada e fora dos extremos (OrganizerViewModel.CanMove*). -->
+                    <Button Command="{Binding Organizer.MoveSelectionLeftCommand}" ToolTip="Mover a página selecionada uma posição para trás" Style="{DynamicResource mPdf.Organizador.Acao}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon caret-left}" VerticalAlignment="Center"/>
+                            <TextBlock Text="Mover" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding Organizer.MoveSelectionRightCommand}" ToolTip="Mover a página selecionada uma posição para frente" Style="{DynamicResource mPdf.Organizador.Acao}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Mover" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon caret-right}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+
+                    <Border Style="{DynamicResource mPdf.Divisoria.Vertical}" Height="20" Margin="2,0,8,0"/>
+
+                    <!-- Extrair (QUALQUER seleção — leitura pura, funciona até assinado) / Inserir (gated CanEdit). -->
+                    <Button Command="{Binding Organizer.ExtractSelectedCommand}" ToolTip="Extrair páginas selecionadas para um novo arquivo" Style="{DynamicResource mPdf.Organizador.Acao}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon export}" VerticalAlignment="Center"/>
+                            <TextBlock Text="Extrair" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding Organizer.InsertCommand}" ToolTip="Inserir páginas de outro PDF" Style="{DynamicResource mPdf.Organizador.Acao}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon plus}" VerticalAlignment="Center"/>
+                            <TextBlock Text="Inserir" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+
+                <!-- Contagem + Concluir à direita -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Organizer.SelectionCountLabel}" VerticalAlignment="Center"
+                               FontSize="11.5" Margin="0,0,12,0" Foreground="{DynamicResource Cor.TextoDesabilitado}"/>
+                    <Button Click="Concluir_Click" ToolTip="Concluir e fechar o organizador" Style="{DynamicResource mPdf.Button.DialogPrimario}" Height="32" MinWidth="0" Padding="14,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.PhosphorBold}" FontSize="13" Text="{icons:PhosphorIcon check}" VerticalAlignment="Center"/>
+                            <TextBlock Text="Concluir" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ░░░ GRADE DE PÁGINAS ░░░ -->
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Background="{DynamicResource Cor.FundoViewer}">
+            <ItemsControl ItemsSource="{Binding Organizer.Pages}" Margin="24,22" Focusable="False">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel/>
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="{x:Type vm:OrganizerPageViewModel}">
+                        <!-- Célula = mesmo container Loaded/Unloaded/DataContextChanged de ThumbnailsPanel
+                             (exemplar); BorderBrush muda via DataTrigger em IsSelected (accent azul = seleção). -->
+                        <StackPanel Margin="11" HorizontalAlignment="Center">
+                            <Border Background="{DynamicResource Cor.OrganizadorCelula}"
+                                    CornerRadius="6" Padding="11" BorderThickness="3"
+                                    Loaded="Page_Loaded" Unloaded="Page_Unloaded"
+                                    DataContextChanged="Page_DataContextChanged"
+                                    MouseLeftButtonUp="Page_MouseLeftButtonUp"
+                                    Cursor="Hand">
+                                <Border.Effect>
+                                    <DropShadowEffect Color="#000000" BlurRadius="16" ShadowDepth="6" Opacity="0.4"/>
+                                </Border.Effect>
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="BorderBrush" Value="Transparent"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                <Setter Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <Border Width="{Binding DisplayWidth}" Height="{Binding DisplayHeight}"
+                                        Background="#FFF3F5FE" CornerRadius="2" SnapsToDevicePixels="True">
+                                    <Image Source="{Binding ImageSource}" Stretch="Fill"
+                                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                                </Border>
+                            </Border>
+                            <TextBlock Text="{Binding PageNumber}" HorizontalAlignment="Center" FontSize="11" Margin="0,7,0,0">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

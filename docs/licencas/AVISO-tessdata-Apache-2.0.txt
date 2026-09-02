@@ -1,0 +1,25 @@
+AVISO DE LICENÇA — Dados de idioma do Tesseract (tessdata)
+===========================================================
+
+O mPDF embarca dados de modelo de idioma do Tesseract OCR para o
+reconhecimento de texto ("Reconhecer texto (OCR)"):
+
+    por.traineddata  — Português
+    eng.traineddata  — Inglês
+
+Variante: tessdata_fast (modelos LSTM otimizados para velocidade).
+
+Origem: projeto Tesseract OCR (tesseract-ocr), repositório de dados
+        "tessdata_fast" — https://github.com/tesseract-ocr/tessdata_fast
+
+Licença: Apache License 2.0 (mesma do motor Tesseract). O texto completo
+         da licença Apache 2.0 está em:
+
+    docs/licencas/LICENCA-Tesseract-Apache-2.0.txt
+
+Estes arquivos são dados PÚBLICOS de treinamento do projeto Tesseract —
+não contêm nenhum conteúdo do usuário nem do escritório. São redistribuídos
+sem modificação, conforme permitido pela Apache License 2.0.
+
+O motor Tesseract em si é acessado pelo mPDF através do wrapper .NET
+"Tesseract" (Charles Weld), também sob Apache License 2.0.

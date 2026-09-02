@@ -1,0 +1,545 @@
+<Window x:Class="mPdf.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:mPdf.App.ViewModels"
+        xmlns:views="clr-namespace:mPdf.App.Views"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        xmlns:conv="clr-namespace:mPdf.App.Converters"
+        xmlns:editing="clr-namespace:mPdf.Editing;assembly=mPdf.Editing"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="{Binding SelectedDocument.Title, FallbackValue=mPDF, StringFormat='mPDF — {0}'}"
+        Height="800" Width="1200" WindowStartupLocation="CenterScreen"
+        WindowState="Maximized"
+        WindowStyle="None" ResizeMode="CanResize"
+        FontFamily="{DynamicResource Fonte.Inter}" FontSize="12.5"
+        Background="{DynamicResource Cor.FundoJanela}"
+        Foreground="{DynamicResource Cor.TextoPrimario}"
+        UseLayoutRounding="True" TextOptions.TextFormattingMode="Ideal">
+
+    <!-- Plano 14 (Task 2): title bar custom via WindowChrome. CaptionHeight=44 = a barra superior é a
+         área de arrastar/duplo-clique-maximiza do Windows; ResizeBorderThickness mantém as 8 bordas/
+         cantos redimensionáveis; GlassFrameThickness=0 + UseAeroCaptionButtons=False removem a moldura/
+         botões nativos. Os botões min/max/close (e a área de comando) desligam-se do caption via
+         WindowChrome.IsHitTestVisibleInChrome=True (nos estilos mPdf.Button.TitleBar*) — senão o clique
+         seria capturado pela área de arrastar. O clipping de 8px e a cobertura da taskbar no estado
+         MAXIMIZADO são tratados por um hook WM_GETMINMAXINFO no code-behind (ajusta ao work area do
+         monitor). -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="6" CornerRadius="0"
+                            GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <!-- Merge LOCAL do tema (ver comentário histórico do Plano 12): necessário pras ~20 sondas STA
+             que constroem `new MainWindow()` sem `new App()` (Application.Current == null no processo
+             de teste inteiro) resolverem os estilos/tokens. Redundante mas inofensivo em produção. -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+            <conv:NullToVisibilityConverter x:Key="NullToVis"/>
+            <conv:DocumentoEPainelVisivelConverter x:Key="DocEPainelVisivel"/>
+            <conv:NuloParaVisibilidadeInversoConverter x:Key="NuloParaVisInverso"/>
+            <conv:ContagemAssinaturasParaRotuloConverter x:Key="ContagemAssin"/>
+            <conv:CaminhoParaNomeConverter x:Key="CaminhoParaNome"/>
+            <conv:CaminhoParaPastaConverter x:Key="CaminhoParaPasta"/>
+            <conv:IndiceIgualConverter x:Key="IndiceIgual"/>
+            <conv:IndiceParaTituloConverter x:Key="IndiceParaTitulo"/>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <!-- Root: fundo da janela; RootBorder recebe padding no estado maximizado (code-behind) pra evitar
+         o corte de conteúdo clássico do WindowChrome. -->
+    <Border x:Name="RootBorder" Background="{DynamicResource Cor.FundoJanela}">
+        <DockPanel LastChildFill="True">
+
+            <!-- ░░░░░░░░░░░░░░░░ TITLE BAR (44px) ░░░░░░░░░░░░░░░░ -->
+            <Border DockPanel.Dock="Top" Height="44" Background="{DynamicResource Cor.FundoTituloGrad}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,0,0,1">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+                        <Image Source="{StaticResource Logo.mPDF}" Width="23" Height="23" Margin="0,0,9,0"/>
+                        <TextBlock Text="mPDF" FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource Cor.TextoPrimario}" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding SelectedDocument.Title, StringFormat='— {0}', FallbackValue='— nenhum documento', TargetNullValue='— nenhum documento'}"
+                                   FontSize="12.5" Margin="6,0,0,0"
+                                   Foreground="{DynamicResource Cor.TextoSecundario}" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                        <Button x:Name="MinimizeButton" Click="MinimizeButton_Click" Style="{StaticResource mPdf.Button.TitleBar}" ToolTip="Minimizar">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon minus}"/>
+                        </Button>
+                        <Button x:Name="MaximizeButton" Click="MaximizeButton_Click" Style="{StaticResource mPdf.Button.TitleBar}" ToolTip="Maximizar">
+                            <Grid Width="12" Height="12">
+                                <!-- Estado NORMAL: um quadrado (maximizar). -->
+                                <TextBlock x:Name="MaximizeGlyph" FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon square}"/>
+                                <!-- Estado MAXIMIZADO: dois quadrados sobrepostos (restaurar) — desenhado
+                                     em vetor porque a fonte embarcada (só os 65 ícones do mockup) não traz
+                                     um glifo de "restaurar". Alternado por code-behind no StateChanged. -->
+                                <Grid x:Name="RestoreGlyph" Visibility="Collapsed">
+                                    <Border Width="8" Height="8" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,0,0,0"
+                                            BorderBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" BorderThickness="1.2"/>
+                                    <Border Width="8" Height="8" HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                            Background="{DynamicResource Cor.FundoTitulo}"
+                                            BorderBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" BorderThickness="1.2"/>
+                                </Grid>
+                            </Grid>
+                        </Button>
+                        <Button x:Name="CloseButton" Click="CloseButton_Click" Style="{StaticResource mPdf.Button.TitleBarClose}" ToolTip="Fechar">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon x}"/>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ░░░░░░░░░░░░░░░░ COMMAND BAR (60px) ░░░░░░░░░░░░░░░░ -->
+            <Border DockPanel.Dock="Top" Height="60" Background="{DynamicResource Cor.Superficie}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,0,0,1">
+                <Grid Margin="14,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Grupos da esquerda -->
+                    <StackPanel x:Name="CommandBarLeft" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <!-- Abrir / Salvar (com rótulo) -->
+                        <Button Command="{Binding OpenFileCommand}" ToolTip="Abrir PDF (Ctrl+O)"
+                                Style="{StaticResource mPdf.Button.Command}" Padding="12,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon folder-open}"/>
+                                <TextBlock Text="Abrir" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Command="{Binding SaveCommand}" ToolTip="Salvar (Ctrl+S)"
+                                Style="{StaticResource mPdf.Button.Command}" Padding="12,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon floppy-disk}"/>
+                                <TextBlock Text="Salvar" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
+                        <Border Style="{StaticResource mPdf.Divisoria.Vertical}"/>
+
+                        <!-- undo / redo / imprimir / exportar (ícone só, 38×38) -->
+                        <Button Command="{Binding SelectedDocument.UndoCommand}" ToolTip="Desfazer (Ctrl+Z)" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon arrow-counter-clockwise}"/>
+                        </Button>
+                        <Button Command="{Binding SelectedDocument.RedoCommand}" ToolTip="Refazer (Ctrl+Y)" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon arrow-clockwise}"/>
+                        </Button>
+                        <Button Command="{Binding PrintCommand}" ToolTip="Imprimir (Ctrl+P)" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon printer}"/>
+                        </Button>
+                        <Button Command="{Binding SelectedDocument.ExportImageCommand}" ToolTip="Exportar página como imagem" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon export}"/>
+                        </Button>
+                        <!-- Plano 16 (Task 3): "Exportar como Word/Excel" — menu suspenso (um único botão de
+                             38px na barra pra NÃO estourar o overflow; dois itens no popup). Comandos POR
+                             DOCUMENTO (SelectedDocument), habilitados só com documento aberto; funcionam em
+                             assinado (leitura pura, sem gate). -->
+                        <ToggleButton x:Name="ExportDocToggle" ToolTip="Exportar como Word (.docx) ou Excel (.xlsx)" Width="38" Style="{StaticResource mPdf.Toggle.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon file-text}"/>
+                        </ToggleButton>
+                        <Popup PlacementTarget="{Binding ElementName=ExportDocToggle}" IsOpen="{Binding IsChecked, ElementName=ExportDocToggle}"
+                               StaysOpen="False" Placement="Bottom" AllowsTransparency="True">
+                            <Border Background="{DynamicResource Cor.Superficie}" BorderBrush="{DynamicResource Cor.Borda}" BorderThickness="1"
+                                    CornerRadius="8" Padding="6" MinWidth="240">
+                                <StackPanel>
+                                    <Button Command="{Binding SelectedDocument.ExportWordCommand}" Click="ExportMenuItem_Click"
+                                            ToolTip="Texto editável em parágrafos (não é cópia do layout)"
+                                            HorizontalContentAlignment="Left" Style="{StaticResource mPdf.Button.Command}" Padding="10,0" Height="34" HorizontalAlignment="Stretch">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon file-text}"/>
+                                            <TextBlock Text="Exportar como Word (.docx)" Margin="9,0,0,0" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Command="{Binding SelectedDocument.ExportExcelCommand}" Click="ExportMenuItem_Click"
+                                            ToolTip="Melhor-esforço em tabelas alinhadas por posição"
+                                            HorizontalContentAlignment="Left" Style="{StaticResource mPdf.Button.Command}" Padding="10,0" Height="34" HorizontalAlignment="Stretch">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon grid-nine}"/>
+                                            <TextBlock Text="Exportar como Excel (.xlsx)" Margin="9,0,0,0" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                </StackPanel>
+                            </Border>
+                        </Popup>
+
+                        <Border Style="{StaticResource mPdf.Divisoria.Vertical}"/>
+
+                        <!-- organizar (toggle) / juntar / dividir / assinar em lote -->
+                        <ToggleButton IsChecked="{Binding SelectedDocument.IsOrganizerOpen}" ToolTip="Organizar páginas (girar/excluir/mover)" Style="{StaticResource mPdf.Toggle.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon grid-nine}"/>
+                        </ToggleButton>
+                        <Button Command="{Binding MergeCommand}" ToolTip="Juntar vários PDFs em um só" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon arrows-merge}"/>
+                        </Button>
+                        <Button Command="{Binding SplitCommand}" ToolTip="Dividir o documento em vários arquivos" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon scissors}"/>
+                        </Button>
+                        <!-- Plano 15 (Task 4): Reconhecer texto (OCR) — comando POR DOCUMENTO (SelectedDocument),
+                             habilitado só com documento aberto e editável (assinado -> "Editar uma cópia"). -->
+                        <Button Command="{Binding SelectedDocument.RecognizeTextCommand}" ToolTip="Reconhecer texto (OCR) — torna páginas escaneadas pesquisáveis" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon text-t}"/>
+                        </Button>
+                        <Button Command="{Binding BatchSignCommand}" ToolTip="Assinar vários PDFs em lote" Style="{StaticResource mPdf.Button.Command}" Padding="11,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon stack}"/>
+                                <TextBlock Text="Assinar em lote" Margin="7,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+
+                    <!-- Grupo da direita: buscar / recentes / sobre | Assinar -->
+                    <StackPanel x:Name="CommandBarRight" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button x:Name="SearchButton" Click="SearchButton_Click" ToolTip="Buscar (Ctrl+F)" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon magnifying-glass}"/>
+                        </Button>
+                        <ToggleButton x:Name="RecentToggle" ToolTip="Recentes" Style="{StaticResource mPdf.Toggle.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon clock-counter-clockwise}"/>
+                        </ToggleButton>
+                        <Popup PlacementTarget="{Binding ElementName=RecentToggle}" IsOpen="{Binding IsChecked, ElementName=RecentToggle}"
+                               StaysOpen="False" Placement="Bottom" AllowsTransparency="True">
+                            <Border Background="{DynamicResource Cor.Superficie}" BorderBrush="{DynamicResource Cor.Borda}" BorderThickness="1"
+                                    CornerRadius="8" Padding="6" MinWidth="260" MaxHeight="360">
+                                <ItemsControl ItemsSource="{Binding RecentFiles}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Button Command="{Binding DataContext.OpenRecentCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                    CommandParameter="{Binding}" HorizontalContentAlignment="Left"
+                                                    Style="{StaticResource mPdf.Button.Command}" Padding="10,0" Height="34" HorizontalAlignment="Stretch">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon file-text}"/>
+                                                    <TextBlock Text="{Binding}" Margin="9,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                                </StackPanel>
+                                            </Button>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Border>
+                        </Popup>
+                        <Button Command="{Binding SobreCommand}" ToolTip="Sobre o mPDF" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon info}"/>
+                        </Button>
+                        <!-- Configurações (Plano 20): movido do pé do rail para a barra superior, ao lado do
+                             Sobre (pedido do usuário — local mais descoberto). Mesmo ConfiguracoesCommand. -->
+                        <Button Command="{Binding ConfiguracoesCommand}" ToolTip="Configurações" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon gear-six}"/>
+                        </Button>
+
+                        <Border Style="{StaticResource mPdf.Divisoria.Vertical}" Margin="8,0"/>
+
+                        <Button Command="{Binding SelectedDocument.SignCommand}" ToolTip="Assinar digitalmente" Style="{StaticResource mPdf.Button.Assinar}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="15" Text="{icons:PhosphorIcon pen-nib}"/>
+                                <TextBlock Text="Assinar" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ░░░░░░░░░░░░░░░░ STATUS BAR (30px) ░░░░░░░░░░░░░░░░ -->
+            <Border DockPanel.Dock="Bottom" Height="30" Background="{DynamicResource Cor.FundoRail}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0">
+                <Grid Margin="16,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <!-- Esquerda: arquivo + página (com documento) / "Pronto" (vazio) -->
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" Visibility="{Binding SelectedDocument, Converter={StaticResource NullToVis}}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12" Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon file-text}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding SelectedDocument.Title}" Margin="6,0,0,0" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding SelectedDocument.PageCountLabel}" Margin="16,0,0,0" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Text="Pronto" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}" VerticalAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding SelectedDocument, Converter={StaticResource NullToVis}}" Value="Visible">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <!-- Indicadores transientes (abrindo/salvando) — mesma fiação do Plano 12. -->
+                        <TextBlock Text="Abrindo documento…" Margin="16,0,0,0" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}" VerticalAlignment="Center"
+                                   Visibility="{Binding IsOpening, Converter={StaticResource BoolToVis}}"/>
+                        <TextBlock Text="Salvando…" Margin="16,0,0,0" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}" VerticalAlignment="Center"
+                                   Visibility="{Binding SelectedDocument.IsSaving, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}"/>
+                        <TextBlock Text="{Binding SelectedDocument.StampBoxNotice}" Margin="16,0,0,0" FontSize="11" Foreground="{DynamicResource Cor.Erro}" VerticalAlignment="Center"
+                                   Visibility="{Binding SelectedDocument.HasStampBoxNotice, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}"/>
+                    </StackPanel>
+
+                    <!-- Direita: zoom −/valor/+ | Largura / Página -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Command="{Binding SelectedDocument.ZoomOutCommand}" ToolTip="Reduzir zoom" Width="24" Style="{StaticResource mPdf.Button.Status}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12" Text="{icons:PhosphorIcon minus}"/>
+                        </Button>
+                        <TextBlock Text="{Binding SelectedDocument.ZoomPercent, FallbackValue=''}" MinWidth="42" TextAlignment="Center"
+                                   FontSize="11" Foreground="{DynamicResource Cor.TextoPrimario}" VerticalAlignment="Center"/>
+                        <Button Command="{Binding SelectedDocument.ZoomInCommand}" ToolTip="Ampliar zoom" Width="24" Style="{StaticResource mPdf.Button.Status}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12" Text="{icons:PhosphorIcon plus}"/>
+                        </Button>
+                        <Border Width="1" Height="14" Margin="8,0" Background="{DynamicResource Cor.Borda}"/>
+                        <Button Click="FitWidth_Click" ToolTip="Ajustar à largura" Style="{StaticResource mPdf.Button.Status}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12" Text="{icons:PhosphorIcon arrows-horizontal}" VerticalAlignment="Center"/>
+                                <TextBlock Text="Largura" Margin="5,0,0,0" FontSize="11" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Click="FitPage_Click" ToolTip="Página inteira" Style="{StaticResource mPdf.Button.Status}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12" Text="{icons:PhosphorIcon corners-out}" VerticalAlignment="Center"/>
+                                <TextBlock Text="Página" Margin="5,0,0,0" FontSize="11" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ░░░ FAIXA DE VALIDAÇÃO (Plano 14 T3) ░░░ — gradiente verde-água, selo, contagem REAL de
+                 assinaturas + "Ver assinaturas" (abre o painel de assinaturas) e "Editar uma cópia"
+                 (comando existente). x:Name e a Visibility (IsSignedDocument) PRESERVADOS
+                 (ViewerIntegrationTests: colapsada sem documento). -->
+            <Border x:Name="SignedDocumentBanner" DockPanel.Dock="Top"
+                    Background="{DynamicResource Cor.FaixaValidacao}" BorderBrush="#333EC1A7" BorderThickness="0,0,0,1" Padding="18,9"
+                    Visibility="{Binding SelectedDocument.IsSignedDocument, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="16" Foreground="{DynamicResource Cor.Acento}" Text="{icons:PhosphorIcon seal-check}" VerticalAlignment="Center"/>
+                        <TextBlock Margin="10,0,0,0" Foreground="#FF9EE6D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                            <Run Text="Documento assinado e íntegro — "/><Run Text="{Binding SelectedDocument.SignatureRows.Count, Converter={StaticResource ContagemAssin}, Mode=OneWay, FallbackValue='assinatura válida'}"/><Run Text=" no padrão PAdES / ICP-Brasil."/>
+                        </TextBlock>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Content="Ver assinaturas" Click="VerAssinaturas_Click" Style="{StaticResource mPdf.Button.FaixaVerde}" Margin="8,0,0,0"/>
+                        <Button Content="Editar uma cópia" Command="{Binding EditCopyCommand}" Style="{StaticResource mPdf.Button.FaixaNeutra}" Margin="8,0,0,0"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ░░░░░░░░░░░░░░░░ ACTIVITY RAIL (58px) — só com documento ░░░░░░░░░░░░░░░░ -->
+            <Border DockPanel.Dock="Left" Width="58" Background="{DynamicResource Cor.FundoRail}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,0,1,0"
+                    Visibility="{Binding SelectedDocument, Converter={StaticResource NullToVis}}">
+                <DockPanel LastChildFill="True">
+                    <!-- 4 ícones ligados ao painel ativo (PanelTabs.SelectedIndex, TwoWay via IndiceIgual).
+                         Clicar um ícone também revela o painel (ThumbnailsVisible), fiado no code-behind. -->
+                    <!-- Fix painel recolhível: Tag=índice do painel + PreviewMouseLeftButtonDown
+                         (RailItem_PreviewMouseDown) ANTES do Checked — clicar o ícone JÁ ativo com o
+                         painel visível recolhe (padrão "activity bar" do VS Code); clicar o ícone ativo
+                         recolhido reabre (IsChecked não muda -> Checked não dispara, por isso o
+                         PreviewMouseLeftButtonDown cobre os dois casos do MESMO índice). Clicar OUTRO
+                         ícone segue o fluxo normal: Checked troca o painel e mostra. -->
+                    <StackPanel DockPanel.Dock="Top" HorizontalAlignment="Center" Margin="0,10,0,0">
+                        <RadioButton GroupName="rail" Style="{StaticResource mPdf.RailItem}" Margin="0,0,0,4" ToolTip="Miniaturas" Tag="0"
+                                     Checked="RailItem_Checked" PreviewMouseLeftButtonDown="RailItem_PreviewMouseDown"
+                                     IsChecked="{Binding SelectedIndex, ElementName=PanelTabs, Converter={StaticResource IndiceIgual}, ConverterParameter=0}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="19" Text="{icons:PhosphorIcon squares-four}"/>
+                        </RadioButton>
+                        <RadioButton GroupName="rail" Style="{StaticResource mPdf.RailItem}" Margin="0,0,0,4" ToolTip="Sumário" Tag="1"
+                                     Checked="RailItem_Checked" PreviewMouseLeftButtonDown="RailItem_PreviewMouseDown"
+                                     IsChecked="{Binding SelectedIndex, ElementName=PanelTabs, Converter={StaticResource IndiceIgual}, ConverterParameter=1}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="19" Text="{icons:PhosphorIcon list-bullets}"/>
+                        </RadioButton>
+                        <RadioButton GroupName="rail" Style="{StaticResource mPdf.RailItem}" Margin="0,0,0,4" ToolTip="Campos" Tag="2"
+                                     Checked="RailItem_Checked" PreviewMouseLeftButtonDown="RailItem_PreviewMouseDown"
+                                     IsChecked="{Binding SelectedIndex, ElementName=PanelTabs, Converter={StaticResource IndiceIgual}, ConverterParameter=2}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="19" Text="{icons:PhosphorIcon textbox}"/>
+                        </RadioButton>
+                        <RadioButton GroupName="rail" Style="{StaticResource mPdf.RailItem}" ToolTip="Assinaturas" Tag="3"
+                                     Checked="RailItem_Checked" PreviewMouseLeftButtonDown="RailItem_PreviewMouseDown"
+                                     IsChecked="{Binding SelectedIndex, ElementName=PanelTabs, Converter={StaticResource IndiceIgual}, ConverterParameter=3}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="19" Text="{icons:PhosphorIcon seal-check}"/>
+                        </RadioButton>
+                    </StackPanel>
+                    <!-- ░░░ TIRA DE ANOTAÇÃO NO RAIL (Plano 17 T3) ░░░ — as MESMAS ferramentas da pílula
+                         flutuante, em layout VERTICAL, abaixo dos 4 ícones de painel. Visível só quando a
+                         preferência é "barra lateral" (MenuAnotacaoNaBarraLateral). Um ScrollViewer garante
+                         que a tira NUNCA estoure o rail (janela baixa -> rola por dentro; alta -> cabe tudo).
+                         É o ÚLTIMO filho (LastChildFill) -> preenche o miolo do topo ao rodapé. Colapsado
+                         (modo flutuante) não ocupa espaço: layout do rail idêntico ao de hoje.
+                         (Plano 20: o ⚙ Configurações saiu daqui para a barra superior, ao lado do Sobre.) -->
+                    <ScrollViewer x:Name="AnotacaoRailStrip" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                  Style="{StaticResource mPdf.ScrollViewer.Fino}"
+                                  Visibility="{Binding MenuAnotacaoNaBarraLateral, Converter={StaticResource BoolToVis}}">
+                        <StackPanel HorizontalAlignment="Center" Margin="0,8,0,8">
+                            <Border Height="1" Width="30" Margin="0,0,0,8" HorizontalAlignment="Center"
+                                    Background="{DynamicResource Cor.BordaSutil}"/>
+                            <views:AnnotationToolsView x:Name="RailAnnotationTools" Orientation="Vertical" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <!-- ░░░░░░░░░░░░░░░░ PAINEL ESQUERDO (238px) ░░░░░░░░░░░░░░░░
+                 Estrutura/fiação preservadas do Plano 12 (Style mPdf.Border.Painel — ThemeWiringTests;
+                 TabControl com as 4 abas Miniaturas/Sumário/Campos/Assinaturas na MESMA ordem, x:Name
+                 PanelTabs — SumarioTab/Campos tests). O interior detalhado das views é T3. O que muda no
+                 T2: cantos achatados + fundo FundoPainel + a tira de abas NATIVA some (o activity rail
+                 dirige a seleção); um cabeçalho mostra o nome do painel ativo. -->
+            <Border x:Name="ThumbnailsPanelBorder" DockPanel.Dock="Left" Width="238"
+                    Style="{StaticResource mPdf.Border.Painel}"
+                    Background="{DynamicResource Cor.FundoPainel}" CornerRadius="0" BorderThickness="0,0,1,0" Padding="0">
+                    <Border.Visibility>
+                        <MultiBinding Converter="{StaticResource DocEPainelVisivel}">
+                            <Binding Path="SelectedDocument"/>
+                            <Binding Path="ThumbnailsVisible"/>
+                        </MultiBinding>
+                    </Border.Visibility>
+                <DockPanel>
+                    <Border DockPanel.Dock="Top" Height="40" BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,0,0,1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="{Binding SelectedIndex, ElementName=PanelTabs, Converter={StaticResource IndiceParaTitulo}}"
+                                       Margin="15,0,0,0" VerticalAlignment="Center"
+                                       FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                            <!-- Fix painel recolhível: botão discreto do cabeçalho — recolhe o painel
+                                 (ThumbnailsVisible=false) sem depender do rail. -->
+                            <Button Grid.Column="1" x:Name="CollapsePanelButton" Click="CollapsePanelButton_Click"
+                                    ToolTip="Recolher painel" Width="24" Height="24" Margin="0,0,6,0"
+                                    Style="{StaticResource mPdf.Button.Status}">
+                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="13" Text="{icons:PhosphorIcon caret-left}"/>
+                            </Button>
+                        </Grid>
+                    </Border>
+                    <TabControl x:Name="PanelTabs" BorderThickness="0" Padding="0" Background="Transparent">
+                        <TabControl.Template>
+                            <ControlTemplate TargetType="TabControl">
+                                <!-- Só o conteúdo do painel selecionado; a tira de abas nativa some
+                                     (o activity rail é quem seleciona). SelectedIndex continua válido
+                                     e realiza o container da aba ativa (FindDescendant<TreeView> etc.). -->
+                                <ContentPresenter ContentSource="SelectedContent"/>
+                            </ControlTemplate>
+                        </TabControl.Template>
+                        <TabItem Header="Miniaturas">
+                            <views:ThumbnailsPanel x:Name="ThumbnailsRail" DataContext="{Binding SelectedDocument}"/>
+                        </TabItem>
+                        <TabItem Header="Sumário">
+                            <views:OutlineView DataContext="{Binding SelectedDocument}"/>
+                        </TabItem>
+                        <TabItem Header="Campos">
+                            <views:FormPanel DataContext="{Binding SelectedDocument}"/>
+                        </TabItem>
+                        <TabItem Header="Assinaturas">
+                            <views:SignaturePanel DataContext="{Binding SelectedDocument}"/>
+                        </TabItem>
+                    </TabControl>
+                </DockPanel>
+            </Border>
+
+            <!-- ░░░░░░░░░░░░░░░░ ÁREA DE DOCUMENTOS (abas + leitor/organizador) ░░░░░░░░░░░░░░░░
+                 x:Name Tabs, ItemsSource/SelectedItem e ContentTemplate preservados (dezenas de testes
+                 de integração dependem da árvore de leitor/organizador). Só o VISUAL das abas muda
+                 (tira escura #141522, aba ativa #161826 + marca azul no topo — via o template global de
+                 TabItem, corrigido; o bug do "White" selecionado do Plano 12 some). -->
+            <!-- Área de documentos: as abas/leitor (Tabs) + a tela de boas-vindas por cima, visível SÓ
+                 quando não há documento (SelectedDocument == null). WelcomeView vem DEPOIS de Tabs na
+                 árvore, então FindDescendant<TabControl> continua achando o PanelTabs (painel esquerdo,
+                 mais acima na árvore) primeiro — WelcomeView não tem TabControl. -->
+            <Grid>
+            <TabControl x:Name="Tabs" ItemsSource="{Binding Documents}" SelectedItem="{Binding SelectedDocument}"
+                        Background="{DynamicResource Cor.FundoDocTabs}" BorderThickness="0" Padding="0">
+                <TabControl.ItemTemplate>
+                    <DataTemplate DataType="{x:Type vm:DocumentViewModel}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="13" Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon file-text}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Title}" Margin="9,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                            <Button Margin="9,0,0,0" Padding="2,0" Style="{StaticResource mPdf.Button.Status}"
+                                    ToolTip="Fechar aba"
+                                    Command="{Binding DataContext.CloseDocumentCommand, RelativeSource={RelativeSource AncestorType=TabControl}}"
+                                    CommandParameter="{Binding}">
+                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12" Text="{icons:PhosphorIcon x}"/>
+                            </Button>
+                        </StackPanel>
+                    </DataTemplate>
+                </TabControl.ItemTemplate>
+                <TabControl.ContentTemplate>
+                    <DataTemplate DataType="{x:Type vm:DocumentViewModel}">
+                        <!-- Organizador SUBSTITUI o leitor enquanto IsOrganizerOpen (Grid com os 2
+                             sobrepostos, só um Visible) — preservado do Plano 12. -->
+                        <Grid>
+                            <views:PdfViewerControl>
+                                <views:PdfViewerControl.Style>
+                                    <Style TargetType="views:PdfViewerControl">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsOrganizerOpen}" Value="True">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </views:PdfViewerControl.Style>
+                            </views:PdfViewerControl>
+                            <views:PageOrganizerView Visibility="{Binding IsOrganizerOpen, Converter={StaticResource BoolToVis}}"/>
+                        </Grid>
+                    </DataTemplate>
+                </TabControl.ContentTemplate>
+            </TabControl>
+            <views:WelcomeView Visibility="{Binding SelectedDocument, Converter={StaticResource NuloParaVisInverso}}"/>
+
+            <!-- ░░░ BARRA DE ANOTAÇÃO FLUTUANTE (Plano 14 T5) ░░░ — pílula de CHROME sobreposta ao viewer,
+                 centralizada embaixo. NÃO toca a geometria/seleção/caixa/adorner do render (PdfViewerControl
+                 intocado): é uma camada sobreposta que só HOSPEDA botões, ligados aos comandos de anotação
+                 EXISTENTES (ApplyMarkup/Toggle*Tool/SelectColor*/galeria de carimbos/ToggleImageTool — os
+                 MESMOS que viviam na toolbar do Plano 12, agora nesta pílula). DataContext = MainViewModel
+                 (as ferramentas de tinta/forma são de SelectedDocument; a galeria de carimbos é do
+                 MainViewModel). Visível só com documento aberto e FORA do modo organizador. A sombra/raio
+                 são chrome (fora do caminho de render vigiado pela guarda estrutural). -->
+            <Border x:Name="AnotacaoBar" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,22"
+                    Background="{DynamicResource Cor.AnotacaoPilula}" BorderBrush="{DynamicResource Cor.Borda}"
+                    BorderThickness="1" CornerRadius="13" Padding="8,7">
+                <Border.Effect>
+                    <DropShadowEffect Color="#000000" BlurRadius="40" ShadowDepth="14" Opacity="0.55"/>
+                </Border.Effect>
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding SelectedDocument, Converter={StaticResource NullToVis}}" Value="Visible">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding SelectedDocument.IsOrganizerOpen}" Value="True">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                            <!-- Plano 17 (Task 3): quando o menu de anotação está na barra lateral, a pílula
+                                 flutuante SOME (as mesmas ferramentas aparecem na tira do rail). Trigger por
+                                 último = vence os anteriores quando ativo. -->
+                            <DataTrigger Binding="{Binding MenuAnotacaoNaBarraLateral}" Value="True">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <!-- Plano 17 (Task 3): as ferramentas viraram um controle reutilizável (AnnotationToolsView)
+                     — aqui em layout HORIZONTAL. As MESMAS definições/comandos servem à tira vertical do
+                     rail (ver AnotacaoRailStrip). -->
+                <views:AnnotationToolsView x:Name="PillAnnotationTools" Orientation="Horizontal"/>
+            </Border>
+            </Grid>
+        </DockPanel>
+    </Border>
+</Window>
