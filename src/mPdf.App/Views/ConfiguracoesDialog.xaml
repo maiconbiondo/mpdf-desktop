@@ -1,0 +1,127 @@
+<Window x:Class="mPdf.App.Views.ConfiguracoesDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        Title="Configurações" Width="484" SizeToContent="Height" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False" ResizeMode="NoResize" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" FontFamily="{DynamicResource Fonte.Inter}">
+    <Window.Resources>
+        <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — mesmo motivo/mesma nota de MainWindow.xaml
+             (Application.Current fica null nas sondas STA que constroem este diálogo direto). -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
+    </Window.Resources>
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <DockPanel>
+            <!-- Header: ícone-gradiente (mesmo padrão de ExportImageDialog/BatchSignDialog) + título +
+                 subtítulo. Arrastável pelo cabeçalho — mesma UX de janela sem moldura dos outros diálogos. -->
+            <Border DockPanel.Dock="Top" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                    BorderThickness="0,0,0,1" Padding="22,18" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <StackPanel Orientation="Horizontal">
+                    <Border Style="{StaticResource mPdf.Dialog.IconeHeader}">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="17" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon gear-six}"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,0,0">
+                        <TextBlock Text="Configurações" Style="{StaticResource mPdf.Dialog.Titulo}"/>
+                        <TextBlock Text="Aparência e atualizações do mPDF" Style="{StaticResource mPdf.Dialog.Subtitulo}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Rodapé: Fechar. -->
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Cor.FundoDialogoRodape}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,13,13" Padding="22,16">
+                <Button Content="Fechar" HorizontalAlignment="Right" IsCancel="True"
+                        Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+            </Border>
+
+            <StackPanel Margin="24,22">
+                <!-- Toggle de TEMA (escuro/claro) — MIGRADO do Sobre (Plano 14 T1). Ao vivo: troca o
+                     dicionário de tokens + persiste. -->
+                <StackPanel>
+                    <CheckBox x:Name="TemaEscuroCheckBox" Content="Tema escuro" IsChecked="{Binding TemaEscuro}" Style="{StaticResource mPdf.Check}"/>
+                    <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}" Margin="27,4,0,0"
+                               Text="Alterna entre o tema escuro (padrão) e o tema claro. A mudança é aplicada na hora e fica salva."/>
+                </StackPanel>
+
+                <!-- "Nitidez extra do texto" — MIGRADO do Sobre (Plano 13), opt-in. Ao vivo: re-renderiza
+                     todo documento aberto. -->
+                <StackPanel Margin="0,18,0,0">
+                    <CheckBox x:Name="NitidezExtraCheckBox" Content="Nitidez extra do texto" IsChecked="{Binding NitidezExtra}" Style="{StaticResource mPdf.Check}"/>
+                    <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}" Margin="27,4,0,0"
+                               Text="Deixa o texto mais nítido a 100% de zoom, porém consome mais memória e pode deixar a navegação mais lenta em documentos grandes. Recomendado só se o texto parecer apagado. Padrão: desligado."/>
+                </StackPanel>
+
+                <!-- Posição do menu de anotação (Plano 17 T3) — checkbox no mesmo estilo dos toggles acima.
+                     Desmarcado = pílula flutuante (padrão); marcado = tira vertical de ícones no rail. Ao
+                     vivo: OnMenuAnotacaoNaBarraLateralChanged persiste e troca a apresentação na hora. -->
+                <StackPanel Margin="0,18,0,0">
+                    <CheckBox x:Name="MenuLateralCheckBox" Content="Menu de anotação na barra lateral"
+                              IsChecked="{Binding MenuAnotacaoNaBarraLateral}" Style="{StaticResource mPdf.Check}"/>
+                    <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}" Margin="27,4,0,0"
+                               Text="Desmarcado: a barra de ferramentas de anotação flutua no centro-inferior (padrão). Marcado: as mesmas ferramentas viram uma tira vertical de ícones na barra lateral, acima do botão de configurações."/>
+                </StackPanel>
+
+                <Border BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0" Margin="0,20,0,18"/>
+
+                <!-- Área de atualização — MIGRADA do Sobre (Plano 11): um bloco por estado
+                     (ConfiguracoesEstado), Visibility ligada a bools do VM. -->
+                <StackPanel>
+                    <TextBlock Text="Atualização" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,10"/>
+
+                    <Button x:Name="VerificarButton" Content="Verificar atualização" HorizontalAlignment="Left"
+                            Command="{Binding VerificarAtualizacaoCommand}"
+                            Visibility="{Binding PodeVerificar, Converter={StaticResource BoolToVis}}"
+                            Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+
+                    <TextBlock Text="Verificando…" Foreground="{DynamicResource Cor.TextoSecundario}"
+                               Visibility="{Binding IsVerificando, Converter={StaticResource BoolToVis}}"/>
+
+                    <!-- "Já na versão mais recente": cartão verde-água com check (fiel ao redesenho). -->
+                    <Border Background="#123EC1A7" BorderBrush="#473EC1A7" BorderThickness="1" CornerRadius="10"
+                            Padding="14,12" Visibility="{Binding IsAtualizado, Converter={StaticResource BoolToVis}}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="18" Foreground="#FF3EC1A7"
+                                       VerticalAlignment="Center" Margin="0,0,10,0" Text="{icons:PhosphorIcon check-circle}"/>
+                            <TextBlock Text="Você já está na versão mais recente." FontSize="12.5" Foreground="#FF9EE6D6"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock x:Name="ErroText" Text="{Binding MensagemErro}" Foreground="{DynamicResource Cor.Erro}"
+                               TextWrapping="Wrap" Visibility="{Binding IsErro, Converter={StaticResource BoolToVis}}"/>
+
+                    <StackPanel Visibility="{Binding IsDisponivel, Converter={StaticResource BoolToVis}}">
+                        <TextBlock FontWeight="Bold" Foreground="{DynamicResource Cor.TextoPrimario}">
+                            <Run Text="Nova versão disponível: "/>
+                            <Run Text="{Binding AtualizacaoDisponivel.TagVersao}"/>
+                        </TextBlock>
+                        <TextBlock Text="{Binding AtualizacaoDisponivel.Notas}" TextWrapping="Wrap" MaxHeight="90"
+                                   Foreground="{DynamicResource Cor.TextoSecundario}"
+                                   Margin="0,4,0,10" TextTrimming="CharacterEllipsis"/>
+                        <Button x:Name="BaixarButton" Content="Baixar e instalar" HorizontalAlignment="Left"
+                                Command="{Binding BaixarEInstalarCommand}" Style="{StaticResource mPdf.Button.DialogPrimario}"/>
+                    </StackPanel>
+
+                    <StackPanel Visibility="{Binding IsBaixando, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Baixando atualização…" Margin="0,0,0,4" Foreground="{DynamicResource Cor.TextoPrimario}"/>
+                        <ProgressBar Height="14" Minimum="0" Maximum="{Binding BytesTotais}" Value="{Binding BytesBaixados}"/>
+                    </StackPanel>
+
+                    <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Cor.TextoSecundario}"
+                               Visibility="{Binding IsAguardandoInstalacao, Converter={StaticResource BoolToVis}}">
+                        <Run Text="Atualização baixada e verificada. Você pode instalá-la mais tarde executando:"/>
+                        <LineBreak/>
+                        <Run Text="{Binding CaminhoArquivoBaixado}" FontFamily="Consolas"/>
+                    </TextBlock>
+                </StackPanel>
+            </StackPanel>
+        </DockPanel>
+    </Border>
+</Window>
