@@ -1,0 +1,57 @@
+<UserControl x:Class="mPdf.App.Views.SearchBar"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:icons="clr-namespace:mPdf.App.Icons">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+    <!-- Escape fecha; Enter/Shift+Enter navegam sem precisar tirar o foco do campo de busca — os
+         InputBindings aqui são checados enquanto o KeyDown borbulha por dentro deste UserControl
+         (o QueryBox é descendente dele), então funcionam com o foco no TextBox. -->
+    <UserControl.InputBindings>
+        <KeyBinding Key="Escape" Command="{Binding CloseCommand}"/>
+        <KeyBinding Key="Enter" Command="{Binding NextCommand}"/>
+        <KeyBinding Key="Enter" Modifiers="Shift" Command="{Binding PreviousCommand}"/>
+    </UserControl.InputBindings>
+    <!-- Plano 14 (Task 5): barra de busca escura (#1A1C29) no topo do viewer quando aberta. Ligada à
+         busca EXISTENTE (Query/ResultCountLabel/PreviousCommand/NextCommand/CloseCommand/IsOpen) — só o
+         VISUAL muda; o destaque das ocorrências na página é do pipeline de render, INTOCADO.
+         Visibility no Border (filho), não na raiz do UserControl: StaticResource aninhado dentro de um
+         Binding numa propriedade da PRÓPRIA raiz não enxerga o UserControl.Resources dessa mesma raiz
+         (quirk conhecido do WPF); um filho já enxerga. Collapsed no filho colapsa o layout do
+         DockPanel.Dock="Top" pai (UserControl) do mesmo jeito. -->
+    <Border Background="{DynamicResource Cor.Superficie}" BorderBrush="{DynamicResource Cor.BordaSutil}"
+            BorderThickness="0,0,0,1" Padding="16,9"
+            Visibility="{Binding IsOpen, Converter={StaticResource BoolToVis}}">
+        <DockPanel LastChildFill="False">
+            <!-- Fechar (x) empurrado para a extrema direita (mockup: flex:1 antes dele). -->
+            <Button DockPanel.Dock="Right" Command="{Binding CloseCommand}" Style="{DynamicResource mPdf.Busca.Nav}" ToolTip="Fechar (Esc)">
+                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon x}"/>
+            </Button>
+            <!-- Campo de entrada escuro com lupa + termo. -->
+            <Border DockPanel.Dock="Left" Background="{DynamicResource Cor.FundoRail}" BorderBrush="{DynamicResource Cor.Borda}"
+                    BorderThickness="1" CornerRadius="7" Width="280" MinHeight="34" Padding="10,0">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" VerticalAlignment="Center"
+                               Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon magnifying-glass}"/>
+                    <TextBox x:Name="QueryBox" Width="228" Margin="8,0,0,0" VerticalContentAlignment="Center"
+                             Background="Transparent" BorderThickness="0" FontSize="13"
+                             Foreground="{DynamicResource Cor.TextoPrimario}"
+                             CaretBrush="{DynamicResource Cor.TextoPrimario}"
+                             SelectionBrush="{DynamicResource Cor.Primaria}"
+                             Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}"/>
+                </StackPanel>
+            </Border>
+            <!-- "N de M" (contagem real). -->
+            <TextBlock DockPanel.Dock="Left" Text="{Binding ResultCountLabel}" Foreground="{DynamicResource Cor.TextoSecundario}"
+                       VerticalAlignment="Center" FontSize="12" Margin="12,0" MinWidth="70"/>
+            <!-- Anterior / Próxima. -->
+            <Button DockPanel.Dock="Left" Command="{Binding PreviousCommand}" Style="{DynamicResource mPdf.Busca.Nav}" ToolTip="Anterior (Shift+Enter)">
+                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon caret-up}"/>
+            </Button>
+            <Button DockPanel.Dock="Left" Command="{Binding NextCommand}" Style="{DynamicResource mPdf.Busca.Nav}" ToolTip="Próxima (Enter)">
+                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon caret-down}"/>
+            </Button>
+        </DockPanel>
+    </Border>
+</UserControl>

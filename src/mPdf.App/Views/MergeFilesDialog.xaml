@@ -1,0 +1,121 @@
+<Window x:Class="mPdf.App.Views.MergeFilesDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:mPdf.App.Views"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        Title="Juntar documentos" Height="452" Width="512" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False" ResizeMode="NoResize" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" FontFamily="{DynamicResource Fonte.Inter}">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — mesmo motivo de MainWindow.xaml
+                     (Application.Current fica null nas sondas STA que constroem este diálogo direto). -->
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <!-- Task 2 (Plano 7): sufixo "(imagem)" nas linhas de imagem — ver doc XML de ImageFileLabelConverter. -->
+            <local:ImageFileLabelConverter x:Key="ImageFileLabelConverter"/>
+        </ResourceDictionary>
+    </Window.Resources>
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <DockPanel>
+            <!-- Header. -->
+            <Border DockPanel.Dock="Top" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                    BorderThickness="0,0,0,1" Padding="22,18" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <StackPanel Orientation="Horizontal">
+                    <Border Style="{StaticResource mPdf.Dialog.IconeHeader}">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="17" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon arrows-merge}"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,0,0">
+                        <TextBlock Text="Juntar documentos" Style="{StaticResource mPdf.Dialog.Titulo}"/>
+                        <TextBlock Text="Imagens são convertidas em PDF" Style="{StaticResource mPdf.Dialog.Subtitulo}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Rodapé: Cancelar / OK. -->
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Cor.FundoDialogoRodape}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,13,13" Padding="22,16">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancelar" Margin="0,0,10,0" IsCancel="True" Click="Cancel_Click"
+                            Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                    <Button Content="OK" IsDefault="True" Click="Ok_Click" Style="{StaticResource mPdf.Button.DialogPrimario}"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Barra de ações (Adicionar/Remover · subir/descer). -->
+            <Grid DockPanel.Dock="Bottom" Margin="22,0,22,18">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Button Grid.Column="0" Click="Add_Click" Margin="0,0,8,0" Style="{StaticResource mPdf.Button.DialogSuaveAzul}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" VerticalAlignment="Center"
+                                   Margin="0,0,6,0" Text="{icons:PhosphorIcon plus}"/>
+                        <TextBlock Text="Adicionar arquivos…" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button Grid.Column="1" Content="Remover" Click="Remove_Click" Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+                <Button Grid.Column="3" Click="MoveUp_Click" Width="34" Padding="0" Margin="0,0,8,0" ToolTip="Mover para cima"
+                        Style="{StaticResource mPdf.Button.DialogNeutro}">
+                    <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon arrow-up}"/>
+                </Button>
+                <Button Grid.Column="4" Click="MoveDown_Click" Width="34" Padding="0" ToolTip="Mover para baixo"
+                        Style="{StaticResource mPdf.Button.DialogNeutro}">
+                    <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon arrow-down}"/>
+                </Button>
+            </Grid>
+
+            <!-- Corpo: lista ordenável de arquivos. -->
+            <DockPanel Margin="22,18,22,12">
+                <TextBlock DockPanel.Dock="Top" Text="Arquivos a juntar, na ordem desejada:"
+                           Style="{StaticResource mPdf.Dialog.Label}" Margin="0,0,0,10"/>
+                <ListBox x:Name="FilesList" ItemsSource="{Binding Files}" Background="Transparent" BorderThickness="0"
+                         Padding="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="Margin" Value="0,0,0,6"/>
+                            <Setter Property="Padding" Value="0"/>
+                            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <Border x:Name="Bd" Background="Transparent" BorderBrush="{DynamicResource Cor.Borda}"
+                                                BorderThickness="1" CornerRadius="8" Padding="12,10" SnapsToDevicePixels="True">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="15"
+                                                           Foreground="{DynamicResource Cor.TextoDesabilitado}" VerticalAlignment="Center"
+                                                           Margin="0,0,11,0" Text="{icons:PhosphorIcon dots-six-vertical}"/>
+                                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17"
+                                                           Foreground="{DynamicResource Cor.IconeAzul}" VerticalAlignment="Center"
+                                                           Margin="0,0,11,0" Text="{icons:PhosphorIcon file-text}"/>
+                                                <TextBlock Text="{Binding Converter={StaticResource ImageFileLabelConverter}}"
+                                                           FontSize="12.5" Foreground="{DynamicResource Cor.TextoPrimario}"
+                                                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                            </StackPanel>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                                            </Trigger>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#1A4D8FD6"/>
+                                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                </ListBox>
+            </DockPanel>
+        </DockPanel>
+    </Border>
+</Window>
