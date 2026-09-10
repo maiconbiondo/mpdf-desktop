@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- DocumentFormat.OpenXml (MIT, Microsoft) — dependência ÚNICA para gerar .docx (T1) e .xlsx (T2):
+         mesmo pacote cobre WordprocessingDocument e SpreadsheetDocument, sem depender de ClosedXML
+         (que traria SixLabors.Fonts, licença não totalmente permissiva em versões recentes — ver
+         docs/superpowers/specs/2026-09-01-exportar-docx-xlsx-design.md, secao 9). Todas as deps
+         transitivas confirmadas permissivas (MIT/BSD/Apache 2.0) — ver task-1-report.md. SEM rede,
+         SEM iText/Docnet. Licença em docs/licencas/LICENCA-DocumentFormat.OpenXml-MIT.txt. -->
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.3.0" />
+  </ItemGroup>
+
+</Project>
