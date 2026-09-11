@@ -1,0 +1,221 @@
+<UserControl x:Class="mPdf.App.Views.SignaturePanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:icons="clr-namespace:mPdf.App.Icons"
+             xmlns:vm="clr-namespace:mPdf.App.ViewModels">
+    <!-- Aba "Assinaturas" (Task 4, Plano 4) — DataContext esperado: um DocumentViewModel, mesmo contrato
+         de ThumbnailsPanel/OutlineView/FormPanel (ver MainWindow.xaml, TabControl dentro do painel
+         esquerdo colapsável). Somente-LEITURA (nenhum editor, ao contrário de FormPanel) — exemplar mais
+         próximo: OutlineView (lista + estado vazio via Style/DataTrigger em HasOutline). Rodapé
+         "Validação oficial" SEMPRE visível (brief) — fora do Grid condicional vazio/populado, DockPanel
+         garante isso sem duplicar o TextBlock nos 2 estados. -->
+    <!-- Task 2 (Plano 12, rider) — mescla o tema LOCALMENTE, mesmo motivo de ThumbnailsPanel.xaml/
+         OutlineView.xaml (construído EAGER dentro de MainWindow.xaml). -->
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
+    </UserControl.Resources>
+    <DockPanel Background="{DynamicResource Cor.FundoPainel}">
+        <!-- Rodapé fixo (brief, texto EXATO) — DockPanel.Dock="Bottom" garante presença em QUALQUER
+             estado (vazio ou com lista), nunca escondido atrás do estado vazio/populado abaixo.
+             Foreground era #FF999999 (2.65:1 contra o novo Cor.Superficie claro — FALHA AA, recomputado
+             ao revisar este rider); Cor.TextoSecundario já é 6.02:1 comprovado (ThemeContrastTests). -->
+        <TextBlock DockPanel.Dock="Bottom" Text="Validação oficial: validar.iti.gov.br"
+                   Foreground="{DynamicResource Cor.IconeAzul}" FontSize="11" TextWrapping="Wrap" Margin="12,8,12,12"
+                   Cursor="Hand" TextAlignment="Center"/>
+
+        <!-- Estado vazio pt-BR (brief, texto EXATO) — visível por padrão, Collapsed via DataTrigger
+             quando HasSignatures=True. Documento sem assinatura nenhuma (fixture-a4, por exemplo) ou o
+             1º refresh assíncrono ainda em voo (ver doc XML de DocumentViewModel.SignatureRows) caem
+             aqui — mesmo exemplar de OutlineView. -->
+        <TextBlock Text="Este documento não tem assinaturas." Foreground="{DynamicResource Cor.TextoSecundario}" FontSize="12"
+                   TextWrapping="Wrap" Margin="12" TextAlignment="Center" VerticalAlignment="Top">
+            <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                    <Setter Property="Visibility" Value="Visible"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasSignatures}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </TextBlock.Style>
+        </TextBlock>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ScrollViewer.Style>
+                <Style TargetType="ScrollViewer">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasSignatures}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ScrollViewer.Style>
+            <ItemsControl ItemsSource="{Binding SignatureRows}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="{x:Type vm:SignatureRowViewModel}">
+                        <!-- Cartão "Assinatura válida" verde-água (Plano 14 T3): borda rgba(62,193,167,.3),
+                             fundo rgba(62,193,167,.07). O ESTADO (válida/inválida), a cor e o glifo são
+                             dirigidos por Data.IntegrityValid — os DADOS reais da verificação de
+                             assinatura existente; só o VISUAL muda. -->
+                        <Border Margin="12,6" CornerRadius="10" Padding="12"
+                                Background="#123EC1A7" BorderBrush="#4D3EC1A7" BorderThickness="1">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <!-- Nome do signatário (+ tipo e-CPF/e-CNPJ via SignerLine, composto no VM).
+                                     Declarado PRIMEIRO na ordem da árvore (Grid.Row=1, aparece visualmente
+                                     SOB o cabeçalho) e leva o MouseLeftButtonUp: os testes acham o PRIMEIRO
+                                     TextBlock com DataContext=linha e disparam o clique NELE — e
+                                     MouseLeftButtonUp é evento DIRETO (não borbulha), então o handler
+                                     PRECISA estar exatamente nesse TextBlock. Cursor Hand só com carimbo
+                                     (HasStamp). -->
+                                <TextBlock Grid.Row="1" Text="{Binding SignerLine}" FontSize="12.5" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource Cor.TextoPrimario}" Margin="0,0,0,3" TextWrapping="Wrap"
+                                           MouseLeftButtonUp="Row_MouseLeftButtonUp">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Cursor" Value="Arrow"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HasStamp}" Value="True">
+                                                    <Setter Property="Cursor" Value="Hand"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                                <!-- Cabeçalho: selo + estado (Grid.Row=0, visualmente no topo) -->
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,9">
+                                    <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="17"
+                                               Text="{icons:PhosphorIcon seal-check}" VerticalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{DynamicResource Cor.Acento}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Data.IntegrityValid}" Value="False">
+                                                        <Setter Property="Foreground" Value="{DynamicResource Cor.Erro}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock FontSize="12.5" FontWeight="Bold" Margin="7,0,0,0" VerticalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="Assinatura válida"/>
+                                                <Setter Property="Foreground" Value="#FF7AD9C5"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Data.IntegrityValid}" Value="False">
+                                                        <Setter Property="Text" Value="Assinatura inválida"/>
+                                                        <Setter Property="Foreground" Value="{DynamicResource Cor.Erro}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </StackPanel>
+
+                                <!-- Detalhes + divisória + itens de verificação (Grid.Row=2, sob o nome). -->
+                                <StackPanel Grid.Row="2">
+                                <!-- Detalhes do certificado (mudo) — CPF/CNPJ mascarado, data, motivo. -->
+                                <TextBlock Text="{Binding DocumentNumberLabel}" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}"
+                                           Margin="0,0,0,1" Visibility="{Binding HasDocumentNumber, Converter={StaticResource BoolToVis}}"/>
+                                <TextBlock Text="{Binding DateLabel}" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}" Margin="0,0,0,1"/>
+                                <TextBlock Text="{Binding ReasonLabel}" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}" TextWrapping="Wrap"/>
+
+                                <!-- Divisória (rgba(233,233,237,.10)). -->
+                                <Border Height="1" Background="#1AE9E9ED" Margin="0,10"/>
+
+                                <!-- Íntegra / Violada — indicador LOAD-BEARING: glifo + cor + texto. Grid
+                                     (Auto ícone + * texto) pra o rótulo QUEBRAR dentro do painel de 238px
+                                     em vez de estourar/cortar (StackPanel horizontal daria largura
+                                     infinita ao texto — sem wrap). -->
+                                <Grid Margin="0,0,0,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="13" VerticalAlignment="Top" Margin="0,1,6,0">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="{icons:PhosphorIcon check-circle}"/>
+                                                <Setter Property="Foreground" Value="#FF7AD9C5"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Data.IntegrityValid}" Value="False">
+                                                        <Setter Property="Text" Value="{icons:PhosphorIcon prohibit}"/>
+                                                        <Setter Property="Foreground" Value="{DynamicResource Cor.Erro}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Grid.Column="1" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="Íntegra — documento não alterado"/>
+                                                <Setter Property="Foreground" Value="#FF7AD9C5"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Data.IntegrityValid}" Value="False">
+                                                        <Setter Property="Text" Value="Violada — documento foi alterado"/>
+                                                        <Setter Property="Foreground" Value="{DynamicResource Cor.Erro}"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+
+                                <!-- Cadeia confiável (com tooltip explicando "não" != forjada). -->
+                                <Grid Margin="0,0,0,5" ToolTip="{Binding ChainTrustedTooltip}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="13" Foreground="{DynamicResource Cor.TextoSecundario}"
+                                               VerticalAlignment="Top" Margin="0,1,6,0" Text="{icons:PhosphorIcon shield-check}"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding ChainTrustedLabel}" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}"
+                                               TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                </Grid>
+
+                                <!-- Cobertura (documento inteiro / revisão anterior). -->
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="13" Foreground="{DynamicResource Cor.TextoSecundario}"
+                                               VerticalAlignment="Top" Margin="0,1,6,0" Text="{icons:PhosphorIcon shield-check}"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding CoverageLabel}" FontSize="11" Foreground="{DynamicResource Cor.TextoSecundario}"
+                                               TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                </Grid>
+
+                                <!-- DocMDP — só quando HasCertificationLabel. -->
+                                <Grid Margin="0,5,0,0"
+                                      Visibility="{Binding HasCertificationLabel, Converter={StaticResource BoolToVis}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="13" Foreground="{DynamicResource Cor.TextoSecundario}"
+                                               VerticalAlignment="Top" Margin="0,1,6,0" Text="{icons:PhosphorIcon seal}"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding CertificationLabel}" FontSize="11" FontStyle="Italic"
+                                               Foreground="{DynamicResource Cor.TextoSecundario}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                </Grid>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>
