@@ -1,0 +1,107 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+    Plano 14 (Task 1) — TOKENS de cor do TEMA ESCURO (o PADRÃO do app v2.0). Valores REAIS extraídos do
+    redesenho do Claude Design (docs/redesign-ref/mPDF Redesenho.dc.html). Este dicionário contém APENAS
+    os tokens `Cor.*` (SolidColorBrush por x:Key) — nenhuma estrutura/estilo (isso mora em mPdfTheme.xaml,
+    que referencia estes tokens por DynamicResource pra permitir a troca de tema AO VIVO).
+
+    Par escuro coexiste com Tokens.Claro.xaml (o tema do Plano 12, preservado) — MESMO conjunto de x:Key,
+    valores diferentes. ThemeService troca qual dos dois está mesclado em Application.Resources
+    (ver Services/ThemeService.cs) e AppConfig.ThemeMode persiste a escolha (default Escuro).
+
+    CONTRASTE AA (ThemeContrastTests recomputa lendo ESTES brushes, com composição de alpha sobre o fundo):
+    todos os pares texto/fundo REAIS batem >= 4.5:1 no escuro (medido: TextoPrimario/Superficie 13.96:1;
+    TextoSecundario .70/Superficie 7.47:1; Sucesso/Superficie 7.56:1; Erro/Superficie 6.09:1; texto sobre
+    hover/pressed 10-12:1). TextoDesabilitado (.35, 2.87:1) é texto DESABILITADO — isento do AA por WCAG
+    1.4.3 e não figura na lista de pares do teste. Nenhum ajuste de token foi necessário.
+
+    Vários tokens têm ALPHA (< FF) de propósito — véus de branco (E9E9ED) sobre o escuro pra hover/pressed/
+    divisória/texto mudo: compõem sobre a superfície real embaixo (o compositor do WPF faz o blend), o que
+    dá profundidade sem precisar de N tons opacos por fundo. ThemeContrastTests compõe o alpha antes de
+    medir (o olho vê a cor RESULTANTE, não a com alpha).
+    -->
+
+    <!-- Azul interativo (primário) e verde-água (acento/assinatura) — os 2 acentos do redesenho. -->
+    <SolidColorBrush x:Key="Cor.Primaria" Color="#FF4D8FD6"/>
+    <SolidColorBrush x:Key="Cor.Acento" Color="#FF3EC1A7"/>
+
+    <!-- Superfície base de controles/painéis (command bar / inputs / cartões) e divisória. -->
+    <SolidColorBrush x:Key="Cor.Superficie" Color="#FF1A1C29"/>
+    <SolidColorBrush x:Key="Cor.Borda" Color="#26E9E9ED"/>
+
+    <!-- Texto: primário sólido, secundário (.70) e desabilitado (.35) como véus de branco. -->
+    <SolidColorBrush x:Key="Cor.TextoPrimario" Color="#FFE9E9ED"/>
+    <SolidColorBrush x:Key="Cor.TextoSecundario" Color="#B3E9E9ED"/>
+    <SolidColorBrush x:Key="Cor.TextoDesabilitado" Color="#59E9E9ED"/>
+
+    <!-- Estados de interação (sempre troca de Background sólida/véu, nunca Opacity/animação). -->
+    <SolidColorBrush x:Key="Cor.SuperficieHover" Color="#12E9E9ED"/>
+    <SolidColorBrush x:Key="Cor.SuperficiePressionada" Color="#1FE9E9ED"/>
+
+    <!-- Status semânticos (SignaturePanel ✔/✖ íntegra). -->
+    <SolidColorBrush x:Key="Cor.Sucesso" Color="#FF3EC1A7"/>
+    <SolidColorBrush x:Key="Cor.Erro" Color="#FFFF6B6B"/>
+
+    <!-- Fundos ESTRUTURAIS do shell (Plano 14 T2 os consome; definidos já no T1 pros DOIS temas). -->
+    <SolidColorBrush x:Key="Cor.FundoJanela" Color="#FF161826"/>
+    <SolidColorBrush x:Key="Cor.FundoViewer" Color="#FF0F1017"/>
+    <SolidColorBrush x:Key="Cor.FundoRail" Color="#FF12131D"/>
+    <SolidColorBrush x:Key="Cor.FundoPainel" Color="#FF181A27"/>
+    <SolidColorBrush x:Key="Cor.FundoTitulo" Color="#FF1C1E2C"/>
+
+    <!-- ===== SHELL escuro (Plano 14 T2): tokens de chrome novos, mesmos x:Key nos dois temas ===== -->
+    <!-- Tira de abas de documento (#141522) e aba ATIVA (#161826 = FundoJanela, papel semântico próprio). -->
+    <SolidColorBrush x:Key="Cor.FundoDocTabs" Color="#FF141522"/>
+    <SolidColorBrush x:Key="Cor.DocTabAtiva" Color="#FF161826"/>
+    <!-- Divisória sutil do redesenho (rgba(233,233,237,.07)) — mais fraca que Cor.Borda (.15). -->
+    <SolidColorBrush x:Key="Cor.BordaSutil" Color="#12E9E9ED"/>
+    <!-- Azul de ícone/marcador do redesenho. -->
+    <SolidColorBrush x:Key="Cor.IconeAzul" Color="#FFA9CDF1"/>
+    <SolidColorBrush x:Key="Cor.MarcadorAtivo" Color="#FF4D8FD6"/>
+    <!-- Botão "Assinar" destacado (borda/texto) + hover de fechar (perigo). -->
+    <SolidColorBrush x:Key="Cor.AssinarBorda" Color="#FF4D8FD6"/>
+    <SolidColorBrush x:Key="Cor.AssinarTexto" Color="#FFB7D5F2"/>
+    <SolidColorBrush x:Key="Cor.FecharHover" Color="#FFB00020"/>
+    <!-- Texto sobre botão primário sólido (#4D8FD6): escuro (#0F2033) pra contraste. -->
+    <SolidColorBrush x:Key="Cor.PrimariaTextoSobre" Color="#FF0F2033"/>
+
+    <!-- ===== DIÁLOGOS escuros (Plano 14 T4): superfície #1C1E2C, rodapé #191B28, ícone do header em
+         quadrado com gradiente azul. Mesmos x:Key nos dois temas. ===== -->
+    <SolidColorBrush x:Key="Cor.FundoDialogo" Color="#FF1C1E2C"/>
+    <SolidColorBrush x:Key="Cor.FundoDialogoRodape" Color="#FF191B28"/>
+    <LinearGradientBrush x:Key="Cor.DialogoIconeGrad" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#FF4D8FD6" Offset="0"/>
+        <GradientStop Color="#FF16304E" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- Gradientes de chrome (elevação/gradiente é PERMITIDO fora do caminho de render por página). -->
+    <LinearGradientBrush x:Key="Cor.FundoTituloGrad" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#FF1C1E2C" Offset="0"/>
+        <GradientStop Color="#FF191B28" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="Cor.AssinarFundo" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#FF15304F" Offset="0"/>
+        <GradientStop Color="#FF0F2135" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="Cor.AssinarFundoHover" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#FF1B3B60" Offset="0"/>
+        <GradientStop Color="#FF132840" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- ===== ORGANIZADOR + BARRA DE ANOTAÇÃO + BUSCA (Plano 14 T5), mesmos x:Key nos dois temas ===== -->
+    <!-- Pílula flutuante de anotação: rgba(30,32,48,.92) — chrome sólido (o blur do mockup não é
+         reproduzível barato/estável no WPF; fundo sólido escuro equivalente, ver report T5). -->
+    <SolidColorBrush x:Key="Cor.AnotacaoPilula" Color="#EB1E2030"/>
+    <!-- Célula (fundo do cartão de página) da grade do organizador — dark atrás do papel #F3F5FE. -->
+    <SolidColorBrush x:Key="Cor.OrganizadorCelula" Color="#FF1E2030"/>
+    <!-- Fundo dos botões de ação do organizador: rgba(233,233,237,.05). -->
+    <SolidColorBrush x:Key="Cor.OrganizadorAcaoFundo" Color="#0DE9E9ED"/>
+
+    <!-- ===== SCROLLBAR FINA (Plano 18 T1) ===== rgba(233,233,237,.14) do mockup do redesenho (thumb do
+         `::-webkit-scrollbar`); hover um pouco mais opaco (.22) — SEMPRE troca de Background sólida
+         (nunca Opacity fracionário/Effect), fiel à guarda estrutural do tema. -->
+    <SolidColorBrush x:Key="Cor.ScrollThumb" Color="#24E9E9ED"/>
+    <SolidColorBrush x:Key="Cor.ScrollThumbHover" Color="#38E9E9ED"/>
+
+</ResourceDictionary>

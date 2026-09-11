@@ -1,0 +1,1467 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+                    xmlns:icons="clr-namespace:mPdf.App.Icons"
+                    xmlns:conv="clr-namespace:mPdf.App.Converters">
+    <!--
+    Plano 12 (Task 1) — Sistema de tema visual do mPDF (CHROME-ONLY).
+
+    Objetivo: dar uma cara mais bonita/profissional ao app SEM tocar no pipeline de render (a
+    velocidade elogiada pelo usuário vem da virtualização da ListBox + PDFium, INTOCADOS aqui —
+    nenhum arquivo de Rendering/ViewModels de página é tocado por este dicionário).
+
+    PROIBIÇÃO ESTRUTURAL (ver ThemeStructuralTests): nenhum DropShadowEffect/BlurEffect/<*.Effect>,
+    nenhum BeginStoryboard/animação contínua, nenhum Opacity com valor fracionário (<1) em NADA
+    deste arquivo — hover/pressed/foco são SEMPRE troca de Background/BorderBrush SÓLIDO (barato:
+    só recompõe a pintura do Border, não recalcula layout nem invalida a árvore de render das
+    páginas). Brushes definidos aqui como recursos de nível de dicionário são congelados (Frozen)
+    automaticamente pelo WPF quando não têm binding/trigger de instância — compartilhados por
+    referência entre TODOS os controles que os usam, sem alocação por controle.
+
+    ESCOPO (KEYED vs GLOBAL — decisão registrada por controle, ver task-1-report.md para a tabela
+    completa):
+      - ToolBar/ToolBarTray/Separator/TabControl/TabItem/Menu/MenuItem/GroupBox: estilos GLOBAIS
+        (sem x:Key, TargetType implícito) — verificado por grep em todo src/mPdf.App/**/*.xaml que
+        NENHUM destes tipos aparece dentro de Views/PdfViewerControl.xaml (a única árvore visual de
+        RENDER/OVERLAY/adorner do app — página, seleção, caixa do carimbo, alças). Um estilo global
+        para estes tipos não pode vazar pra dentro do viewer.
+      - Button/Border: estilos KEYED (x:Key explícito, aplicados só onde referenciados). Button
+        aparece DENTRO do overlay de render (Views/PdfViewerControl.xaml: botões flutuantes
+        "✔ Assinar aqui" / "✖ Cancelar" do adorner da caixa de assinatura, sem x:Key hoje) — um
+        Style TargetType="Button" SEM x:Key restilizaria esses botões do overlay também, fora do
+        escopo desta task ("chrome only"). Border também aparece no overlay (o Border de CADA
+        página, x:Name="PageBorder", com Background="White" explícito e o DropShadowEffect já
+        existente ali — pré-existente, fora do escopo desta task) — um Style TargetType="Border"
+        global restilizaria o fundo/cantos de TODA página renderizada. Por isso os dois ficam KEYED
+        (mPdf.Button.Toolbar / mPdf.Button.Dialog / mPdf.Border.Painel) — quem quiser o visual novo
+        referencia via Style="{StaticResource ...}" explicitamente (Task 2 faz essa fiação no chrome;
+        Task 1 só disponibiliza os estilos, mesclados no App.xaml).
+    -->
+
+    <!-- ================================ TOKENS DE COR (movidos p/ dicionários trocáveis) ==============
+         Plano 14 (Task 1): os tokens `Cor.*` NÃO moram mais aqui. Foram separados em dois dicionários
+         de TOKENS trocáveis em runtime — Themes/Tokens.Escuro.xaml (o PADRÃO do app v2.0) e
+         Themes/Tokens.Claro.xaml (a paleta do Plano 12, preservada) — mesclados em nível de
+         Application.Resources (ver App.xaml) e trocados AO VIVO por Services/ThemeService.cs. Este
+         arquivo (a ESTRUTURA: estilos/templates) referencia cada cor por {DynamicResource Cor.*} —
+         DynamicResource (não StaticResource) é o que permite a troca ao vivo: a referência é resolvida
+         no runtime contra o escopo de recursos do ELEMENTO (subindo até Application.Resources, onde o
+         dicionário de tokens ATIVO está), então trocar o dicionário ativo re-pinta tudo sem reiniciar.
+         `Esp.*`/`Raio.*` continuam StaticResource aqui (não mudam entre temas — geometria, não cor).
+
+         Nota de escopo do DynamicResource: como o dicionário de tokens NÃO é mesclado localmente em
+         cada Window (só mPdfTheme.xaml é, pros estilos KEYED resolverem nas sondas STA), as janelas de
+         produção resolvem `Cor.*` subindo até Application.Resources — é por isso que a troca de tema
+         alcança a MainWindow e os diálogos (o merge local de mPdfTheme, sem tokens, não faz sombra ao
+         dicionário ativo do Application). Em sondas STA sem Application, `Cor.*` fica sem resolver
+         (DynamicResource não lançado, ao contrário de StaticResource) — inofensivo (as sondas de layout/
+         estilo não afirmam cor); a sonda de tema desta task mescla os tokens na própria janela pra
+         provar a resolução e a troca. -->
+
+    <!-- ============================ FAMÍLIAS DE FONTE (Plano 14 T1) ============================
+         Fontes embarcadas como Resource (ver mPdf.App.csproj) e expostas por pack URI. Invariantes de
+         tema (não mudam entre claro/escuro), por isso ficam aqui na estrutura, não nos tokens de cor.
+         Family names REAIS lidos das fontes (GlyphTypeface): "Inter" agrupa os 4 pesos estáticos
+         (400/500/600/700 -> Normal/Medium/SemiBold/Bold, escolhidos por FontWeight); Phosphor tem 3
+         famílias SEPARADAS por variante ("Phosphor"/"Phosphor-Fill"/"Phosphor-Bold" — o Win32 family
+         name de cada arquivo), compartilhando o MESMO code point por nome de ícone.
+
+         DEFAULT DE FONTE ADIADO PRO T2 (medido): setar FontFamily=Inter na MainWindow HOJE (sobre a
+         ToolBarTray atual, ainda não redesenhada) alarga os botões o bastante pra empurrar o último
+         botão da banda 0 pra dentro do overflow — a sonda de overflow (ViewerIntegrationTests) e a
+         ThemeWiringTests pegam isso. O T2 reconstrói a command bar já dimensionada pras métricas do
+         Inter e aplica a fonte lá. O T1 só EMBARCA + EXPÕE as fontes (Fonte.* + o helper Ph); a prova
+         de que Inter resolve/cobre acentos pt-BR está em ThemeSwapProbeTests/GlyphTypeface. -->
+    <!-- ============================ LOGO mPDF (Plano 14 T2) ============================
+         Vetor da logo do app (traduzido de Assets/logo.svg — documento navy #1D4E89, dobra #0F2E52,
+         linhas #7FA8D9, rubrica verde-água #3EC1A7). DrawingImage escala nítido em qualquer tamanho
+         (title bar 23px, estado vazio grande em T3), sem raster nem dependência de SVG. -->
+    <DrawingImage x:Key="Logo.mPDF">
+        <DrawingImage.Drawing>
+            <DrawingGroup>
+                <GeometryDrawing Brush="#1D4E89">
+                    <GeometryDrawing.Geometry>
+                        <RectangleGeometry Rect="38,16,180,224" RadiusX="15" RadiusY="15"/>
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#0F2E52" Geometry="M176,16 L218,16 L218,58 Z"/>
+                <GeometryDrawing Brush="#7FA8D9">
+                    <GeometryDrawing.Geometry><RectangleGeometry Rect="58,54,110,14" RadiusX="7" RadiusY="7"/></GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#7FA8D9">
+                    <GeometryDrawing.Geometry><RectangleGeometry Rect="58,76,90,14" RadiusX="7" RadiusY="7"/></GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#7FA8D9">
+                    <GeometryDrawing.Geometry><RectangleGeometry Rect="58,98,125,14" RadiusX="7" RadiusY="7"/></GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Geometry="M55,205 C85,165 115,255 140,195 C160,175 175,205 195,185">
+                    <GeometryDrawing.Pen>
+                        <Pen Thickness="12" StartLineCap="Round" EndLineCap="Round" LineJoin="Round">
+                            <Pen.Brush><SolidColorBrush Color="#3EC1A7"/></Pen.Brush>
+                        </Pen>
+                    </GeometryDrawing.Pen>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#3EC1A7">
+                    <GeometryDrawing.Geometry><EllipseGeometry Center="202,178" RadiusX="5" RadiusY="5"/></GeometryDrawing.Geometry>
+                </GeometryDrawing>
+            </DrawingGroup>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
+    <FontFamily x:Key="Fonte.Inter">pack://application:,,,/mPdf.App;component/Assets/Fonts/#Inter</FontFamily>
+    <FontFamily x:Key="Fonte.Phosphor">pack://application:,,,/mPdf.App;component/Assets/Fonts/#Phosphor</FontFamily>
+    <FontFamily x:Key="Fonte.PhosphorFill">pack://application:,,,/mPdf.App;component/Assets/Fonts/#Phosphor-Fill</FontFamily>
+    <FontFamily x:Key="Fonte.PhosphorBold">pack://application:,,,/mPdf.App;component/Assets/Fonts/#Phosphor-Bold</FontFamily>
+
+    <!-- ============================ ESCALA DE ESPAÇAMENTO ============================
+         Thickness (não Double): consumo real é Padding/Margin, cujo tipo é Thickness — um
+         recurso Double não converte automaticamente para Thickness via StaticResource (só via
+         string no XAML), então o token já nasce no tipo que os Setters abaixo realmente usam. -->
+    <Thickness x:Key="Esp.P">4</Thickness>
+    <Thickness x:Key="Esp.M">8</Thickness>
+    <Thickness x:Key="Esp.G">16</Thickness>
+
+    <!-- ================================ RAIOS DE CANTO ================================ -->
+    <CornerRadius x:Key="Raio.P">4</CornerRadius>
+    <CornerRadius x:Key="Raio.M">8</CornerRadius>
+
+    <!-- =========================== ToolBar / ToolBarTray =========================== -->
+    <Style TargetType="ToolBarTray">
+        <Setter Property="Background" Value="{DynamicResource Cor.Superficie}"/>
+    </Style>
+
+    <Style TargetType="ToolBar">
+        <Setter Property="Background" Value="{DynamicResource Cor.Superficie}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="BorderThickness" Value="0,0,0,1"/>
+        <Setter Property="Padding" Value="{StaticResource Esp.P}"/>
+    </Style>
+
+    <!-- Usado pelos separadores DENTRO da ToolBar (única aparição do tipo no app hoje, ver
+         MainWindow.xaml e PageOrganizerView.xaml — nenhum dentro do overlay de render). -->
+    <Style TargetType="Separator">
+        <Setter Property="Background" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="Margin" Value="4,4,4,4"/>
+    </Style>
+
+    <!-- ================================ TabControl / TabItem ================================
+         "Aba ativa com acento, inativa neutra" (brief): a aba SELECIONADA ganha uma faixa inferior
+         sólida em Cor.Acento (verde-água) + fundo branco + texto em Cor.TextoPrimario; as INATIVAS
+         ficam com fundo Cor.Superficie (neutro) + texto Cor.TextoSecundario. Texto branco sobre
+         Cor.Acento FALHA contraste (2.24:1, ver report) — por isso o acento aparece só como faixa
+         decorativa fina, nunca como fundo atrás de texto. TabControl fica com Setters simples (sem
+         ControlTemplate custom) — o template padrão já faz TemplateBinding de Background/
+         BorderBrush; retemplar o TabControl inteiro (PART_SelectedContentHost etc.) não é
+         necessário pro que o brief pede e adicionaria risco sem ganho visual. -->
+    <Style TargetType="TabControl">
+        <Setter Property="Background" Value="{DynamicResource Cor.Superficie}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="BorderThickness" Value="0,1,0,0"/>
+        <Setter Property="Padding" Value="0"/>
+    </Style>
+
+    <Style TargetType="TabItem">
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="FontWeight" Value="Normal"/>
+        <!-- Default 12,6 pra quem NÃO fixa Padding localmente (ex.: os TabItem gerados pelo
+             ItemContainerStyle implícito do TabControl de documentos, "Tabs" em MainWindow.xaml,
+             que não declara Padding próprio) — instâncias que JÁ fixam Padding localmente (as 4
+             abas do painel esquerdo, Padding="6,3" em MainWindow.xaml) sobrescrevem este default
+             normalmente (valor local > Setter de Style), DESDE que o ControlTemplate abaixo
+             respeite via TemplateBinding em vez de hardcodar — achado ao vivo na sonda visual:
+             a 1ª versão deste template hardcodava Padding="12,6" direto no Border, ignorando por
+             completo o Padding="6,3" já escrito em MainWindow.xaml e estourando a largura das 4
+             abas do painel de 150px pra 2 LINHAS de abas (regressão de densidade visível na
+             sonda). -->
+        <Setter Property="Padding" Value="12,6"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabItem">
+                    <!-- Grid (não Border único): a faixa de acento é um elemento SEPARADO
+                         (Underline) posicionado por cima da borda inferior do "Corpo" — trocar só
+                         a Visibility dela em vez de recompor BorderThickness por lado evita ter que
+                         reconstruir o Border a cada seleção (troca de estado = 1 Setter, barato). -->
+                    <Grid SnapsToDevicePixels="True">
+                        <Border x:Name="Corpo" Background="{DynamicResource Cor.Superficie}"
+                                BorderBrush="{DynamicResource Cor.Borda}" BorderThickness="1,1,1,0"
+                                CornerRadius="4,4,0,0" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter x:Name="Conteudo" ContentSource="Header"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              RecognizesAccessKey="True"/>
+                        </Border>
+                        <!-- Plano 14 (Task 2): marca da aba ATIVA no TOPO (2px azul #4D8FD6), fiel ao
+                             redesenho da tira de abas de documento — antes era faixa inferior verde. -->
+                        <Border x:Name="Faixa" Height="2" VerticalAlignment="Top" Margin="1,0,1,0"
+                                CornerRadius="2,2,0,0"
+                                Background="{DynamicResource Cor.MarcadorAtivo}" Visibility="Collapsed"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Corpo" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <!-- Plano 14 (Task 2): CORRIGE o débito herdado do Plano 12 — o estado
+                                 selecionado fixava Background="White" (branco cru), que no tema escuro
+                                 deixava a aba ativa branca com texto quase-branco por cima. Agora usa o
+                                 token Cor.DocTabAtiva (#161826 no escuro = fundo da janela, fiel ao
+                                 redesenho; equivalente claro no tema claro). -->
+                            <Setter TargetName="Corpo" Property="Background" Value="{DynamicResource Cor.DocTabAtiva}"/>
+                            <Setter TargetName="Faixa" Property="Visibility" Value="Visible"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                            <Setter Property="Panel.ZIndex" Value="1"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ================================ Menu / MenuItem ================================
+         Setters simples (sem ControlTemplate custom): o único Menu do app hoje é "Recentes" na
+         ToolBar (MainWindow.xaml), 1 nível, submenu dinâmico via ItemsSource — retemplar
+         MenuItem inteiro (ícone/checkmark/seta de submenu/Popup) pra ganhar hover exato no
+         acento é risco desproporcional ao ganho (o item só aparece fechado na sonda visual
+         estática; o hover ao vivo continua com o destaque padrão do Windows onde o Setter não
+         alcança — limitação conhecida, registrada no report). Os Setters abaixo SIM valem pro
+         estado ocioso (o que a sonda visual e o usuário veem na maior parte do tempo). -->
+    <Style TargetType="Menu">
+        <Setter Property="Background" Value="{DynamicResource Cor.Superficie}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+    </Style>
+
+    <Style TargetType="MenuItem">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="Padding" Value="8,4"/>
+    </Style>
+
+    <!-- ================================ GroupBox ================================
+         Não usado hoje em nenhum XAML do app (confirmado por grep) — disponibilizado pro Task 2/
+         diálogos futuros. Setters simples: o template padrão do GroupBox faz TemplateBinding de
+         BorderBrush/Background/Padding, então isto já basta sem retemplate. -->
+    <Style TargetType="GroupBox">
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="Padding" Value="{StaticResource Esp.M}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+
+    <!-- ================================ Button — KEYED (ver nota de escopo no topo) ================================
+         Os dois estilos abaixo NÃO têm x:Key coincidindo com TargetType Button implícito — são
+         opt-in. FocusVisualStyle="{x:Null}" desliga o retângulo pontilhado padrão do Windows
+         (que não combina com cantos arredondados) — o foco visível vira o próprio BorderBrush do
+         botão virando Cor.Acento com 2px sólidos no trigger IsKeyboardFocused, sempre um Setter de
+         cor sólida, nunca Effect/animação. Estado desabilitado troca só o Foreground por um token
+         dedicado (Cor.TextoDesabilitado) em vez de Opacity fracionário — a suíte estrutural varre
+         por "Opacity=\"0" e qualquer fração (0.4, 0.5...) bateria nesse grep, então o "desabilitado"
+         também é 100% cor sólida aqui. BorderBrush NÃO muda no disabled (fica Transparent, herdado
+         do estado ocioso) — nenhum token de borda desabilitada existe hoje ("Cor.BordaDesabilitada"
+         era citado nesta doc mas nunca foi definido no dicionário; corrigido — se um dia um contorno
+         desabilitado for desejado, defina o token de verdade ANTES de citá-lo aqui). -->
+    <Style x:Key="mPdf.Button.Toolbar" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="BorderBrush" Value="Transparent"/>
+        <!-- BorderThickness=0 ocioso (Task 2, achado do portão de performance/overflow): um contorno
+             BorderBrush=Transparent de qualquer espessura já é INVISÍVEL (nada é pintado) — mas
+             continuava CONSUMINDO espaço de layout (1px de cada lado) por nenhum ganho visual
+             nenhum, e multiplicado pelos ~19-25 botões de CADA banda da ToolBarTray, isso sozinho
+             empurrou a sonda de overflow (ViewerIntegrationTests.
+             MainWindow_At1200x800_ToolbarsHaveNoOverflowItems) pro vermelho ao ligar este Style pela
+             1ª vez (medido ao vivo). 0 aqui é estritamente mais barato E pixel-idêntico no estado
+             ocioso/hover/pressed (nenhum dos 3 muda BorderBrush, só Background) — só o foco de
+             teclado abaixo (IsKeyboardFocused) precisa de espessura de verdade pra desenhar o anel de
+             foco, e SÓ nesse estado ela custa layout (raro/transiente, não a medida "padrão" que a
+             sonda de overflow cobre). mPdf.Button.Dialog (abaixo) sobrescreve pra 1 de propósito — lá
+             a borda É visível por padrão (Cor.Borda, não Transparent), custar layout ali é o preço
+             certo de um contorno que aparece na tela. -->
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="8,4"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource Raio.P}" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficiePressionada}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Cor.Acento}"/>
+                            <Setter TargetName="Bd" Property="BorderThickness" Value="2"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Variante de diálogo: mesma mecânica de estados do toolbar acima, fundo/borda visíveis por
+         padrão (botões OK/Cancelar precisam se destacar sozinhos, sem uma ToolBar ao redor pra dar
+         contexto) e padding mais generoso (Esp.G horizontal). -->
+    <Style x:Key="mPdf.Button.Dialog" TargetType="Button" BasedOn="{StaticResource mPdf.Button.Toolbar}">
+        <Setter Property="Background" Value="{DynamicResource Cor.Superficie}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <!-- Sobrescreve o BorderThickness=0 herdado do Toolbar acima DE PROPÓSITO: aqui o
+             BorderBrush É visível (Cor.Borda, não Transparent) — sem isto o botão de diálogo perderia
+             o contorno que o torna reconhecível como botão fora de uma ToolBar (ver comentário
+             original abaixo). -->
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="16,6"/>
+        <Setter Property="MinWidth" Value="80"/>
+    </Style>
+
+    <!-- ================================ Border de painel — KEYED ================================
+         Pra containers de chrome (ex.: coluna de miniaturas/sumário, rodapés de diálogo) — nunca
+         aplicado a um Border dentro de PdfViewerControl.xaml (a página em si é PdfViewerControl,
+         não um painel de chrome). -->
+    <Style x:Key="mPdf.Border.Painel" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource Cor.Superficie}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{StaticResource Raio.M}"/>
+        <Setter Property="Padding" Value="{StaticResource Esp.M}"/>
+    </Style>
+
+    <!-- ═══════════════════════ SHELL escuro (Plano 14 T2) ═══════════════════════
+         Estilos de chrome do novo shell: title bar, command bar, activity rail, status bar. Todos
+         KEYED (opt-in) — nenhum vaza pro caminho de render/overlay (Views/PdfViewerControl.xaml, que
+         não referencia nenhum destes). Hover/pressed = troca de Background sólido/véu (barato), fiel
+         ao padrão do resto do tema. Gradiente/sombra é PERMITIDO aqui (chrome), proibido só no
+         caminho de render por página (ver ThemeStructuralTests). -->
+
+    <!-- CornerRadius auxiliares do shell (geometria, StaticResource). -->
+    <CornerRadius x:Key="Raio.TitleBtn">6</CornerRadius>
+    <CornerRadius x:Key="Raio.Assinar">9</CornerRadius>
+    <CornerRadius x:Key="Raio.Rail">10</CornerRadius>
+
+    <!-- ───── Command bar: botão de comando (ícone e/ou rótulo), 38px, raio 8 ─────
+         Icon-only: instância fixa Width=38 (Padding=0). Com rótulo: Padding horizontal na instância.
+         O conteúdo (glifo Phosphor + rótulo) é montado na instância; o estilo só cuida de
+         fundo/hover/foco/raio. -->
+    <Style x:Key="mPdf.Button.Command" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Height" Value="38"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource Raio.M}" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficiePressionada}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                            <Setter TargetName="Bd" Property="BorderThickness" Value="2"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── Title bar: botão min/max (34×28, raio 6, hover .07) ───── -->
+    <Style x:Key="mPdf.Button.TitleBar" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Width" Value="34"/>
+        <Setter Property="Height" Value="28"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            CornerRadius="{StaticResource Raio.TitleBtn}" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficiePressionada}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Command bar: variante TOGGLE (mesmo visual, + estado ATIVO) — usada pelo botão "Organizar
+         páginas" (grid-nine), ligado por IsChecked TwoWay a SelectedDocument.IsOrganizerOpen. -->
+    <Style x:Key="mPdf.Toggle.Command" TargetType="ToggleButton">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Height" Value="38"/>
+        <Setter Property="Width" Value="38"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            CornerRadius="{StaticResource Raio.M}" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficiePressionada}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.IconeAzul}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Fechar: mesma base, hover VERMELHO perigo (#B00020) com texto branco. -->
+    <Style x:Key="mPdf.Button.TitleBarClose" TargetType="Button" BasedOn="{StaticResource mPdf.Button.TitleBar}">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            CornerRadius="{StaticResource Raio.TitleBtn}" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.FecharHover}"/>
+                            <Setter Property="Foreground" Value="White"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── Botão "Assinar" destacado (gradiente + borda azul + sombra sutil de chrome) ───── -->
+    <Style x:Key="mPdf.Button.Assinar" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource Cor.AssinarFundo}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.AssinarTexto}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.AssinarBorda}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Height" Value="40"/>
+        <Setter Property="Padding" Value="16,0"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource Raio.Assinar}" SnapsToDevicePixels="True">
+                        <Border.Effect>
+                            <DropShadowEffect Color="#4D8FD6" BlurRadius="16" ShadowDepth="0" Opacity="0.25"/>
+                        </Border.Effect>
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.AssinarFundoHover}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── Plano 21: botões compactos do cartão flutuante da caixa de carimbo/imagem ─────
+         x:Key EXPLÍCITO de propósito (nunca keyless — ver nota no topo deste arquivo: um Style
+         keyless de Button restilizaria TODO botão do app, inclusive estes do adorner). Confirmar
+         reusa a paleta "Assinar" (teal on-brand); Cancelar é neutro/contornado. Compactos (28px). -->
+    <Style x:Key="mPdf.Button.CarimboConfirmar" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource Cor.AssinarFundo}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.AssinarTexto}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.AssinarBorda}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Height" Value="28"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="6" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.AssinarFundoHover}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="mPdf.Button.CarimboCancelar" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Height" Value="28"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="6" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── Activity rail: item (RadioButton) 42×42, marca azul à esquerda quando ativo ───── -->
+    <Style x:Key="mPdf.RailItem" TargetType="RadioButton">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="Width" Value="42"/>
+        <Setter Property="Height" Value="42"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Grid>
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="{StaticResource Raio.Rail}" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <Border x:Name="Marca" Width="3" Height="22" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                Margin="-8,0,0,0" CornerRadius="0,3,3,0"
+                                Background="{DynamicResource Cor.MarcadorAtivo}" Visibility="Collapsed"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                            <Setter TargetName="Marca" Property="Visibility" Value="Visible"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── Status bar: item clicável pequeno (zoom −/+, Largura/Página), raio 5 ───── -->
+    <Style x:Key="mPdf.Button.Status" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Height" Value="22"/>
+        <Setter Property="Padding" Value="6,0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            CornerRadius="5" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── Botão primário sólido (Plano 14 T3): fundo azul #4D8FD6, texto escuro #0F2033. Usado
+         pelo "Abrir arquivo…" da tela de boas-vindas. -->
+    <Style x:Key="mPdf.Button.Primario" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource Cor.Primaria}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.PrimariaTextoSobre}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Height" Value="40"/>
+        <Setter Property="Padding" Value="20,0"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="9" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#FF6BA3E0"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Botão contornado neutro (Plano 14 T3): transparente + borda sutil. "Juntar PDFs" / "Assinar
+         em lote" da tela de boas-vindas. -->
+    <Style x:Key="mPdf.Button.Contornado" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Height" Value="36"/>
+        <Setter Property="Padding" Value="14,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="8" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── Faixa de validação (Plano 14 T3): botões-pílula contornados. Verde-água ("Ver
+         assinaturas") e neutro ("Editar uma cópia"). Fundo transparente + borda; hover véu sólido. -->
+    <Style x:Key="mPdf.Button.FaixaVerde" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="#FF7AD9C5"/>
+        <Setter Property="BorderBrush" Value="#663EC1A7"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Height" Value="28"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="FontSize" Value="11.5"/>
+        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="7" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#1F3EC1A7"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style x:Key="mPdf.Button.FaixaNeutra" TargetType="Button" BasedOn="{StaticResource mPdf.Button.FaixaVerde}">
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="7" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Gradiente verde-água da faixa de validação (esquerda->direita, bem sutil). -->
+    <LinearGradientBrush x:Key="Cor.FaixaValidacao" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#1F3EC1A7" Offset="0"/>
+        <GradientStop Color="#083EC1A7" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- ───── Campo de entrada escuro (Plano 14 T3): superfície #1A1C29 (Cor.Superficie), usado pelos
+         editores do painel "Campos" (FormPanel). Sem isto, um TextBox usa o template padrão do WPF
+         (fundo branco de sistema) — gritante no painel escuro. KEYED (opt-in), nunca implícito, pra não
+         alcançar TextBoxes de outros contextos. -->
+    <Style x:Key="mPdf.Input" TargetType="TextBox">
+        <Setter Property="Background" Value="{DynamicResource Cor.Superficie}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="8,5"/>
+        <Setter Property="CaretBrush" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="SelectionBrush" Value="{DynamicResource Cor.Primaria}"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource Raio.M}" SnapsToDevicePixels="True">
+                        <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Divisória vertical do redesenho (1px, altura ~26, sutil) — separa grupos na command bar. -->
+    <Style x:Key="mPdf.Divisoria.Vertical" TargetType="Border">
+        <Setter Property="Width" Value="1"/>
+        <Setter Property="Height" Value="26"/>
+        <Setter Property="Margin" Value="5,0"/>
+        <Setter Property="Background" Value="{DynamicResource Cor.BordaSutil}"/>
+    </Style>
+
+    <!-- ═══════════════════════ DIÁLOGOS escuros (Plano 14 T4) ═══════════════════════
+         Linguagem visual comum dos 6 diálogos (Assinar, Assinar em lote, Juntar, Dividir, Exportar,
+         Sobre): superfície #1C1E2C, header com ícone em quadrado-gradiente + título/subtítulo, corpo com
+         labels mudos + inputs escuros, rodapé #191B28 com primário azul + cancelar contornado. Todos
+         KEYED (opt-in) — não vazam pro caminho de render. Sombra em diálogo é chrome (permitida); nada
+         de Effect por-página. A LÓGICA dos diálogos é intocada — estes estilos só cuidam do VISUAL. -->
+
+    <!-- Conversores dos cartões de certificado (só apresentação, ver Converters/DialogConverters.cs). -->
+    <conv:CertificadoIconeConverter x:Key="CertificadoIconeConverter"/>
+    <conv:CertificadoDetalheConverter x:Key="CertificadoDetalheConverter"/>
+
+    <CornerRadius x:Key="Raio.Dialogo">14</CornerRadius>
+    <CornerRadius x:Key="Raio.Card">9</CornerRadius>
+
+    <!-- ───── Superfície da janela de diálogo (Border raiz: #1C1E2C, borda sutil, raio 14, sombra) ───── -->
+    <Style x:Key="mPdf.Dialog.Superficie" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource Cor.FundoDialogo}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{StaticResource Raio.Dialogo}"/>
+        <Setter Property="Effect">
+            <Setter.Value>
+                <DropShadowEffect Color="#000000" BlurRadius="34" ShadowDepth="10" Opacity="0.55"/>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Ícone do header: quadrado 34px raio 9 com gradiente #4D8FD6->#16304E (glifo Phosphor fill branco
+         montado na instância). -->
+    <Style x:Key="mPdf.Dialog.IconeHeader" TargetType="Border">
+        <Setter Property="Width" Value="34"/>
+        <Setter Property="Height" Value="34"/>
+        <Setter Property="CornerRadius" Value="{StaticResource Raio.Card}"/>
+        <Setter Property="Background" Value="{DynamicResource Cor.DialogoIconeGrad}"/>
+        <Setter Property="Effect">
+            <Setter.Value>
+                <DropShadowEffect Color="#4D8FD6" BlurRadius="14" ShadowDepth="4" Opacity="0.4"/>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Textos do diálogo. -->
+    <Style x:Key="mPdf.Dialog.Titulo" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+    </Style>
+    <Style x:Key="mPdf.Dialog.Subtitulo" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+    </Style>
+    <!-- Label de campo (12px, mudo). Variante "forte" = 12px 600 pra grupos (Certificado/Carimbo). -->
+    <Style x:Key="mPdf.Dialog.Label" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="Margin" Value="0,0,0,6"/>
+    </Style>
+    <Style x:Key="mPdf.Dialog.LabelForte" TargetType="TextBlock" BasedOn="{StaticResource mPdf.Dialog.Label}">
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Margin" Value="0,0,0,8"/>
+    </Style>
+
+    <!-- ───── Botões do rodapé/corpo ───── -->
+    <!-- Primário: azul #4D8FD6, texto #0F2033, raio 8. Suporta ícone Phosphor + rótulo no conteúdo. -->
+    <Style x:Key="mPdf.Button.DialogPrimario" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource Cor.Primaria}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.PrimariaTextoSobre}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Height" Value="36"/>
+        <Setter Property="MinWidth" Value="88"/>
+        <Setter Property="Padding" Value="16,0"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="8" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#FF6BA3E0"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficiePressionada}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Cancelar/secundário: contornado (transparente + borda .18 + texto .8), raio 8. -->
+    <Style x:Key="mPdf.Button.DialogCancelar" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="BorderBrush" Value="#2EE9E9ED"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Height" Value="36"/>
+        <Setter Property="MinWidth" Value="80"/>
+        <Setter Property="Padding" Value="16,0"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="8" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Azul suave: fundo rgba(77,143,214,.10), borda .35, texto #a9cdf1. "Adicionar arquivos…". -->
+    <Style x:Key="mPdf.Button.DialogSuaveAzul" TargetType="Button">
+        <Setter Property="Background" Value="#1A4D8FD6"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.IconeAzul}"/>
+        <Setter Property="BorderBrush" Value="#594D8FD6"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Height" Value="34"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="7" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#294D8FD6"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Neutro: fundo rgba(233,233,237,.05), borda .12, texto #cdd2e0. Remover / subir / descer /
+         Escolher…. -->
+    <Style x:Key="mPdf.Button.DialogNeutro" TargetType="Button">
+        <Setter Property="Background" Value="#0DE9E9ED"/>
+        <Setter Property="Foreground" Value="#FFCDD2E0"/>
+        <Setter Property="BorderBrush" Value="#1FE9E9ED"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Height" Value="34"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="7" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#1AE9E9ED"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── Controle segmentado (Formato/Alcance/Resolução do Exportar; RadioButton opt-in) ─────
+         Trilho contornado; opção SELECIONADA com contorno/texto #4D8FD6 e véu azul. Mantém RadioButton
+         (GroupName/IsChecked/Checked preservados). -->
+    <Style x:Key="mPdf.Segmento" TargetType="RadioButton">
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="FontSize" Value="12.5"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border x:Name="Bd" Background="Transparent" BorderBrush="{DynamicResource Cor.Borda}"
+                            BorderThickness="1" CornerRadius="8" Padding="9" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#1A4D8FD6"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.Primaria}"/>
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── Cartão de opção de carimbo (RadioButton com ícone + rótulo; SignDialog) ─────
+         O conteúdo (ícone Phosphor + rótulo) é montado na instância; selecionado = véu/borda azul. -->
+    <Style x:Key="mPdf.CarimboCard" TargetType="RadioButton">
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border x:Name="Bd" Background="Transparent" BorderBrush="{DynamicResource Cor.Borda}"
+                            BorderThickness="1" CornerRadius="9" Padding="11" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#1A4D8FD6"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.Primaria}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── CheckBox-cartão (DocMDP no SignDialog): quadradinho de check + conteúdo rico ─────
+         Véu/borda azul (recomendado). Preserva o CheckBox (IsChecked/Visibility lidos no code-behind). -->
+    <Style x:Key="mPdf.CheckCard" TargetType="CheckBox">
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <Border Background="#0F4D8FD6" BorderBrush="#404D8FD6" BorderThickness="1"
+                            CornerRadius="9" Padding="11,10" SnapsToDevicePixels="True">
+                        <StackPanel Orientation="Horizontal">
+                            <Border x:Name="Box" Width="19" Height="19" CornerRadius="5" VerticalAlignment="Top"
+                                    Margin="0,1,10,0" Background="Transparent" BorderBrush="{DynamicResource Cor.Borda}"
+                                    BorderThickness="1.5">
+                                <TextBlock x:Name="Tick" FontFamily="{DynamicResource Fonte.PhosphorBold}" FontSize="11"
+                                           Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           Visibility="Collapsed" Text="{icons:PhosphorIcon check}"/>
+                            </Border>
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Box" Property="Background" Value="{DynamicResource Cor.Primaria}"/>
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                            <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── CheckBox escuro simples (toggles do Sobre: Tema / Nitidez) ─────
+         Quadradinho + rótulo. Preserva IsChecked (binding two-way ao VM). -->
+    <Style x:Key="mPdf.Check" TargetType="CheckBox">
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="FontSize" Value="12.5"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <StackPanel Orientation="Horizontal" Background="Transparent">
+                        <Border x:Name="Box" Width="18" Height="18" CornerRadius="5" VerticalAlignment="Center"
+                                Margin="0,0,9,0" Background="{DynamicResource Cor.Superficie}"
+                                BorderBrush="{DynamicResource Cor.Borda}" BorderThickness="1.5">
+                            <TextBlock x:Name="Tick" FontFamily="{DynamicResource Fonte.PhosphorBold}" FontSize="11"
+                                       Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       Visibility="Collapsed" Text="{icons:PhosphorIcon check}"/>
+                        </Border>
+                        <ContentPresenter VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Box" Property="Background" Value="{DynamicResource Cor.Primaria}"/>
+                            <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                            <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ───── Lista de certificados como CARTÕES (SignDialog + BatchSignDialog) ─────
+         A ListBox fica sem chrome (transparente, sem borda); cada item vira um cartão. O item expõe
+         `Info` (SigningCertificateInfo) e `IsEnabled` (RSA?) — os dois tipos de item (CertificateItem
+         privado do SignDialog e BatchCertificateItem público) têm AMBOS. Selecionado (habilitado):
+         borda/véu azul + check azul. ECC (desabilitado): mudo + ícone prohibit, não selecionável. -->
+    <Style x:Key="mPdf.CertCard.ListBox" TargetType="ListBox">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+        <Setter Property="ItemContainerStyle" Value="{DynamicResource mPdf.CertCard.Item}"/>
+    </Style>
+    <Style x:Key="mPdf.CertCard.Item" TargetType="ListBoxItem">
+        <Setter Property="IsEnabled" Value="{Binding IsEnabled}"/>
+        <Setter Property="ToolTip" Value="{Binding DisabledReason}"/>
+        <Setter Property="IsTabStop" Value="True"/>
+        <Setter Property="Margin" Value="0,0,0,7"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="Bd" Background="Transparent" BorderBrush="{DynamicResource Cor.Borda}"
+                            BorderThickness="1" CornerRadius="9" Padding="11,10" SnapsToDevicePixels="True">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <!-- Ícone de tipo (user/buildings) em quadradinho azul translúcido. -->
+                            <Border Grid.Column="0" Width="30" Height="30" CornerRadius="7" Background="#2E4D8FD6"
+                                    VerticalAlignment="Center" Margin="0,0,11,0">
+                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16"
+                                           Foreground="{DynamicResource Cor.IconeAzul}" HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Text="{Binding Info, Converter={StaticResource CertificadoIconeConverter}}"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Info.DisplayName}" FontSize="12.5" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource Cor.TextoPrimario}" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="{Binding Info, Converter={StaticResource CertificadoDetalheConverter}}"
+                                           FontSize="10.5" Foreground="{DynamicResource Cor.TextoSecundario}"
+                                           TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+                            </StackPanel>
+                            <!-- Marca à direita: check (selecionado) / prohibit (ECC). -->
+                            <TextBlock x:Name="Check" Grid.Column="2" FontFamily="{DynamicResource Fonte.PhosphorFill}"
+                                       FontSize="16" Foreground="{DynamicResource Cor.Primaria}" VerticalAlignment="Center"
+                                       Visibility="Collapsed" Text="{icons:PhosphorIcon seal-check}"/>
+                            <TextBlock x:Name="Proibido" Grid.Column="2" FontFamily="{DynamicResource Fonte.Phosphor}"
+                                       FontSize="16" Foreground="{DynamicResource Cor.TextoDesabilitado}" VerticalAlignment="Center"
+                                       Visibility="Collapsed" Text="{icons:PhosphorIcon prohibit}"/>
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#1A4D8FD6"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                            <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Bd" Property="Opacity" Value="0.55"/>
+                            <Setter TargetName="Proibido" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ═══════════════════ ORGANIZADOR + ANOTAÇÃO FLUTUANTE + BUSCA (Plano 14 T5) ═══════════════════
+         Todos KEYED (opt-in) — só chrome, nunca vazam pro caminho de render. A LÓGICA (seleção/girar/
+         excluir/mover/extrair/inserir/concluir no organizador; ferramentas/cor/carimbo na anotação;
+         busca) é intocada — estes estilos cuidam SÓ do VISUAL. -->
+
+    <!-- Botão de AÇÃO do organizador: contornado (fundo rgba(233,233,237,.05), borda .12, texto #cdd2e0),
+         raio 7, ícone+texto. Content montado por instância (ícone à esquerda/direita conforme a ação). -->
+    <Style x:Key="mPdf.Organizador.Acao" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource Cor.OrganizadorAcaoFundo}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Cor.Borda}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Height" Value="32"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="Margin" Value="0,0,6,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="7" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                            <Setter TargetName="Bd" Property="Opacity" Value="0.6"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Ferramenta da barra de anotação flutuante: 36×36, raio 9, ícone Phosphor centralizado, texto
+         mudo (.78) que clareia no hover + véu de fundo (.09). Sem indicador de "ferramenta corrente"
+         (mesma decisão v1 da toolbar do Plano 12 — ver report). -->
+    <Style x:Key="mPdf.Anota.Ferramenta" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="Width" Value="36"/>
+        <Setter Property="Height" Value="36"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="9" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Idem, mas ToggleButton (galeria de carimbos abre um Popup — precisa de estado IsChecked). -->
+    <Style x:Key="mPdf.Anota.FerramentaToggle" TargetType="ToggleButton">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="Width" Value="36"/>
+        <Setter Property="Height" Value="36"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="9" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficiePressionada}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Swatch de cor da barra de anotação: círculo 16px. A cor de FUNDO (visual) é setada por instância
+         (amarelo/verde/vermelho do redesenho); o Command liga à cor de anotação EXISTENTE. -->
+    <Style x:Key="mPdf.Anota.Swatch" TargetType="Button">
+        <Setter Property="Width" Value="16"/>
+        <Setter Property="Height" Value="16"/>
+        <Setter Property="Margin" Value="2,0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="8" SnapsToDevicePixels="True"/>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Opacity" Value="0.82"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Botão de navegação da barra de busca: 30×30, raio 7, ícone mudo (.7) + véu no hover. -->
+    <Style x:Key="mPdf.Busca.Nav" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+        <Setter Property="Width" Value="30"/>
+        <Setter Property="Height" Value="30"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7" SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ═══════════════════════ SCROLLBAR FINA (Plano 18 T1) ═══════════════════════
+         Estilo dark do redesenho (`::-webkit-scrollbar{width:9px;height:9px}`, thumb
+         rgba(233,233,237,.14), track transparente — ver docs/redesign-ref/mPDF Redesenho.dc.html linhas
+         ~17-19). Dois estilos KEYED (opt-in, x:Key explícito — NADA de Style TargetType="ScrollBar"
+         implícito/global que vazasse pro caminho de render):
+
+           - `mPdf.ScrollBar.Fino` (TargetType ScrollBar): thumb arredondado (raio 4) SEM os RepeatButton
+             de seta do ScrollBar padrão do Windows (o Track abaixo só declara Thumb — nenhum
+             DecreaseRepeatButton/IncreaseRepeatButton com glifo de seta é adicionado ao template).
+             Largura ~7px vertical / altura ~7px horizontal (Style.Triggers por Orientation, espelha o
+             `width:9px;height:9px` do mockup). Hover do thumb = troca de Background sólida
+             (Cor.ScrollThumb -> Cor.ScrollThumbHover), nunca Opacity/Effect/animação.
+           - `mPdf.ScrollViewer.Fino` (TargetType ScrollViewer): um ControlTemplate PRÓPRIO (o mesmo
+             desenho estrutural do template padrão do WPF — ScrollContentPresenter + PART_VerticalScrollBar/
+             PART_HorizontalScrollBar, os nomes que o ScrollViewer.OnApplyTemplate() procura pra ligar a
+             rolagem real) cujos dois ScrollBar internos referenciam `mPdf.ScrollBar.Fino` por
+             Style="{StaticResource ...}" EXPLÍCITO (não implícito/global — nada de
+             Style TargetType="ScrollBar" sem x:Key em lugar nenhum deste dicionário). Só quem usa
+             Style="{StaticResource mPdf.ScrollViewer.Fino}" ganha o visual fino; o ScrollViewer default
+             (não estilizado) da ListBox de páginas em Views/PdfViewerControl.xaml continua com o
+             template/ScrollBar 100% padrão do Windows — fronteira SAGRADA preservada (ver
+             ThemeWiringGuardTests.ScrollViewerFino_NaoVazaProViewerDePagina). -->
+    <!-- (nota: Setter.Property NÃO aceita "Resources" — FrameworkElement.Resources é uma propriedade CLR
+         comum, não uma DependencyProperty; por isso o retemplate explícito abaixo, e não um
+         Style.Resources com implícito escopado — a 1ª tentativa quebrava TODO InitializeComponent() da
+         MainWindow com XamlParseException, achado ao vivo rodando a suíte após esta mudança.) -->
+    <Style x:Key="mPdf.ScrollBar.Thumb" TargetType="Thumb">
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Thumb">
+                    <Border x:Name="Bd" Background="{DynamicResource Cor.ScrollThumb}"
+                            CornerRadius="4" SnapsToDevicePixels="True"/>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.ScrollThumbHover}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="mPdf.ScrollBar.Fino" TargetType="ScrollBar">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Width" Value="7"/>
+        <Setter Property="MinWidth" Value="7"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ScrollBar">
+                    <!-- Track SÓ com Thumb — nenhum RepeatButton de seta (linha) neste template, ao
+                         contrário do template padrão do ScrollBar do Windows (que tem um RepeatButton
+                         com glifo de seta em CADA ponta, fora do Track). O clique na área vazia do
+                         track (Track.DecreaseRepeatButton/IncreaseRepeatButton, ambos null aqui) não
+                         faz "page up/down" por clique — troca aceitável pela fita fina do chrome; a
+                         roda do mouse e o arrastar do Thumb continuam funcionando normalmente
+                         (ScrollViewer.ScrollChanged não depende do Track ter RepeatButtons). -->
+                    <Grid x:Name="Bg" Background="{TemplateBinding Background}">
+                        <Track x:Name="PART_Track" IsDirectionReversed="True" Focusable="False">
+                            <Track.Thumb>
+                                <Thumb Style="{StaticResource mPdf.ScrollBar.Thumb}"/>
+                            </Track.Thumb>
+                        </Track>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="Orientation" Value="Horizontal">
+                            <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <!-- Espelha o Width/Height do ScrollBar padrão do WPF (que também troca por Orientation): a
+                 barra HORIZONTAL usa Height (não Width) pra sua espessura. -->
+            <Trigger Property="Orientation" Value="Horizontal">
+                <Setter Property="Width" Value="Auto"/>
+                <Setter Property="MinWidth" Value="0"/>
+                <Setter Property="Height" Value="7"/>
+                <Setter Property="MinHeight" Value="7"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="mPdf.ScrollViewer.Fino" TargetType="ScrollViewer">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ScrollViewer">
+                    <Grid Background="{TemplateBinding Background}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <ScrollContentPresenter Grid.Row="0" Grid.Column="0"
+                                                 Content="{TemplateBinding Content}"
+                                                 ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                 CanContentScroll="{TemplateBinding CanContentScroll}"
+                                                 Margin="{TemplateBinding Padding}"/>
+                        <!-- PART_VerticalScrollBar/PART_HorizontalScrollBar: nomes que
+                             ScrollViewer.OnApplyTemplate() procura pra ligar a rolagem real (roda do
+                             mouse, arrastar o Thumb) — não é só cosmético, é o contrato do controle. -->
+                        <ScrollBar x:Name="PART_VerticalScrollBar" Grid.Row="0" Grid.Column="1"
+                                   Style="{StaticResource mPdf.ScrollBar.Fino}"
+                                   Value="{TemplateBinding VerticalOffset}"
+                                   Maximum="{TemplateBinding ScrollableHeight}"
+                                   ViewportSize="{TemplateBinding ViewportHeight}"
+                                   Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
+                        <ScrollBar x:Name="PART_HorizontalScrollBar" Orientation="Horizontal" Grid.Row="1" Grid.Column="0"
+                                   Style="{StaticResource mPdf.ScrollBar.Fino}"
+                                   Value="{TemplateBinding HorizontalOffset}"
+                                   Maximum="{TemplateBinding ScrollableWidth}"
+                                   ViewportSize="{TemplateBinding ViewportWidth}"
+                                   Visibility="{TemplateBinding ComputedHorizontalScrollBarVisibility}"/>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>

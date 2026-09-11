@@ -1,0 +1,171 @@
+<Window x:Class="mPdf.App.Views.DialogoImpressao"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        Title="Impressão avançada" Height="600" Width="880" MinHeight="520" WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize" ShowInTaskbar="False" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" FontFamily="{DynamicResource Fonte.Inter}">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
+    </Window.Resources>
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <DockPanel>
+            <!-- Header -->
+            <Border DockPanel.Dock="Top" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                    BorderThickness="0,0,0,1" Padding="18,12" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <StackPanel Orientation="Horizontal">
+                    <Border Style="{StaticResource mPdf.Dialog.IconeHeader}">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="15" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon printer}"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Margin="10,0,0,0">
+                        <TextBlock Text="Impressão avançada" Style="{StaticResource mPdf.Dialog.Titulo}"/>
+                        <TextBlock Text="N-up, livreto e escala — imprimir ou salvar como PDF, com pré-visualização" Style="{StaticResource mPdf.Dialog.Subtitulo}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Footer -->
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Cor.FundoDialogoRodape}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,13,13" Padding="22,16">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancelar" Margin="0,0,8,0" Padding="14,7" IsCancel="True" Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                    <Button Click="SalvarPdf_Click" Margin="0,0,8,0" Padding="14,7" ToolTip="Aplicar a imposição e salvar como um novo PDF" Style="{StaticResource mPdf.Button.DialogNeutro}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="13" VerticalAlignment="Center" Margin="0,0,6,0" Text="{icons:PhosphorIcon floppy-disk}"/>
+                            <TextBlock Text="Salvar como PDF" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="BtnImprimir" Click="Imprimir_Click" Padding="16,7" Style="{StaticResource mPdf.Button.DialogPrimario}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="13" VerticalAlignment="Center"
+                                       Margin="0,0,6,0" Text="{icons:PhosphorIcon printer}"/>
+                            <TextBlock Text="Imprimir" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <!-- Corpo: opções (esquerda) + prévia (direita) -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="336"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- ░░ Opções ░░ -->
+                <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" Padding="18,14">
+                    <StackPanel>
+                        <!-- Impressora -->
+                        <TextBlock Text="Impressora" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,7"/>
+                        <DockPanel Margin="0,0,0,16">
+                            <Button DockPanel.Dock="Right" Content="Trocar…" Margin="8,0,0,0" Click="TrocarImpressora_Click"
+                                    Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+                            <TextBox x:Name="LblImpressora" IsReadOnly="True" Style="{StaticResource mPdf.Input}"/>
+                        </DockPanel>
+
+                        <!-- Páginas por folha -->
+                        <TextBlock Text="Páginas por folha" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,7"/>
+                        <UniformGrid x:Name="PainelNUp" Columns="6" Margin="0,0,0,10">
+                            <RadioButton x:Name="NUp1" Content="1" GroupName="NUp" IsChecked="True" Checked="Opcao_Alterada" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="NUp2" Content="2" GroupName="NUp" Checked="Opcao_Alterada" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="NUp4" Content="4" GroupName="NUp" Checked="Opcao_Alterada" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="NUp6" Content="6" GroupName="NUp" Checked="Opcao_Alterada" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="NUp9" Content="9" GroupName="NUp" Checked="Opcao_Alterada" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="NUp16" Content="16" GroupName="NUp" Checked="Opcao_Alterada" Style="{StaticResource mPdf.Segmento}"/>
+                        </UniformGrid>
+                        <!-- Ordem (só faz sentido com N-up > 1) -->
+                        <UniformGrid x:Name="PainelOrdem" Columns="2" Margin="0,0,0,16">
+                            <RadioButton x:Name="OrdemH" Content="Ordem: linhas" GroupName="Ordem" IsChecked="True" Checked="Opcao_Alterada" Margin="0,0,4,0" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="OrdemV" Content="Ordem: colunas" GroupName="Ordem" Checked="Opcao_Alterada" Margin="4,0,0,0" Style="{StaticResource mPdf.Segmento}"/>
+                        </UniformGrid>
+
+                        <!-- Livreto -->
+                        <CheckBox x:Name="ChkLivreto" Content="Livreto (dobrar e grampear no meio)" Margin="0,0,0,16"
+                                  Checked="Livreto_Alterado" Unchecked="Livreto_Alterado" Style="{StaticResource mPdf.Check}"/>
+
+                        <!-- Escala -->
+                        <TextBlock Text="Escala" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,7"/>
+                        <UniformGrid Columns="2" Margin="0,0,0,6">
+                            <RadioButton x:Name="EscAjustar" Content="Ajustar à folha" GroupName="Esc" IsChecked="True" Checked="Escala_Alterada" Margin="0,0,4,4" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="EscReal" Content="Tamanho real" GroupName="Esc" Checked="Escala_Alterada" Margin="4,0,0,4" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="EscReduzir" Content="Reduzir p/ caber" GroupName="Esc" Checked="Escala_Alterada" Margin="0,0,4,0" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="EscPercent" Content="Personalizada" GroupName="Esc" Checked="Escala_Alterada" Margin="4,0,0,0" Style="{StaticResource mPdf.Segmento}"/>
+                        </UniformGrid>
+                        <DockPanel x:Name="PainelPercent" Margin="0,8,0,16" Visibility="Collapsed">
+                            <TextBlock DockPanel.Dock="Right" Text="%" VerticalAlignment="Center" Margin="6,0,0,0" Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                            <TextBox x:Name="TxtPercent" Text="100" Style="{StaticResource mPdf.Input}" TextChanged="Opcao_Alterada"/>
+                        </DockPanel>
+
+                        <!-- Orientação -->
+                        <TextBlock Text="Orientação da folha" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,10,0,7"/>
+                        <UniformGrid Columns="3" Margin="0,0,0,16">
+                            <RadioButton x:Name="OriAuto" Content="Automática" GroupName="Ori" IsChecked="True" Checked="Opcao_Alterada" Margin="0,0,4,0" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="OriRetrato" Content="Retrato" GroupName="Ori" Checked="Opcao_Alterada" Margin="4,0,4,0" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="OriPaisagem" Content="Paisagem" GroupName="Ori" Checked="Opcao_Alterada" Margin="4,0,0,0" Style="{StaticResource mPdf.Segmento}"/>
+                        </UniformGrid>
+
+                        <!-- Borda -->
+                        <CheckBox x:Name="ChkBorda" Content="Desenhar borda em volta de cada página" Margin="0,0,0,16"
+                                  Checked="Opcao_Alterada" Unchecked="Opcao_Alterada" Style="{StaticResource mPdf.Check}"/>
+
+                        <!-- Cópias + Intervalo -->
+                        <TextBlock Text="Cópias" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,7"/>
+                        <TextBox x:Name="TxtCopias" Text="1" Style="{StaticResource mPdf.Input}" Margin="0,0,0,16" Width="80" HorizontalAlignment="Left"/>
+
+                        <TextBlock Text="Intervalo de páginas" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,7"/>
+                        <UniformGrid Columns="2" Margin="0,0,0,8">
+                            <RadioButton x:Name="RadTodas" Content="Todas" GroupName="Range" IsChecked="True" Checked="Range_Alterado" Margin="0,0,4,0" Style="{StaticResource mPdf.Segmento}"/>
+                            <RadioButton x:Name="RadIntervalo" Content="Intervalo" GroupName="Range" Checked="Range_Alterado" Margin="4,0,0,0" Style="{StaticResource mPdf.Segmento}"/>
+                        </UniformGrid>
+                        <StackPanel x:Name="PainelIntervalo" Orientation="Horizontal" Visibility="Collapsed">
+                            <TextBlock Text="de" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                            <TextBox x:Name="TxtDe" Text="1" Style="{StaticResource mPdf.Input}" Width="60" TextChanged="Opcao_Alterada"/>
+                            <TextBlock Text="até" VerticalAlignment="Center" Margin="8,0,6,0" Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                            <TextBox x:Name="TxtAte" Text="1" Style="{StaticResource mPdf.Input}" Width="60" TextChanged="Opcao_Alterada"/>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- ░░ Pré-visualização ░░ -->
+                <Border Grid.Column="1" Background="{DynamicResource Cor.FundoViewer}" BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="1,0,0,0">
+                    <DockPanel Margin="12">
+                        <!-- Barra inferior: navegação de folhas (centro) + zoom (direita) -->
+                        <Grid DockPanel.Dock="Bottom" Margin="0,10,0,0">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <Button x:Name="BtnAnterior" Content="‹" Click="FolhaAnterior_Click" Width="26" Height="26" Padding="0" Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+                                <TextBlock x:Name="LblFolha" Text="Folha 1 de 1" VerticalAlignment="Center" Margin="10,0"
+                                           Foreground="{DynamicResource Cor.TextoPrimario}" MinWidth="96" TextAlignment="Center"/>
+                                <Button x:Name="BtnProxima" Content="›" Click="FolhaProxima_Click" Width="26" Height="26" Padding="0" Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Content="−" Click="ZoomMenos_Click" Width="26" Height="26" Padding="0" ToolTip="Reduzir zoom" Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+                                <TextBlock x:Name="LblZoom" Text="—" VerticalAlignment="Center" Margin="8,0" MinWidth="42" TextAlignment="Center"
+                                           Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                                <Button Content="+" Click="ZoomMais_Click" Width="26" Height="26" Padding="0" ToolTip="Aumentar zoom" Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+                                <Button Content="Ajustar" Click="ZoomAjustar_Click" Margin="6,0,0,0" Padding="10,4" ToolTip="Ajustar à janela" Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+                            </StackPanel>
+                        </Grid>
+                        <!-- Folha (papel branco com sombra) dentro de um ScrollViewer; zoom via Ctrl+roda ou botões -->
+                        <ScrollViewer x:Name="PreviewScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      Background="Transparent" PreviewMouseWheel="Preview_MouseWheel" SizeChanged="PreviewScroll_SizeChanged">
+                            <Border Background="White" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="10"
+                                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="1" SnapsToDevicePixels="True">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="14" ShadowDepth="0" Opacity="0.35" Color="Black"/>
+                                </Border.Effect>
+                                <Image x:Name="ImgPreview"/>
+                            </Border>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+            </Grid>
+        </DockPanel>
+    </Border>
+</Window>
