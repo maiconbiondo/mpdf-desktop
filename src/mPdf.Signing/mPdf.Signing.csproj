@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Mesmo padrão de src/mPdf.Editing/mPdf.Editing.csproj: PrivateAssets=compile confina o iText no
+         nível do COMPILADOR — quem referencia ESTE projeto (src/mPdf.App) só recebe o binário de
+         runtime, nunca a referência de compilação. `using iText...` em src/mPdf.App falha no
+         compilador (CS0246), não só na varredura de texto do AgplGuardTests (2ª camada, complementar). -->
+    <PackageReference Include="itext" Version="9.7.0">
+      <PrivateAssets>compile</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="itext.bouncy-castle-adapter" Version="9.7.0">
+      <PrivateAssets>compile</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- PdfQuad (VisibleStampSpec.Rect) vive em mPdf.Editing/Contract.cs — 1 fonte de verdade pro tipo
+         neutro de retângulo em vez de duplicar um record idêntico aqui. Direção de dependência:
+         App -> {Editing, Signing}, Signing -> Editing (nunca o inverso). mPdf.Editing também usa
+         PrivateAssets=compile, então esta referência de projeto NÃO propaga acesso de compilação ao
+         iText do Editing para dentro do Signing — Signing só enxerga o iText pelo PackageReference
+         próprio acima. -->
+    <ProjectReference Include="..\mPdf.Editing\mPdf.Editing.csproj" />
+  </ItemGroup>
+
+</Project>
