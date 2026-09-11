@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- PrivateAssets=compile (revisão pós-M11/I1): quem referencia ESTE projeto (src/mPdf.App) não
+         recebe mais a referência de COMPILAÇÃO do iText transitivamente — só o binário de runtime
+         (necessário: mPdf.Editing.dll chama iText por dentro). Efeito: `using iText...` em
+         src/mPdf.App agora falha no COMPILADOR (CS0246 tipo/namespace não encontrado), não só na
+         varredura de texto do AgplGuardTests — ver prova de disparo no task-2-report.md. -->
+    <PackageReference Include="itext" Version="9.7.0">
+      <PrivateAssets>compile</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="itext.bouncy-castle-adapter" Version="9.7.0">
+      <PrivateAssets>compile</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

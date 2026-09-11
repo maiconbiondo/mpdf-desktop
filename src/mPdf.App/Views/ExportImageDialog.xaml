@@ -1,0 +1,122 @@
+<Window x:Class="mPdf.App.Views.ExportImageDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        Title="Exportar página como imagem" Height="486" Width="494" WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" FontFamily="{DynamicResource Fonte.Inter}" Closing="Window_Closing">
+    <Window.Resources>
+        <!-- Task 2 (Plano 12): mescla o tema LOCALMENTE — mesmo motivo de MainWindow.xaml (Application.
+             Current fica null nas sondas STA que constroem este diálogo direto). -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
+    </Window.Resources>
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <DockPanel>
+            <!-- Header: image. -->
+            <Border DockPanel.Dock="Top" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                    BorderThickness="0,0,0,1" Padding="22,18" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <StackPanel Orientation="Horizontal">
+                    <Border Style="{StaticResource mPdf.Dialog.IconeHeader}">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="17" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon image}"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,0,0">
+                        <TextBlock Text="Exportar página como imagem" Style="{StaticResource mPdf.Dialog.Titulo}"/>
+                        <TextBlock Text="PNG ou JPG · 150 / 300 DPI" Style="{StaticResource mPdf.Dialog.Subtitulo}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Rodapé: Fechar / Cancelar (em execução) / Exportar. -->
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Cor.FundoDialogoRodape}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,13,13" Padding="22,16">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <!-- Cancelar (durante a exportação): só habilitado em IsRunning (ver CanCancel do VM). -->
+                    <Button Content="Cancelar exportação" Margin="0,0,10,0"
+                            Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
+                            Command="{Binding CancelCommand}" Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                    <!-- IsCancel=True: Esc/clique fecham a janela; Window_Closing bloqueia enquanto IsRunning. -->
+                    <Button Content="Fechar" Margin="0,0,10,0" IsCancel="True" Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                    <!-- "Exportar" só aparece na fase de opções, desabilitado até um destino ser escolhido. -->
+                    <Button Command="{Binding StartCommand}"
+                            Visibility="{Binding CanEditOptions, Converter={StaticResource BoolToVis}}"
+                            Style="{StaticResource mPdf.Button.DialogPrimario}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="14" VerticalAlignment="Center"
+                                       Margin="0,0,7,0" Text="{icons:PhosphorIcon export}"/>
+                            <TextBlock Text="Exportar" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <!-- As 3 fases (opções/execução/concluído) num Grid que ocupa o corpo — só uma visível por vez
+                 (Visibility ligada a bools do VM). Grid (não 3 filhos soltos do DockPanel) evita o quirk do
+                 LastChildFill que dockaria as fases não-últimas à esquerda. -->
+            <Grid>
+            <!-- Fase OPÇÕES: formato / alcance / resolução / destino (segmentos). -->
+            <StackPanel Margin="22,20" Visibility="{Binding CanEditOptions, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="Formato" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,7"/>
+                <UniformGrid Columns="2" Margin="0,0,0,16">
+                    <RadioButton x:Name="PngRadio" Content="PNG" GroupName="Format" IsChecked="True"
+                                 Checked="PngRadio_Checked" Margin="0,0,4,0" Style="{StaticResource mPdf.Segmento}"/>
+                    <RadioButton x:Name="JpgRadio" Content="JPG (qualidade 90)" GroupName="Format"
+                                 Checked="JpgRadio_Checked" Margin="4,0,0,0" Style="{StaticResource mPdf.Segmento}"/>
+                </UniformGrid>
+
+                <TextBlock Text="Alcance" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,7"/>
+                <UniformGrid Columns="2" Margin="0,0,0,16">
+                    <RadioButton x:Name="CurrentPageRadio" Content="Página atual" GroupName="Range" IsChecked="True"
+                                 Checked="CurrentPageRadio_Checked" Margin="0,0,4,0" Style="{StaticResource mPdf.Segmento}"/>
+                    <RadioButton x:Name="AllPagesRadio" Content="Todas as páginas" GroupName="Range"
+                                 Checked="AllPagesRadio_Checked" Margin="4,0,0,0" Style="{StaticResource mPdf.Segmento}"/>
+                </UniformGrid>
+
+                <TextBlock Text="Resolução" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,7"/>
+                <UniformGrid Columns="2" Margin="0,0,0,16">
+                    <RadioButton x:Name="Dpi150Radio" Content="150 DPI" GroupName="Dpi" IsChecked="True"
+                                 Checked="Dpi150Radio_Checked" Margin="0,0,4,0" Style="{StaticResource mPdf.Segmento}"/>
+                    <RadioButton x:Name="Dpi300Radio" Content="300 DPI" GroupName="Dpi"
+                                 Checked="Dpi300Radio_Checked" Margin="4,0,0,0" Style="{StaticResource mPdf.Segmento}"/>
+                </UniformGrid>
+
+                <TextBlock Text="Destino" Style="{StaticResource mPdf.Dialog.Label}"/>
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="Escolher…" Margin="8,0,0,0" Click="PickDestination_Click"
+                            Style="{StaticResource mPdf.Button.DialogNeutro}"/>
+                    <TextBox x:Name="DestinationTextBox" IsReadOnly="True" Style="{StaticResource mPdf.Input}"/>
+                </DockPanel>
+                <!-- Página atual -> arquivo único; todas as páginas -> pasta. Texto muda com o Alcance. -->
+                <TextBlock Text="{Binding CanEditOptions}" Visibility="Collapsed"/>
+            </StackPanel>
+
+            <!-- Fase EXECUÇÃO: progresso. -->
+            <StackPanel Margin="22,20" VerticalAlignment="Center"
+                        Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="{Binding ProgressText}" FontSize="14" TextAlignment="Center" Margin="0,0,0,12"
+                           Foreground="{DynamicResource Cor.TextoPrimario}"/>
+                <ProgressBar IsIndeterminate="True" Height="18"/>
+            </StackPanel>
+
+            <!-- Fase CONCLUÍDO: resultado. -->
+            <StackPanel Margin="22,20" VerticalAlignment="Center"
+                        Visibility="{Binding IsDone, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="Exportação cancelada. As páginas já exportadas foram mantidas."
+                           Foreground="{DynamicResource Cor.Erro}" TextWrapping="Wrap" Margin="0,0,0,8" TextAlignment="Center"
+                           Visibility="{Binding WasCancelled, Converter={StaticResource BoolToVis}}"/>
+                <TextBlock Text="{Binding ErrorMessage, StringFormat='Falha ao exportar: {0}'}"
+                           Foreground="{DynamicResource Cor.Erro}" TextWrapping="Wrap" Margin="0,0,0,8" TextAlignment="Center"
+                           Visibility="{Binding ErrorMessage, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed, TargetNullValue=Collapsed}"/>
+                <TextBlock Text="{Binding ExportedCount, StringFormat='{}{0} página(s) exportada(s) com sucesso.'}"
+                           TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource Cor.TextoPrimario}"/>
+            </StackPanel>
+            </Grid>
+        </DockPanel>
+    </Border>
+</Window>
