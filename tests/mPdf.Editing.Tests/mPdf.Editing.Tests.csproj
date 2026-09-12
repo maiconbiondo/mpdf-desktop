@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Rodada de fechamento final (Plano 3c): PackageReference DIRETA (não herdada da ProjectReference
+         pra mPdf.Editing abaixo, que continua com PrivateAssets=compile — ver comentário dela) só pra
+         HasSignaturesNestedKidsTests.cs construir, EM MEMÓRIA, um AcroForm/Fields malformado de
+         propósito (grupo de campo /Kids aninhado) que nenhum fixture existente tem forma pra exercitar.
+         AgplGuardTests só varre src/**, nunca tests/**, então isto não fura a fronteira AGPL que a
+         guarda garante — a fronteira é sobre o CÓDIGO DE PRODUTO distribuído, não sobre testes. -->
+    <PackageReference Include="itext" Version="9.7.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\mPdf.Editing\mPdf.Editing.csproj" />
+    <!-- Task 5 (Plano 3a): só para abrir o resultado de StripSignatures e conferir PageCount por um
+         caminho INDEPENDENTE do iText (Docnet/PDFium) — a ProjectReference acima pra mPdf.Editing NÃO
+         propaga acesso de COMPILAÇÃO ao iText (PrivateAssets=compile em mPdf.Editing.csproj bloqueia
+         isso), e mesmo que propagasse não seria uma prova real de "conteúdo preservado" reabrir com o
+         MESMO motor que escreveu. (O PackageReference itext acima é uma via DIFERENTE e deliberada,
+         só pra construir fixtures malformadas em memória — ver comentário dela.) -->
+    <ProjectReference Include="..\..\src\mPdf.Rendering\mPdf.Rendering.csproj" />
+  </ItemGroup>
+
+</Project>
