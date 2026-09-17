@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <title>mPDF</title>
+  <defs>
+    <clipPath id="pageClip">
+      <rect x="38" y="16" width="180" height="224" rx="15" ry="15"/>
+    </clipPath>
+  </defs>
+
+  <!-- Page (portrait document, rounded corners) -->
+  <rect x="38" y="16" width="180" height="224" rx="15" ry="15" fill="#1D4E89"/>
+
+  <g clip-path="url(#pageClip)">
+    <!-- Folded corner, top-right -->
+    <polygon points="176,16 218,16 218,58" fill="#0F2E52"/>
+
+    <!-- Text lines, upper half -->
+    <rect x="58" y="54" width="110" height="14" rx="7" fill="#7FA8D9"/>
+    <rect x="58" y="76" width="90" height="14" rx="7" fill="#7FA8D9"/>
+    <rect x="58" y="98" width="125" height="14" rx="7" fill="#7FA8D9"/>
+
+    <!-- Signature stroke ("rubrica"), lower third, clipped to the page bounds -->
+    <path d="M55,205 C85,165 115,255 140,195 C160,175 175,205 195,185"
+          fill="none" stroke="#3EC1A7" stroke-width="12"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="202" cy="178" r="5" fill="#3EC1A7"/>
+  </g>
+</svg>

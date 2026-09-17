@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Plano 24 (2a abordagem): Preview Handler como COM server NATIVE AOT — DLL nativa, SEM CoreCLR pra
+       subir dentro do prevhost sandboxed do Explorer (a causa do hang da 1a abordagem). Produz uma .dll
+       nativa com exports [UnmanagedCallersOnly] (DllGetClassObject/DllCanUnloadNow). COM via source-gen
+       (System.Runtime.InteropServices.Marshalling / StrategyBasedComWrappers). Referencia SO mPdf.Rendering
+       (PDFium/Docnet) — mantem a fronteira AGPL, sem iText/rede. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <!-- Sem símbolos nativos no release: o .pdb nativo e o "debug directory" do PE embutem o CAMINHO
+         ABSOLUTO de build (nome pessoal/pastas) — vazamento real + falha da guarda de caminho do
+         instalador. Sem eles, a DLL nativa não carrega o caminho. -->
+    <NativeDebugSymbols>false</NativeDebugSymbols>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <UseWPF>false</UseWPF>
+    <UseWindowsForms>false</UseWindowsForms>
+    <!-- COM source-gen habilitado por padrao no AOT; sem built-in COM interop (reflection). -->
+    <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\mPdf.Rendering\mPdf.Rendering.csproj" />
+  </ItemGroup>
+
+</Project>
