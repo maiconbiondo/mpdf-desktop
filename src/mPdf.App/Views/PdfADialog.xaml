@@ -1,0 +1,92 @@
+<Window x:Class="mPdf.App.Views.PdfADialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        Title="Salvar como PDF/A" Height="440" Width="480" WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" FontFamily="{DynamicResource Fonte.Inter}">
+    <Window.Resources>
+        <!-- Task 7 (SDD "Salvar como PDF/A"): mescla o tema LOCALMENTE — mesmo motivo de
+             ExportImageDialog.xaml/DialogoImpressao.xaml (Application.Current fica null nas sondas STA
+             que constroem este diálogo direto). -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <DockPanel>
+            <!-- Header -->
+            <Border DockPanel.Dock="Top" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                    BorderThickness="0,0,0,1" Padding="22,18" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <StackPanel Orientation="Horizontal">
+                    <Border Style="{StaticResource mPdf.Dialog.IconeHeader}">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="17" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon shield-check}"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,0,0">
+                        <TextBlock Text="Salvar como PDF/A" Style="{StaticResource mPdf.Dialog.Titulo}"/>
+                        <TextBlock Text="Arquivamento de longo prazo (ISO 19005)" Style="{StaticResource mPdf.Dialog.Subtitulo}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Rodapé: Cancelar / Salvar PDF/A. -->
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Cor.FundoDialogoRodape}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,13,13" Padding="22,16">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancelar" Margin="0,0,10,0" IsCancel="True" Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                    <Button Click="Salvar_Click" Style="{StaticResource mPdf.Button.DialogPrimario}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="14" VerticalAlignment="Center"
+                                       Margin="0,0,7,0" Text="{icons:PhosphorIcon floppy-disk}"/>
+                            <TextBlock Text="Salvar PDF/A" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <!-- Corpo: nível de conformidade (3 segmentos) + "manter pesquisável". -->
+            <StackPanel Margin="22,20">
+                <TextBlock Text="Nível de conformidade" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,9"/>
+                <UniformGrid Columns="3" Margin="0,0,0,18">
+                    <RadioButton x:Name="RbA1b" GroupName="Nivel" IsChecked="True" Margin="0,0,5,0" Style="{StaticResource mPdf.Segmento}">
+                        <StackPanel>
+                            <TextBlock Text="PDF/A-1b" FontWeight="SemiBold" HorizontalAlignment="Center"
+                                       Foreground="{DynamicResource Cor.TextoPrimario}"/>
+                            <TextBlock Text="Compatibilidade máxima" FontSize="10.5" TextWrapping="Wrap" TextAlignment="Center"
+                                       Margin="0,4,0,0" Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="RbA2b" GroupName="Nivel" Margin="5,0,5,0" Style="{StaticResource mPdf.Segmento}">
+                        <StackPanel>
+                            <TextBlock Text="PDF/A-2b" FontWeight="SemiBold" HorizontalAlignment="Center"
+                                       Foreground="{DynamicResource Cor.TextoPrimario}"/>
+                            <TextBlock Text="Compressão e camadas melhores" FontSize="10.5" TextWrapping="Wrap" TextAlignment="Center"
+                                       Margin="0,4,0,0" Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="RbA3b" GroupName="Nivel" Margin="5,0,0,0" Style="{StaticResource mPdf.Segmento}">
+                        <StackPanel>
+                            <TextBlock Text="PDF/A-3b" FontWeight="SemiBold" HorizontalAlignment="Center"
+                                       Foreground="{DynamicResource Cor.TextoPrimario}"/>
+                            <TextBlock Text="Permite anexos embutidos" FontSize="10.5" TextWrapping="Wrap" TextAlignment="Center"
+                                       Margin="0,4,0,0" Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                        </StackPanel>
+                    </RadioButton>
+                </UniformGrid>
+
+                <CheckBox x:Name="ChkPesquisavel" IsChecked="True" Style="{StaticResource mPdf.Check}">
+                    <StackPanel>
+                        <TextBlock Text="Manter pesquisável (reconhecer texto)" Foreground="{DynamicResource Cor.TextoPrimario}"/>
+                        <TextBlock Text="Roda OCR nas páginas sem texto e embute uma camada invisível pesquisável."
+                                   FontSize="10.5" TextWrapping="Wrap" Margin="0,2,0,0"
+                                   Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                    </StackPanel>
+                </CheckBox>
+            </StackPanel>
+        </DockPanel>
+    </Border>
+</Window>
