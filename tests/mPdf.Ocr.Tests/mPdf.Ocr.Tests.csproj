@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- win-x64: mesmo RID de mPdf.Ocr — garante que os nativos x64 (leptonica/tesseract) fluam
+         para o bin deste projeto de teste, provando a resolução a partir de AppContext.BaseDirectory
+         FORA do source (o teste roda do próprio output, não de `dotnet run` no projeto de produto). -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- System.Drawing.Common (Windows) só para GERAR o bitmap sintético de teste — não é dependência
+         do módulo de produto mPdf.Ocr. -->
+    <UseWindowsForms>false</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\mPdf.Ocr\mPdf.Ocr.csproj" />
+  </ItemGroup>
+
+</Project>

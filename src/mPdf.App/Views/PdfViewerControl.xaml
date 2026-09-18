@@ -1,0 +1,285 @@
+<UserControl x:Class="mPdf.App.Views.PdfViewerControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:mPdf.App.ViewModels"
+             xmlns:views="clr-namespace:mPdf.App.Views">
+    <!-- Definido LOCALMENTE (Task 7, Plano 3a) — StaticResource é resolvido no momento em que este
+         UserControl é analisado/carregado (InitializeComponent), não em função de qual Window acaba
+         hospedando a instância depois; não dá pra confiar no BoolToVis de MainWindow.Resources aqui. -->
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+    <DockPanel>
+    <!-- Barra de busca (Task 5): dock top, DataContext = Search do documento (própria por aba);
+         só fica visível quando IsOpen=true (ver SearchBar.xaml). -->
+    <views:SearchBar x:Name="SearchBarControl" DockPanel.Dock="Top" DataContext="{Binding Search}"/>
+    <!-- ListBox = ScrollViewer + virtualização prontos; seleção desativada no estilo -->
+    <!-- Plano 14 (T3): SÓ o Background do host de scroll (a área ATRÁS da página) passa a #0F1017
+         (Cor.FundoViewer) — nenhuma outra mudança neste arquivo. O Border da página, a seleção, os
+         overlays, a caixa do carimbo, os adorners e TODAS as coordenadas continuam intactos; a guarda
+         estrutural (conta só Effect) e os testes de overlay/seleção/caixa/scroll seguem verdes sem
+         mudança. Resolve no nível de Application (App.xaml mescla os tokens); em teste headless sem App
+         o DynamicResource fica sem valor (fundo neutro) — inócuo pro layout/hit-test. -->
+    <ListBox x:Name="PageList"
+             ItemsSource="{Binding Pages}"
+             Background="{DynamicResource Cor.FundoViewer}"
+             BorderThickness="0"
+             Focusable="True"
+             HorizontalContentAlignment="Center"
+             ScrollViewer.HorizontalScrollBarVisibility="Auto"
+             VirtualizingPanel.IsVirtualizing="True"
+             VirtualizingPanel.VirtualizationMode="Recycling"
+             VirtualizingPanel.ScrollUnit="Pixel"
+             VirtualizingPanel.CacheLength="1,1"
+             VirtualizingPanel.CacheLengthUnit="Page">
+        <ListBox.ItemContainerStyle>
+            <Style TargetType="ListBoxItem">
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ListBoxItem">
+                            <ContentPresenter/>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </ListBox.ItemContainerStyle>
+        <ListBox.ItemTemplate>
+            <DataTemplate DataType="{x:Type vm:PageViewModel}">
+                <!-- x:Name="PageBorder" (Task 2, Plano 8): identifica ESTE Border especificamente pra
+                     StampBox_MouseLeftButtonDown/StampBoxHandle_MouseLeftButtonDown (PdfViewerControl.xaml.cs)
+                     acharem o Border DA PÁGINA subindo a árvore a partir de um sub-elemento do adorner —
+                     um FindAncestor<Border> GENÉRICO acharia primeiro o Border de CHROME do tema padrão
+                     do ItemsControl das alças (nenhum Template customizado neste XAML pro ItemsControl),
+                     que fica MAIS PRÓXIMO na árvore e herda o MESMO DataContext (PageViewModel) por
+                     propagação normal — sem o nome, capturar/soltar o mouse acertaria o Border ERRADO
+                     (achado ao vivo escrevendo o teste STA de mouse real). -->
+                <Border x:Name="PageBorder" Width="{Binding DisplayWidth}" Height="{Binding DisplayHeight}"
+                        Background="White" Margin="0,6" SnapsToDevicePixels="True"
+                        Loaded="Page_Loaded" Unloaded="Page_Unloaded"
+                        DataContextChanged="Page_DataContextChanged"
+                        MouseLeftButtonDown="Page_MouseLeftButtonDown"
+                        MouseMove="Page_MouseMove"
+                        MouseLeftButtonUp="Page_MouseLeftButtonUp"
+                        LostMouseCapture="Page_LostMouseCapture">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.4"/>
+                    </Border.Effect>
+                    <!-- Grid: mesmo espaço do Image (que preenche o Border via Stretch="Fill") também
+                         hospeda o overlay de seleção, sobreposto por cima -->
+                    <Grid>
+                        <Image Source="{Binding ImageSource}" Stretch="Fill"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                        <!-- overlay de destaques de busca (Task 5): TODOS os hits desta página, cor
+                             translúcida. Rects vivem no PageViewModel (não no container) — sobrevivem
+                             à reciclagem de virtualização, o binding só reaparece quando a página é
+                             realizada de novo. IsHitTestVisible=False, mesmo motivo da seleção abaixo. -->
+                        <ItemsControl ItemsSource="{Binding HighlightRects}" IsHitTestVisible="False">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <Canvas/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="Canvas.Left" Value="{Binding X}"/>
+                                    <Setter Property="Canvas.Top" Value="{Binding Y}"/>
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Rectangle Fill="#55FFD54F" Width="{Binding Width}" Height="{Binding Height}"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <!-- destaque do hit CORRENTE (cor mais opaca, desenhado por cima do anterior). -->
+                        <ItemsControl ItemsSource="{Binding CurrentHighlightRects}" IsHitTestVisible="False">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <Canvas/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="Canvas.Left" Value="{Binding X}"/>
+                                    <Setter Property="Canvas.Top" Value="{Binding Y}"/>
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Rectangle Fill="#88FF8F00" Width="{Binding Width}" Height="{Binding Height}"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <!-- overlay de seleção: um retângulo por linha selecionada (SelectionRects, já
+                             em px de tela). IsHitTestVisible=False -> nunca rouba o mouse do Border,
+                             que é quem trata down/move/up do arrasto. -->
+                        <ItemsControl ItemsSource="{Binding SelectionRects}" IsHitTestVisible="False">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <Canvas/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="Canvas.Left" Value="{Binding X}"/>
+                                    <Setter Property="Canvas.Top" Value="{Binding Y}"/>
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Rectangle Fill="#5533A2FF" Width="{Binding Width}" Height="{Binding Height}"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <!-- overlay de seleção de ANOTAÇÃO (Task 7, Plano 3a) — exemplar: overlays acima.
+                             Só 1 retângulo (no máx. 1 anotação selecionada no documento inteiro, ver
+                             DocumentViewModel.SelectedAnnotation); IsHitTestVisible=False, mesmo motivo
+                             dos overlays de seleção/destaque: o Border é quem trata o mouse. -->
+                        <Canvas IsHitTestVisible="False">
+                            <Rectangle Canvas.Left="{Binding AnnotationSelectionRect.X}"
+                                       Canvas.Top="{Binding AnnotationSelectionRect.Y}"
+                                       Width="{Binding AnnotationSelectionRect.Width}"
+                                       Height="{Binding AnnotationSelectionRect.Height}"
+                                       Stroke="#FF2196F3" StrokeThickness="2" Fill="#332196F3"
+                                       Visibility="{Binding HasAnnotationSelection, Converter={StaticResource BoolToVis}}"/>
+                        </Canvas>
+                        <!-- destaque do CAMPO DE FORMULÁRIO selecionado (Task 2, Plano 3c) — exemplar
+                             EXATO do overlay de seleção de anotação acima, cor distinta (verde) pra não
+                             confundir com marca-texto/anotação selecionada. -->
+                        <Canvas IsHitTestVisible="False">
+                            <Rectangle Canvas.Left="{Binding FormFieldHighlightRect.X}"
+                                       Canvas.Top="{Binding FormFieldHighlightRect.Y}"
+                                       Width="{Binding FormFieldHighlightRect.Width}"
+                                       Height="{Binding FormFieldHighlightRect.Height}"
+                                       Stroke="#FF4CAF50" StrokeThickness="2" Fill="#334CAF50"
+                                       Visibility="{Binding HasFormFieldHighlight, Converter={StaticResource BoolToVis}}"/>
+                        </Canvas>
+                        <!-- destaque do CARIMBO DE ASSINATURA selecionado (Task 4, Plano 4) — exemplar
+                             EXATO do overlay de campo de formulário acima, cor distinta (laranja) pra não
+                             confundir com marca-texto/anotação/campo selecionado. -->
+                        <Canvas IsHitTestVisible="False">
+                            <Rectangle Canvas.Left="{Binding SignatureStampHighlightRect.X}"
+                                       Canvas.Top="{Binding SignatureStampHighlightRect.Y}"
+                                       Width="{Binding SignatureStampHighlightRect.Width}"
+                                       Height="{Binding SignatureStampHighlightRect.Height}"
+                                       Stroke="#FFFF9800" StrokeThickness="2" Fill="#33FF9800"
+                                       Visibility="{Binding HasSignatureStampHighlight, Converter={StaticResource BoolToVis}}"/>
+                        </Canvas>
+                        <!-- overlay de PRÉVIA de desenho (Task 8, Plano 3a) — Ink (Polyline), Rectangle
+                             (rubber-band), Line/Arrow (Line) — exemplar: overlay de seleção de anotação
+                             acima. IsHitTestVisible=False, mesmo motivo dos demais overlays: o Border é
+                             quem trata o mouse. As 3 formas são mutuamente exclusivas em tempo de
+                             execução (só 1 ferramenta de desenho ativa por vez), mas convivem no mesmo
+                             Canvas sem custo — as 2 escondidas simplesmente não têm nada pra desenhar. -->
+                        <Canvas IsHitTestVisible="False">
+                            <Polyline Points="{Binding InkPreviewPoints}"
+                                      Stroke="#FF2196F3" StrokeThickness="2"
+                                      Visibility="{Binding HasInkPreview, Converter={StaticResource BoolToVis}}"/>
+                            <Rectangle Canvas.Left="{Binding RectPreviewRect.X}"
+                                       Canvas.Top="{Binding RectPreviewRect.Y}"
+                                       Width="{Binding RectPreviewRect.Width}"
+                                       Height="{Binding RectPreviewRect.Height}"
+                                       Stroke="#FF2196F3" StrokeThickness="2"
+                                       Visibility="{Binding HasRectPreview, Converter={StaticResource BoolToVis}}"/>
+                            <Line X1="{Binding LinePreviewStart.X}" Y1="{Binding LinePreviewStart.Y}"
+                                  X2="{Binding LinePreviewEnd.X}" Y2="{Binding LinePreviewEnd.Y}"
+                                  Stroke="#FF2196F3" StrokeThickness="2"
+                                  Visibility="{Binding HasLinePreview, Converter={StaticResource BoolToVis}}"/>
+                        </Canvas>
+                        <!-- Caixa ajustável do carimbo de assinatura (Task 1, Plano 8) — adorner FINO:
+                             toda a geometria (StampBoxScreenRect/StampBoxButtonsPos/StampBoxPreviewText)
+                             já vem PRONTA do DocumentViewModel (RefreshStampBoxOverlay), este XAML só
+                             faz bind — nenhuma aritmética aqui. IsHitTestVisible ligado a
+                             IsStampBoxAdjusting (Task 2, Plano 8): SÓ o corpo em Adjusting responde a
+                             mouse-down (arrastar = MOVER, StampBox_MouseLeftButtonDown) — em Drawing a
+                             caixa fica hit-test-TRANSPARENTE de propósito, senão um 2º clique dentro do
+                             retângulo ainda pequeno (aviso "caixa pequena demais") interceptaria o
+                             gesto que deveria continuar o desenho em Page_MouseLeftButtonDown. -->
+                        <Grid x:Name="StampBoxAdornerGrid"
+                              Canvas.Left="{Binding StampBoxScreenRect.X}" Canvas.Top="{Binding StampBoxScreenRect.Y}"
+                              Width="{Binding StampBoxScreenRect.Width}" Height="{Binding StampBoxScreenRect.Height}"
+                              IsHitTestVisible="{Binding IsStampBoxAdjusting}"
+                              Background="Transparent" Cursor="SizeAll"
+                              MouseLeftButtonDown="StampBox_MouseLeftButtonDown"
+                              Visibility="{Binding HasStampBox, Converter={StaticResource BoolToVis}}">
+                            <!-- Plano 21: caixa mais VISÍVEL — borda laranja mais grossa + véu translúcido; o
+                                 cursor SizeAll no corpo sinaliza que dá pra arrastar/reposicionar. Prévia da
+                                 IMAGEM (rubrica/imagem) quando StampBoxPreviewImage != null (Plano 21 T5),
+                                 senão o texto de prévia (carimbo padrão). -->
+                            <Rectangle Stroke="#FFFF9800" StrokeThickness="2.5" StrokeDashArray="4 2" Fill="#26FF9800"/>
+                            <Image Source="{Binding StampBoxPreviewImage}" Stretch="Uniform" Margin="3"
+                                   Visibility="{Binding HasStampBoxPreviewImage, Converter={StaticResource BoolToVis}}"/>
+                            <TextBlock Text="{Binding StampBoxPreviewText}" TextAlignment="Center"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis" TextWrapping="Wrap" Padding="4"
+                                       FontSize="10" Foreground="#FF5D4200"
+                                       Visibility="{Binding HasStampBoxPreviewText, Converter={StaticResource BoolToVis}}"/>
+                        </Grid>
+                        <!-- 8 alças de redimensionar (só visíveis em Adjusting — brief: handles só depois
+                             de soltar um retângulo válido, não durante o arrasto inicial; StampBoxHandlePoints
+                             fica VAZIO fora de Adjusting — ver DocumentViewModel.RefreshStampBoxOverlay/
+                             PageViewModel.ApplyZoom, achado I3 da revisão final: os 2 lugares que
+                             preenchem esta coleção agora GARANTEM o invariante). Posições calculadas no VM
+                             (DocumentViewModel.RefreshStampBoxOverlay/PageViewModel.ApplyZoom via
+                             StampBoxHandlePoints) — cada item já carrega seu próprio Cursor (canto =
+                             diagonal, borda = NS/WE) E sua identidade StampBoxHandle (Task 2), sem
+                             converter/decidir nada no XAML. Margin negativo centraliza o quadrado 8x8
+                             sobre o ponto (Canvas.Left/Top posicionam o canto SUPERIOR-ESQUERDO do
+                             elemento, não o centro). Mouse-down numa alça arrasta REDIMENSIONANDO
+                             (StampBoxHandle_MouseLeftButtonDown, Task 2). Visibility em IsStampBoxAdjusting
+                             (revisão final, I3): CINTO redundante com a coleção vazia acima — mesmo
+                             espírito defensivo do cinto de MoveBoxBy no VM, nunca depende de UM ÚNICO
+                             mecanismo pra garantir "nenhuma alça fora de Adjusting". -->
+                        <ItemsControl ItemsSource="{Binding StampBoxHandlePoints}"
+                                      Visibility="{Binding IsStampBoxAdjusting, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <Canvas/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="Canvas.Left" Value="{Binding Position.X}"/>
+                                    <Setter Property="Canvas.Top" Value="{Binding Position.Y}"/>
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Rectangle Width="8" Height="8" Margin="-4,-4,0,0"
+                                               Fill="White" Stroke="#FFFF9800" StrokeThickness="1"
+                                               Cursor="{Binding Cursor}"
+                                               MouseLeftButtonDown="StampBoxHandle_MouseLeftButtonDown"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <!-- Botões flutuantes "✔ Assinar aqui"/"✖ Cancelar" (Task 1, Plano 8) — únicos
+                             elementos INTERATIVOS deste adorner (IsHitTestVisible=True, o default —
+                             precisam receber clique). Posição já clampada dentro da página pelo VM
+                             (ComputeStampBoxButtonsPos) — some acima da caixa se ela encostar na borda
+                             de baixo. Click (não Command): mesmo precedente de código-behind já usado
+                             por todo gesto de mouse deste arquivo — ConfirmStampBox/CancelStampBox não
+                             precisam de CanExecute (a visibilidade já é o gate: só aparecem em
+                             Adjusting). -->
+                        <!-- Plano 21: caixinha flutuante compacta (rounded, tema-aware, sombra leve) com os
+                             2 botões — rótulo do confirmar muda conforme o propósito (Assinar/Inserir aqui,
+                             StampBoxConfirmLabel). -->
+                        <Border Canvas.Left="{Binding StampBoxButtonsPos.X}" Canvas.Top="{Binding StampBoxButtonsPos.Y}"
+                                Background="{DynamicResource Cor.FundoDialogo}" BorderBrush="{DynamicResource Cor.Borda}"
+                                BorderThickness="1" CornerRadius="8" Padding="5"
+                                Visibility="{Binding IsStampBoxAdjusting, Converter={StaticResource BoolToVis}}">
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="{Binding StampBoxConfirmLabel}" Style="{DynamicResource mPdf.Button.CarimboConfirmar}"
+                                        Click="StampBoxConfirm_Click"/>
+                                <Button Content="Cancelar" Margin="5,0,0,0" Style="{DynamicResource mPdf.Button.CarimboCancelar}"
+                                        Click="StampBoxCancel_Click"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Border>
+            </DataTemplate>
+        </ListBox.ItemTemplate>
+    </ListBox>
+    </DockPanel>
+</UserControl>

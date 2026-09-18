@@ -1,0 +1,393 @@
+<Window x:Class="mPdf.App.Views.DialogoImpressao"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        Title="Impressão avançada" Height="548" Width="860" MinHeight="430" MinWidth="720" WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize" ShowInTaskbar="False" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" FontFamily="{DynamicResource Fonte.Inter}">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+            <!-- Segmento COMPACTO (o mPdf.Segmento do tema tem Padding=9, alto demais aqui). -->
+            <Style x:Key="SegC" TargetType="RadioButton">
+                <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+                <Setter Property="FontSize" Value="11.5"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="RadioButton">
+                            <Border x:Name="Bd" Background="Transparent" BorderBrush="{DynamicResource Cor.Borda}"
+                                    BorderThickness="1" CornerRadius="6" Padding="4,5" SnapsToDevicePixels="True">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                                </Trigger>
+                                <Trigger Property="IsChecked" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#1A4D8FD6"/>
+                                    <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource Cor.Primaria}"/>
+                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Botão-ícone compacto (nav de folha, zoom) — 26px, só ícone Phosphor. -->
+            <Style x:Key="IconBtn" TargetType="Button">
+                <Setter Property="Width" Value="26"/>
+                <Setter Property="Height" Value="26"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd" Background="Transparent" BorderBrush="{DynamicResource Cor.Borda}"
+                                    BorderThickness="1" CornerRadius="6" SnapsToDevicePixels="True">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter Property="Opacity" Value="0.4"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- ComboBox temático compacto (o tema não tem um) — usado no seletor de impressora. -->
+            <Style x:Key="ComboC" TargetType="ComboBox">
+                <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Height" Value="30"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ComboBox">
+                            <Grid>
+                                <ToggleButton x:Name="tb" Focusable="False" ClickMode="Press"
+                                              IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border x:Name="bd" Background="{DynamicResource Cor.Superficie}" BorderBrush="{DynamicResource Cor.Borda}"
+                                                    BorderThickness="1" CornerRadius="6" Padding="9,0" SnapsToDevicePixels="True">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <ContentPresenter Grid.Column="0" VerticalAlignment="Center" Margin="0,0,4,0"
+                                                                      TextElement.Foreground="{DynamicResource Cor.TextoPrimario}"
+                                                                      TextBlock.Foreground="{DynamicResource Cor.TextoPrimario}"
+                                                                      Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType=ComboBox}}"/>
+                                                    <TextBlock Grid.Column="1" FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12" VerticalAlignment="Center"
+                                                               Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon caret-down}"/>
+                                                </Grid>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+                                <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom"
+                                       AllowsTransparency="True" PopupAnimation="Slide" Focusable="False">
+                                    <Border Background="{DynamicResource Cor.Superficie}" BorderBrush="{DynamicResource Cor.Borda}"
+                                            BorderThickness="1" CornerRadius="6" Margin="0,4,0,0"
+                                            MinWidth="{Binding ActualWidth, ElementName=tb}">
+                                        <Border.Effect>
+                                            <DropShadowEffect BlurRadius="12" ShadowDepth="0" Opacity="0.35" Color="Black"/>
+                                        </Border.Effect>
+                                        <ScrollViewer MaxHeight="240">
+                                            <ItemsPresenter/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </Popup>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+                <Setter Property="ItemContainerStyle">
+                    <Setter.Value>
+                        <Style TargetType="ComboBoxItem">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+                            <Setter Property="Padding" Value="9,6"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ComboBoxItem">
+                                        <Border x:Name="b" Background="Transparent" Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+                                            <ContentPresenter/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="b" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                                            </Trigger>
+                                            <Trigger Property="IsHighlighted" Value="True">
+                                                <Setter TargetName="b" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Rótulo de seção com ícone (ícone Phosphor + texto forte). -->
+            <Style x:Key="SecaoIcone" TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="{DynamicResource Fonte.Phosphor}"/>
+                <Setter Property="FontSize" Value="14"/>
+                <Setter Property="VerticalAlignment" Value="Center"/>
+                <Setter Property="Margin" Value="0,0,6,0"/>
+                <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
+            </Style>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <DockPanel>
+            <!-- ░░ Header ░░ -->
+            <Border DockPanel.Dock="Top" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                    BorderThickness="0,0,0,1" Padding="18,12" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal">
+                        <Border Style="{StaticResource mPdf.Dialog.IconeHeader}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="15" Foreground="White"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon printer}"/>
+                        </Border>
+                        <StackPanel VerticalAlignment="Center" Margin="10,0,0,0">
+                            <TextBlock Text="Impressão avançada" Style="{StaticResource mPdf.Dialog.Titulo}"/>
+                            <TextBlock Text="N-up, livreto e escala — imprimir ou salvar como PDF, com pré-visualização" Style="{StaticResource mPdf.Dialog.Subtitulo}"/>
+                        </StackPanel>
+                    </StackPanel>
+                    <!-- Fechar (X) no canto superior direito -->
+                    <Button Grid.Column="1" Click="Fechar_Click" IsCancel="True" VerticalAlignment="Top" Style="{StaticResource IconBtn}"
+                            Width="28" Height="28" ToolTip="Fechar">
+                        <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon x}"/>
+                    </Button>
+                </Grid>
+            </Border>
+
+            <!-- ░░ Footer: impressora (esquerda) + ações (direita) ░░ -->
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Cor.FundoDialogoRodape}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,13,13" Padding="14,10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Impressora (rodapé): dropdown de seleção + botão de configurações -->
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="15" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon printer}"/>
+                        <ComboBox x:Name="CmbImpressora" Width="258" Margin="8,0,6,0" Style="{StaticResource ComboC}"
+                                  ToolTip="Escolher a impressora" SelectionChanged="CmbImpressora_SelectionChanged"/>
+                        <Button Click="ConfigImpressora_Click" Style="{StaticResource IconBtn}" Width="30" Height="30" ToolTip="Configurações da impressora">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon gear-six}"/>
+                        </Button>
+                    </StackPanel>
+
+                    <!-- Ações -->
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Cancelar" Margin="0,0,7,0" Padding="11,5" FontSize="12" IsCancel="True" Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                        <Button Click="SalvarPdf_Click" Margin="0,0,7,0" Padding="11,5" FontSize="12" ToolTip="Aplicar a imposição e salvar como um novo PDF" Style="{StaticResource mPdf.Button.DialogNeutro}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12" VerticalAlignment="Center" Margin="0,0,5,0" Text="{icons:PhosphorIcon floppy-disk}"/>
+                                <TextBlock Text="Salvar PDF" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="BtnImprimir" Click="Imprimir_Click" Padding="12,5" FontSize="12" Style="{StaticResource mPdf.Button.DialogPrimario}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="12" VerticalAlignment="Center" Margin="0,0,5,0" Text="{icons:PhosphorIcon printer}"/>
+                                <TextBlock Text="Imprimir" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ░░ Corpo: opções (esquerda) + prévia (direita) ░░ -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="330"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Opções — desenhadas pra CABER sem rolagem; ScrollViewer só protege telas minúsculas
+                     (Auto: sem barra quando cabe). -->
+                <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="18,14,18,10">
+                    <!-- Páginas por folha -->
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                        <TextBlock Style="{StaticResource SecaoIcone}" Text="{icons:PhosphorIcon squares-four}"/>
+                        <TextBlock Text="Páginas por folha" Style="{StaticResource mPdf.Dialog.LabelForte}"/>
+                    </StackPanel>
+                    <UniformGrid x:Name="PainelNUp" Columns="6" Margin="0,0,0,7">
+                        <RadioButton x:Name="NUp1" Content="1" GroupName="NUp" IsChecked="True" Checked="Opcao_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <RadioButton x:Name="NUp2" Content="2" GroupName="NUp" Checked="Opcao_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <RadioButton x:Name="NUp4" Content="4" GroupName="NUp" Checked="Opcao_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <RadioButton x:Name="NUp6" Content="6" GroupName="NUp" Checked="Opcao_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <RadioButton x:Name="NUp9" Content="9" GroupName="NUp" Checked="Opcao_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <RadioButton x:Name="NUp16" Content="16" GroupName="NUp" Checked="Opcao_Alterada" Style="{StaticResource SegC}"/>
+                    </UniformGrid>
+                    <UniformGrid x:Name="PainelOrdem" Columns="2" Margin="0,0,0,9">
+                        <RadioButton x:Name="OrdemH" Content="Ordem: linhas" GroupName="Ordem" IsChecked="True" Checked="Opcao_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <RadioButton x:Name="OrdemV" Content="Ordem: colunas" GroupName="Ordem" Checked="Opcao_Alterada" Style="{StaticResource SegC}"/>
+                    </UniformGrid>
+
+                    <!-- Livreto -->
+                    <CheckBox x:Name="ChkLivreto" Margin="0,0,0,9" Checked="Livreto_Alterado" Unchecked="Livreto_Alterado" Style="{StaticResource mPdf.Check}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" VerticalAlignment="Center" Margin="0,0,6,0" Text="{icons:PhosphorIcon book-open}"/>
+                            <TextBlock Text="Livreto (dobrar e grampear no meio)" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </CheckBox>
+
+                    <!-- Escala -->
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                        <TextBlock Style="{StaticResource SecaoIcone}" Text="{icons:PhosphorIcon magnifying-glass}"/>
+                        <TextBlock Text="Escala" Style="{StaticResource mPdf.Dialog.LabelForte}"/>
+                    </StackPanel>
+                    <!-- Ajustar / Real / Reduzir + a própria CAIXA de porcentagem como 4ª opção: digitar/clicar
+                         nela ativa a escala percentual (não há mais um botão "%" separado). -->
+                    <UniformGrid Columns="4">
+                        <RadioButton x:Name="EscAjustar" Content="Ajustar" GroupName="Esc" IsChecked="True" Checked="Escala_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <RadioButton x:Name="EscReal" Content="Real" GroupName="Esc" Checked="Escala_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <RadioButton x:Name="EscReduzir" Content="Reduzir" GroupName="Esc" Checked="Escala_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <Border x:Name="BordaPercent" BorderBrush="{DynamicResource Cor.Borda}" BorderThickness="1" CornerRadius="6"
+                                Background="Transparent" SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="TxtPercent" Grid.Column="0" Text="100" MinWidth="18" BorderThickness="0" Background="Transparent"
+                                         Foreground="{DynamicResource Cor.TextoPrimario}" CaretBrush="{DynamicResource Cor.TextoPrimario}" FontSize="11.5"
+                                         VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Padding="0,4"
+                                         GotFocus="Percent_Ativar" TextChanged="Percent_Digitou"/>
+                                <TextBlock Grid.Column="1" Text="%" VerticalAlignment="Center" Margin="0,0,5,0" FontSize="11.5" Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                            </Grid>
+                        </Border>
+                    </UniformGrid>
+
+                    <!-- Orientação -->
+                    <StackPanel Orientation="Horizontal" Margin="0,10,0,5">
+                        <TextBlock Style="{StaticResource SecaoIcone}" Text="{icons:PhosphorIcon rectangle}"/>
+                        <TextBlock Text="Orientação da folha" Style="{StaticResource mPdf.Dialog.LabelForte}"/>
+                    </StackPanel>
+                    <UniformGrid Columns="3" Margin="0,0,0,9">
+                        <RadioButton x:Name="OriAuto" Content="Automática" GroupName="Ori" IsChecked="True" Checked="Opcao_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <RadioButton x:Name="OriRetrato" Content="Retrato" GroupName="Ori" Checked="Opcao_Alterada" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                        <RadioButton x:Name="OriPaisagem" Content="Paisagem" GroupName="Ori" Checked="Opcao_Alterada" Style="{StaticResource SegC}"/>
+                    </UniformGrid>
+
+                    <!-- Borda -->
+                    <CheckBox x:Name="ChkBorda" Margin="0,0,0,10" Checked="Opcao_Alterada" Unchecked="Opcao_Alterada" Style="{StaticResource mPdf.Check}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" VerticalAlignment="Center" Margin="0,0,6,0" Text="{icons:PhosphorIcon rectangle}"/>
+                            <TextBlock Text="Borda em volta de cada página" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </CheckBox>
+
+                    <!-- Cópias + Intervalo (linha compacta) -->
+                    <Grid Margin="0,0,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,14,0">
+                            <TextBlock Text="Cópias" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,5"/>
+                            <TextBox x:Name="TxtCopias" Text="1" Width="56" Height="26" Padding="6,0" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" HorizontalAlignment="Left" Style="{StaticResource mPdf.Input}"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="Intervalo" Style="{StaticResource mPdf.Dialog.LabelForte}" Margin="0,0,0,5"/>
+                            <UniformGrid Columns="2">
+                                <RadioButton x:Name="RadTodas" Content="Todas" GroupName="Range" IsChecked="True" Checked="Range_Alterado" Margin="0,0,3,0" Style="{StaticResource SegC}"/>
+                                <RadioButton x:Name="RadIntervalo" Content="Intervalo" GroupName="Range" Checked="Range_Alterado" Style="{StaticResource SegC}"/>
+                            </UniformGrid>
+                            <StackPanel x:Name="PainelIntervalo" Orientation="Horizontal" Margin="0,6,0,0" Visibility="Collapsed">
+                                <TextBlock Text="de" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                                <TextBox x:Name="TxtDe" Text="1" Width="50" Height="26" Padding="6,0" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Style="{StaticResource mPdf.Input}" TextChanged="Opcao_Alterada"/>
+                                <TextBlock Text="até" VerticalAlignment="Center" Margin="8,0,6,0" Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                                <TextBox x:Name="TxtAte" Text="1" Width="50" Height="26" Padding="6,0" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" Style="{StaticResource mPdf.Input}" TextChanged="Opcao_Alterada"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+                </ScrollViewer>
+
+                <!-- Pré-visualização -->
+                <Border Grid.Column="1" Background="{DynamicResource Cor.FundoViewer}" BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="1,0,0,0">
+                    <DockPanel Margin="12">
+                        <!-- Barra inferior: navegação (esquerda) + zoom (direita) em colunas — nunca colidem -->
+                        <Grid DockPanel.Dock="Bottom" Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*" MinWidth="8"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="BtnAnterior" Click="FolhaAnterior_Click" Style="{StaticResource IconBtn}" ToolTip="Folha anterior">
+                                    <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon caret-left}"/>
+                                </Button>
+                                <TextBlock x:Name="LblFolha" Text="Folha 1 de 1" VerticalAlignment="Center" Margin="8,0"
+                                           Foreground="{DynamicResource Cor.TextoPrimario}" MinWidth="86" TextAlignment="Center"/>
+                                <Button x:Name="BtnProxima" Click="FolhaProxima_Click" Style="{StaticResource IconBtn}" ToolTip="Próxima folha">
+                                    <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon caret-right}"/>
+                                </Button>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Click="ZoomMenos_Click" Style="{StaticResource IconBtn}" ToolTip="Reduzir zoom">
+                                    <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon minus}"/>
+                                </Button>
+                                <TextBlock x:Name="LblZoom" Text="—" VerticalAlignment="Center" Margin="7,0" MinWidth="40" TextAlignment="Center"
+                                           Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                                <Button Click="ZoomMais_Click" Style="{StaticResource IconBtn}" ToolTip="Aumentar zoom">
+                                    <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon plus}"/>
+                                </Button>
+                                <Button Click="ZoomAjustar_Click" Style="{StaticResource IconBtn}" Margin="6,0,0,0" ToolTip="Ajustar à janela">
+                                    <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon corners-out}"/>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                        <!-- Folha (papel branco com sombra) num ScrollViewer; zoom via Ctrl+roda ou botões -->
+                        <ScrollViewer x:Name="PreviewScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      Background="Transparent" PreviewMouseWheel="Preview_MouseWheel" SizeChanged="PreviewScroll_SizeChanged">
+                            <Border Background="White" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="10"
+                                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="1" SnapsToDevicePixels="True">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="14" ShadowDepth="0" Opacity="0.35" Color="Black"/>
+                                </Border.Effect>
+                                <Image x:Name="ImgPreview"/>
+                            </Border>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+            </Grid>
+        </DockPanel>
+    </Border>
+</Window>
