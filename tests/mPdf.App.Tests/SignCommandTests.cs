@@ -146,6 +146,15 @@ public class SignCommandTests : IDisposable
     private readonly List<string> _tempFilesToDelete = [];
     private readonly List<string> _tempDirsToDelete = [];
 
+    // FLUXO ADOBE (nova UX): assinar NÃO sobrescreve o original — grava um arquivo NOVO via "Salvar como"
+    // e abre o assinado. Estas seams capturam o "Salvar como" (path escolhido), a gravação (path+bytes) e
+    // a abertura do assinado. `_savePickerReturns = null` simula o usuário CANCELAR o "Salvar como".
+    private string? _savePickerReturns = @"C:\out\assinado.pdf";
+    private readonly List<string> _savePickerSuggestions = [];
+    private readonly List<(string path, byte[] bytes)> _written = [];
+    private readonly List<string> _openedAfterSign = [];
+    private bool _writeThrowsIO; // simula disco cheio/arquivo travado na gravação do assinado
+
     public void Dispose()
     {
         foreach (var f in _tempFilesToDelete) TryDeleteFile(f);
@@ -227,7 +236,11 @@ public class SignCommandTests : IDisposable
             signDialog: dialog,
             signingEngine: engine,
             confirmSaveBeforeSign: confirm,
-            listSigningCertificates: () => new[] { FakeCertificateInfo(cert) });
+            listSigningCertificates: () => new[] { FakeCertificateInfo(cert) },
+            // Seams do fluxo Adobe (Salvar como + gravar + abrir o assinado) — ver campos no topo.
+            pickPdfToSave: suggested => { _savePickerSuggestions.Add(suggested); return _savePickerReturns; },
+            writeAllBytes: (path, bytes) => { if (_writeThrowsIO) throw new IOException("Não foi possível salvar (destino travado)."); _written.Add((path, bytes)); },
+            openSavedDocument: path => { _openedAfterSign.Add(path); return Task.CompletedTask; });
         return (doc, editor, engine, dialog, confirm, errors, infos, cert);
     }
 
@@ -325,49 +338,66 @@ public class SignCommandTests : IDisposable
         }
     }
 
-    [Fact] // recusa aborta o fluxo INTEIRO — nem o diálogo de assinatura nem o motor são alcançados.
-    public async Task Sign_DocDirty_ConfirmDeclined_AbortsWithoutSigning()
+    [Fact] // FLUXO ADOBE: doc sujo NÃO pergunta nada — assina direto o snapshot EM MEMÓRIA (com as
+    // edições não salvas) e grava o resultado num arquivo NOVO; o original NUNCA é tocado/salvo.
+    public async Task Sign_DocDirty_SignsInMemory_WithoutPromptingOrTouchingOriginal()
     {
-        var (doc, _, engine, dialog, confirm, _, _, cert) = BuildForSigning(confirmSaveResult: false);
+        var (doc, _, engine, dialog, confirm, _, _, cert) = BuildForSigning();
         using var d = doc;
         using (cert)
         {
             d.Session.Apply(Fixtures.ThirtyPages()); // suja
             Assert.True(d.IsDirty);
+            var originalBytes = File.ReadAllBytes(d.Session.FilePath);
 
             await d.SignCommand.ExecuteAsync(null);
 
-            Assert.Equal(1, confirm.CallCount);
-            Assert.Equal(0, dialog.CallCount);
-            Assert.Equal(0, engine.SignCallCount);
-            Assert.True(d.IsDirty); // continua sujo -- nada foi salvo
-            Assert.False(d.Session.IsEditInFlight); // funil NUNCA armou
+            Assert.Equal(0, confirm.CallCount); // NUNCA pergunta "salvar antes de assinar"
+            Assert.Equal(1, dialog.CallCount);
+            Assert.Equal(1, engine.SignCallCount);
+            // o motor recebeu o snapshot EM MEMÓRIA (30 páginas), não uma versão salva do original.
+            Assert.Equal(Fixtures.ThirtyPages(), engine.LastRequest!.Pdf);
+            // o arquivo ORIGINAL em disco continua intocado (não foi salvo nem sobrescrito).
+            Assert.Equal(originalBytes, File.ReadAllBytes(d.Session.FilePath));
+            Assert.True(d.IsDirty); // ainda sujo — nada foi salvo no original
         }
     }
 
-    [Fact] // aceito -> salva ANTES de assinar (assina o snapshot SALVO, nunca bytes não persistidos).
-    public async Task Sign_DocDirty_ConfirmAccepted_SavesBeforeSigning()
+    [Fact] // o resultado assinado vai pra um arquivo NOVO ("Salvar como"), com nome sugerido, e é ABERTO.
+    public async Task Sign_WritesSignedBytesToChosenFile_AndOpensIt()
     {
-        var tmp = CopyFixtureToTemp();
-        var editor = new FakePdfEditor { HasSignaturesResult = false };
-        var engine = new FakeSigningEngine();
-        using var cert = CreateEphemeralRsaCertificate();
-        var dialog = new FakeSignDialogService(new SignDialogResult(cert, null, null, ApplyDocMdp: true, PlaceStamp: false));
-        var confirm = new FakeConfirmSaveBeforeSignService(true);
-        using var d = new DocumentViewModel(
-            DocumentSession.Open(tmp), editor: editor, config: new AppConfig(NewConfigDir()),
-            notifyError: _ => { }, notifyInfo: _ => { }, signDialog: dialog, signingEngine: engine,
-            confirmSaveBeforeSign: confirm, listSigningCertificates: () => new[] { FakeCertificateInfo(cert) });
+        var (doc, _, engine, _, _, errors, _, cert) = BuildForSigning();
+        using var d = doc;
+        using (cert)
+        {
+            await d.SignCommand.ExecuteAsync(null);
 
-        d.Session.Apply(Fixtures.ThirtyPages());
-        Assert.True(d.IsDirty);
+            Assert.Empty(errors);
+            var (path, bytes) = Assert.Single(_written);
+            Assert.Equal(@"C:\out\assinado.pdf", path);           // caminho escolhido no "Salvar como"
+            Assert.Equal(Fixtures.ThirtyPages(), bytes);          // bytes ASSINADOS (saída do motor fake)
+            Assert.Equal(@"C:\out\assinado.pdf", Assert.Single(_openedAfterSign)); // abriu o assinado
+            Assert.Contains(_savePickerSuggestions, s => s.EndsWith("(assinado).pdf")); // nome sugerido
+        }
+    }
 
-        await d.SignCommand.ExecuteAsync(null);
+    [Fact] // cancelar o "Salvar como" aborta SEM gravar nada e SEM abrir — o original fica intocado.
+    public async Task Sign_SaveAsCancelled_NothingWritten_NothingOpened()
+    {
+        var (doc, _, engine, _, _, errors, _, cert) = BuildForSigning();
+        using var d = doc;
+        using (cert)
+        {
+            _savePickerReturns = null; // usuário cancelou o "Salvar como"
 
-        Assert.Equal(1, confirm.CallCount);
-        Assert.Equal(1, engine.SignCallCount);
-        // o motor recebeu o snapshot JÁ SALVO (30 páginas), prova de que Save aconteceu ANTES do Sign.
-        Assert.Equal(Fixtures.ThirtyPages(), engine.LastRequest!.Pdf);
+            await d.SignCommand.ExecuteAsync(null);
+
+            Assert.Equal(1, engine.SignCallCount); // o motor até assinou em memória...
+            Assert.Empty(_written);                // ...mas nada foi gravado
+            Assert.Empty(_openedAfterSign);        // nem aberto
+            Assert.Empty(errors);                  // cancelar não é erro
+            Assert.False(d.Session.IsEditInFlight); // funil solto
+        }
     }
 
     // ---- diálogo: allowDocMdp / cancelamento -----------------------------------------------------
@@ -437,42 +467,27 @@ public class SignCommandTests : IDisposable
 
     // ---- sem carimbo: assina direto ---------------------------------------------------------------
 
-    [Fact]
-    public async Task Sign_NoStamp_SignsImmediately_CommitsAndNotifiesExactMessage()
+    [Fact] // FLUXO ADOBE: assinar (sem carimbo) gera o assinado num arquivo NOVO e o abre; o documento
+    // ATUAL (original) fica intocado — IsSignedDocument continua false, snapshot inalterado.
+    public async Task Sign_NoStamp_SignsToNewFile_OriginalDocUnchanged()
     {
         var (doc, _, engine, _, _, errors, infos, cert) = BuildForSigning();
         using var d = doc;
         using (cert)
         {
+            var snapshotBefore = d.Session.Snapshot;
+
             await d.SignCommand.ExecuteAsync(null);
 
             Assert.Empty(errors);
             Assert.Equal(1, engine.SignCallCount);
-            Assert.True(d.IsSignedDocument);
-            Assert.Equal(Fixtures.ThirtyPages(), d.Session.Snapshot); // trocou pro resultado do motor
+            Assert.False(d.IsSignedDocument);                 // o doc ATUAL não é o assinado
+            Assert.Same(snapshotBefore, d.Session.Snapshot);  // original em memória inalterado
+            Assert.Single(_written);                          // o assinado foi gravado num arquivo novo
+            Assert.Single(_openedAfterSign);                  // e aberto numa aba nova
             var msg = Assert.Single(infos);
-            Assert.Equal("Documento assinado e salvo. O histórico de desfazer foi limpo.", msg);
-            Assert.Equal(AnnotationTool.None, d.ActiveTool); // nunca entrou em modo de colocação
-        }
-    }
-
-    [Fact] // brief: "after signing, CanEdit false, banner visible, organizer mutators disabled" -- o
-    // MESMO mecanismo de OnIsSignedDocumentChanged que já existia pra HasSignatures na abertura reage
-    // aqui de graça (SignCoreAsync só seta IsSignedDocument=true, nenhum código NOVO de propagação).
-    public async Task Sign_NoStamp_AfterSigning_CanEditFalse_AndOrganizerMutatorsDisabled()
-    {
-        var (doc, _, _, _, _, _, _, cert) = BuildForSigning();
-        using var d = doc;
-        using (cert)
-        {
-            d.IsOrganizerOpen = true;
-            d.Organizer!.ToggleSelect(0, ctrl: false);
-            Assert.True(d.Organizer!.RotateSelectedCommand.CanExecute(null)); // sanity ANTES de assinar
-
-            await d.SignCommand.ExecuteAsync(null);
-
-            Assert.False(d.CanEdit);
-            Assert.False(d.Organizer!.RotateSelectedCommand.CanExecute(null)); // CanEdit=false propagou pro organizador
+            Assert.Contains("assinado", msg, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(AnnotationTool.None, d.ActiveTool);  // nunca entrou em modo de colocação
         }
     }
 
@@ -519,9 +534,9 @@ public class SignCommandTests : IDisposable
         }
     }
 
-    [Fact] // controle: doc LIMPO (sem salvamento forçado) -> mensagem de erro é o texto CRU do motor,
-    // SEM o sufixo composto (ver ComposeSignFailureMessage) — contraste direto do teste "compound" abaixo.
-    public async Task Sign_EngineThrowsPdfSigningException_NotifiesError_DoesNotCommit()
+    [Fact] // motor lança -> erro pt-BR CRU (sem sufixo composto: não há mais salvamento forçado) e
+    // NADA é gravado; o documento atual fica intocado, funil solto.
+    public async Task Sign_EngineThrowsPdfSigningException_NotifiesError_WritesNothing()
     {
         var (doc, _, engine, _, _, errors, infos, cert) = BuildForSigning();
         using var d = doc;
@@ -533,40 +548,17 @@ public class SignCommandTests : IDisposable
             await d.SignCommand.ExecuteAsync(null);
 
             var msg = Assert.Single(errors);
-            Assert.Equal("Não foi possível acessar a chave privada.", msg); // SEM sufixo -- doc não estava sujo
+            Assert.Equal("Não foi possível acessar a chave privada.", msg); // texto CRU do motor
             Assert.Empty(infos);
+            Assert.Empty(_written);           // nada gravado
+            Assert.Empty(_openedAfterSign);   // nada aberto
             Assert.False(d.IsSignedDocument);
             Assert.Same(snapshotBefore, d.Session.Snapshot);
             Assert.False(d.Session.IsEditInFlight); // funil solto mesmo em falha
         }
     }
 
-    [Fact] // "compound failure message" (revisão do coordenador, achado real): o salvamento FORÇADO
-    // pré-assinatura (doc sujo -> aceitou salvar) JÁ aconteceu quando o motor falha -- sem o sufixo, o
-    // usuário veria só o erro do motor, sem saber que o arquivo em disco já foi sobrescrito (sem
-    // assinatura nenhuma). Caminho composto: sujo -> aceita salvar -> motor lança -> mensagem tem as
-    // DUAS partes.
-    public async Task Sign_DirtyDocAcceptedSave_EngineThrows_MessageMentionsBothEngineErrorAndUnsignedSave()
-    {
-        var (doc, _, engine, _, confirm, errors, infos, cert) = BuildForSigning(confirmSaveResult: true);
-        using var d = doc;
-        using (cert)
-        {
-            d.Session.Apply(Fixtures.ThirtyPages()); // suja
-            engine.ThrowOnSign = new PdfSigningException("Não foi possível acessar a chave privada.");
-
-            await d.SignCommand.ExecuteAsync(null);
-
-            Assert.Equal(1, confirm.CallCount); // prova que o salvamento forçado FOI consultado/aceito
-            var msg = Assert.Single(errors);
-            Assert.Contains("Não foi possível acessar a chave privada.", msg);
-            Assert.Contains("O documento foi salvo, mas NÃO está assinado.", msg);
-            Assert.Empty(infos);
-            Assert.False(d.IsSignedDocument);
-        }
-    }
-
-    [Fact] // I1 (revisão final): mesmo mecanismo de Sign_EngineThrowsPdfSigningException_NotifiesError_DoesNotCommit
+    [Fact] // I1 (revisão final): mesmo mecanismo de Sign_EngineThrowsPdfSigningException_NotifiesError_WritesNothing
     // acima, nomeando especificamente a recusa DocMDP P=1 que PadesSigningEngine.Sign agora impõe
     // (ver task-1-report.md) -- documento certificado NO_CHANGES_PERMITTED recusa até uma 2ª
     // assinatura de aprovação; o VM só precisa continuar repassando a mensagem tipada do motor, sem
@@ -587,36 +579,31 @@ public class SignCommandTests : IDisposable
             var msg = Assert.Single(errors);
             Assert.Contains("certificado", msg, StringComparison.OrdinalIgnoreCase);
             Assert.Empty(infos);
+            Assert.Empty(_written); // nada gravado
             Assert.False(d.IsSignedDocument);
             Assert.Same(snapshotBefore, d.Session.Snapshot);
             Assert.False(d.Session.IsEditInFlight);
         }
     }
 
-    [Fact] // I2 (revisão final, achado do revisor): Session.CommitSigned grava em disco de verdade
-    // (AtomicWrite) -- se o destino estiver travado (arquivo aberto por outro processo, sharing
-    // violation -- ou disco cheio na prática) a IOException NÃO era pega antes: escapava de
-    // SignCoreAsync sem notificação nenhuma. No caminho COM carimbo (fire-and-forget
-    // `_ = doc.PlaceSignatureStampAtAsync(...)`, PdfViewerControl.xaml.cs) isso virava uma Task não
-    // observada -- silêncio TOTAL do ponto de vista do usuário (TaskScheduler.UnobservedTaskException
-    // só loga em CrashLog, nunca mostra MessageBox nenhum). Mesmo exemplar de
-    // DocumentSessionTests.Save_DestinationLocked_ThrowsReadableException_OriginalIntact_TempCleanedUp
-    // (mPdf.Documents.Tests) -- trava o destino de VERDADE com FileShare.None, não um mock/fake.
-    public async Task Sign_CommitSignedThrowsIOException_NotifiesComposedMessage_FunnelReleased()
+    [Fact] // gravar o arquivo assinado falha (disco cheio/destino travado) -> IOException vira erro
+    // pt-BR (nunca uma Task não observada, já que o caminho COM carimbo é fire-and-forget). O motor
+    // RODOU (assinou em memória); só a gravação do NOVO arquivo falhou. Funil solto.
+    public async Task Sign_WriteSignedFileThrowsIOException_NotifiesError_FunnelReleased()
     {
         var (doc, _, engine, _, _, errors, infos, cert) = BuildForSigning();
         using var d = doc;
         using (cert)
         {
-            using (new FileStream(d.Session.FilePath, FileMode.Open, FileAccess.Read, FileShare.None))
-            {
-                await d.SignCommand.ExecuteAsync(null);
-            }
+            _writeThrowsIO = true;
+
+            await d.SignCommand.ExecuteAsync(null);
 
             var msg = Assert.Single(errors);
-            Assert.Contains("Não foi possível salvar", msg); // mesma mensagem de AtomicWrite.BuildFailureMessage
+            Assert.Contains("Não foi possível salvar", msg);
             Assert.Empty(infos);
-            Assert.Equal(1, engine.SignCallCount); // o motor RODOU (assinou em memória) -- só o commit em disco falhou
+            Assert.Equal(1, engine.SignCallCount); // o motor assinou em memória -- só a gravação falhou
+            Assert.Empty(_openedAfterSign);        // não abriu nada
             Assert.False(d.IsSignedDocument);
             Assert.False(d.Session.IsEditInFlight); // funil solto mesmo em falha de I/O
         }
@@ -645,12 +632,13 @@ public class SignCommandTests : IDisposable
     /// Task 2 (Plano 8): desenha + ajusta (move + redimensiona) a caixa a partir de um retângulo
     /// conhecido -- exemplar pros testes de confirmação abaixo, mesmo padrão de
     /// StampBoxPlacementTests.BeginAdjusting, mas passando pelo gatilho REAL (BeginStampBoxPlacementAsync).
+    // Desenha a caixa (mouse-down + arrasto) SEM soltar — o teste chama `await d.EndStampDrawAsync()`
+    // pra soltar o mouse (que, no fluxo Adobe, ASSINA na hora, sem ajuste nem confirmar).
     private static DocumentViewModel DrawBox(DocumentViewModel d,
         double left, double bottom, double right, double top)
     {
         d.BeginStampBoxPlacementAsync(0, new PdfPoint(left, bottom)).GetAwaiter().GetResult();
         d.UpdateDrawTo(new PdfPoint(right, top));
-        d.EndStampDraw();
         return d;
     }
 
@@ -687,10 +675,11 @@ public class SignCommandTests : IDisposable
         }
     }
 
-    [Fact] // gate de rotação (exemplar: PlaceSignatureStampAtAsync original, migrado pro INÍCIO do
-    // arrasto) -- recusa com o MESMO aviso pt-BR, ferramenta continua ativa (usuário pode tentar outra
-    // página), a máquina NUNCA entra em Drawing.
-    public async Task BeginStampBoxPlacementAsync_RotatedPage_RefusesWithNotice_ToolStaysActive()
+    [Fact] // Carimbo em página GIRADA agora é SUPORTADO (StampRotation converte o retângulo EXIBIDO ->
+    // MediaBox no motor; o iText endireita a aparência). O gate de rotação que existia SÓ neste fluxo de
+    // assinatura foi removido — a colocação entra em Drawing normalmente, SEM o aviso "Página girada"
+    // (diferente das anotações genéricas, que continuam gateadas em outra versão).
+    public async Task BeginStampBoxPlacementAsync_RotatedPage_EntersDrawing_NoLongerBlocked()
     {
         var (doc, editor, engine, dialog, _, errors, _, cert) = BuildForSigning();
         using var d = doc;
@@ -706,20 +695,19 @@ public class SignCommandTests : IDisposable
 
             await d.BeginStampBoxPlacementAsync(0, new PdfPoint(100, 100));
 
-            Assert.Equal(0, engine.SignCallCount);
-            Assert.Contains(errors, e => e.Contains("Página girada"));
-            Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool); // continua ativa
-            Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase); // NUNCA entrou em Drawing
-            Assert.False(d.IsSignedDocument);
-            Assert.False(d.Session.IsEditInFlight); // funil solto -- pode tentar outra página
+            Assert.DoesNotContain(errors, e => e.Contains("Página girada"));
+            Assert.Equal(StampPlacementPhase.Drawing, d.StampPlacementPhase); // ENTROU em Drawing
+            Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool);
+            Assert.False(d.IsSignedDocument); // commit só no Confirmar
         }
     }
 
     // ---- ConfirmSignatureStampAsync: confirma a caixa AJUSTADA -> motor recebe o rect FINAL ----------
 
-    [Fact] // CONTRATO CENTRAL do Task 2: o motor recebe o rect AJUSTADO (mover + redimensionar), não
-    // mais o tamanho fixo 180x60 do clique único antigo (DefaultStampWidthPt/DefaultStampHeightPt).
-    public async Task ConfirmSignatureStampAsync_CommitsWithAdjustedRect_NotTheOldFixedSize()
+    [Fact] // FLUXO ADOBE: soltar o mouse (EndStampDrawAsync) assina na hora com o rect DESENHADO — sem
+    // fase de ajuste (mover/redimensionar) nem botão confirmar. O motor recebe exatamente a caixa
+    // arrastada; o assinado vai pra arquivo novo (o doc atual não vira assinado).
+    public async Task Sign_WithStamp_DrawnBoxRectPassedToEngine_ThenSavedAsAndOpened()
     {
         var (doc, _, engine, dialog, _, errors, infos, cert) = BuildForSigning();
         using var d = doc;
@@ -728,24 +716,23 @@ public class SignCommandTests : IDisposable
             dialog.Result = new SignDialogResult(cert, "Motivo", "Local", ApplyDocMdp: true, PlaceStamp: true);
             await d.SignCommand.ExecuteAsync(null);
 
-            DrawBox(d, 100, 100, 300, 200); // 200x100pt -- bem diferente do fixo 180x60
-            d.MoveBoxBy(new PdfPoint(20, -10));                          // 120,90 - 320,190
-            d.ResizeBoxByHandle(StampBoxHandle.Right, new PdfPoint(50, 0)); // 120,90 - 370,190
-
-            await d.ConfirmSignatureStampAsync();
+            DrawBox(d, 100, 100, 300, 200); // 200x100pt
+            await d.EndStampDrawAsync();     // soltar o mouse = assina na hora
 
             Assert.Empty(errors);
             Assert.Equal(1, engine.SignCallCount);
             var stamp = engine.LastRequest!.Stamp;
             Assert.NotNull(stamp);
             Assert.Equal(0, stamp!.PageIndex);
-            Assert.Equal(120, stamp.Rect.LeftPt, 0.01);
-            Assert.Equal(90, stamp.Rect.BottomPt, 0.01);
-            Assert.Equal(370, stamp.Rect.RightPt, 0.01);
-            Assert.Equal(190, stamp.Rect.TopPt, 0.01);
-            Assert.True(d.IsSignedDocument);
+            Assert.Equal(100, stamp.Rect.LeftPt, 0.01);
+            Assert.Equal(100, stamp.Rect.BottomPt, 0.01);
+            Assert.Equal(300, stamp.Rect.RightPt, 0.01);
+            Assert.Equal(200, stamp.Rect.TopPt, 0.01);
+            Assert.Single(_written);              // assinado gravado em arquivo novo
+            Assert.Single(_openedAfterSign);      // e aberto numa aba nova
+            Assert.False(d.IsSignedDocument);     // o doc ATUAL continua sendo o original
             Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase);
-            Assert.Equal(AnnotationTool.None, d.ActiveTool); // one-shot: desativa após commit
+            Assert.Equal(AnnotationTool.None, d.ActiveTool);
             Assert.Single(infos);
         }
     }
@@ -778,7 +765,7 @@ public class SignCommandTests : IDisposable
             dialog.Result = new SignDialogResult(cert, null, null, ApplyDocMdp: true, PlaceStamp: true, RubricaBytes: RubricaPng);
             await d.SignCommand.ExecuteAsync(null);
             DrawBox(d, 100, 100, 300, 200);
-            await d.ConfirmSignatureStampAsync();
+            await d.EndStampDrawAsync();
 
             Assert.Empty(errors);
             var stamp = engine.LastRequest!.Stamp;
@@ -797,7 +784,7 @@ public class SignCommandTests : IDisposable
             dialog.Result = new SignDialogResult(cert, null, null, ApplyDocMdp: true, PlaceStamp: true); // RubricaBytes default null
             await d.SignCommand.ExecuteAsync(null);
             DrawBox(d, 100, 100, 300, 200);
-            await d.ConfirmSignatureStampAsync();
+            await d.EndStampDrawAsync();
 
             Assert.Null(engine.LastRequest!.Stamp!.ImageBytes);
         }
@@ -868,7 +855,7 @@ public class SignCommandTests : IDisposable
             await d.SignCommand.ExecuteAsync(null);
 
             DrawBox(d, 100, 100, 300, 200);
-            Assert.Equal(StampPlacementPhase.Adjusting, d.StampPlacementPhase); // sanity
+            Assert.Equal(StampPlacementPhase.Drawing, d.StampPlacementPhase); // desenhando (Adobe: sem Adjusting)
 
             SelectSomeText(d.Pages[0]);
             Assert.True(d.HasActiveSelection); // sanity
@@ -877,19 +864,20 @@ public class SignCommandTests : IDisposable
 
             Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase); // já resetado (COM aviso, fix pós-revisão)
             // o aviso já disparou AQUI (dentro de OnSessionApplied, síncrono com ApplyMarkupCommand acima)
-            // -- exatamente 1 vez, com a MESMA mensagem que o cinto de SignCoreAsync usa.
+            // -- exatamente 1 vez, com a MESMA mensagem estabelecida.
             var noticeFromMutation = Assert.Single(errors);
             Assert.Equal(
                 "O documento foi alterado durante o posicionamento do carimbo. A assinatura foi cancelada — assine novamente.",
                 noticeFromMutation);
 
-            await d.ConfirmSignatureStampAsync();
+            await d.EndStampDrawAsync(); // soltar o mouse agora é no-op (placement já foi cancelado)
 
             Assert.Equal(0, engine.SignCallCount); // motor NUNCA alcançado
-            Assert.Single(errors); // NENHUM aviso duplicado no Confirmar -- continua sendo só o de OnSessionApplied
+            Assert.Empty(_written); // nada assinado/gravado
+            Assert.Single(errors); // NENHUM aviso duplicado
             Assert.Empty(infos);
             Assert.False(d.IsSignedDocument);
-            Assert.Equal(AnnotationTool.None, d.ActiveTool); // RESET completo -- não "tente de novo" com o pending antigo
+            Assert.Equal(AnnotationTool.None, d.ActiveTool); // RESET completo
             Assert.False(d.Session.IsEditInFlight); // funil nunca armou
         }
     }
@@ -966,148 +954,21 @@ public class SignCommandTests : IDisposable
         }
     }
 
-    // ---- Task 2 (Plano 7, fix CRÍTICO pós-revisão): NeedsSaveAs precisa relocar (Salvar Como) ANTES de
-    // assinar — sem isto, `SignCoreAsync`/`Session.CommitSigned` gravaria o PDF ASSINADO de volta no
-    // MESMO arquivo temporário em `%TEMP%\mPDF\open-<guid>\`, e `MarkSaved` limparia `IsDirty`: a
-    // assinatura (documento LEGAL) desapareceria em silêncio na próxima limpeza do SO — achado end-to-end
-    // confirmado pelo revisor, o caso de uso CENTRAL do Plano 7 ("abrir foto -> assinar").
-
-    private string NewSaveAsTargetPath()
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"mpdf-sign-relocated-{Guid.NewGuid():N}.pdf");
-        _tempFilesToDelete.Add(path);
-        return path;
-    }
-
-    [Fact] // (a) SaveAs roda ANTES do diálogo de assinatura E antes do motor -- ordem, não só CallCount.
-    public async Task Sign_NeedsSaveAs_RelocatesBeforeSignDialogAndEngine()
-    {
-        var callOrder = new List<string>();
-        var target = NewSaveAsTargetPath();
-        var dialogs = new FakeSaveAsDialogService(target, callOrder);
-        var (doc, _, engine, dialog, _, _, _, cert) = BuildForSigning(dialogs: dialogs);
-        using var d = doc;
-        using (cert)
-        {
-            d.NeedsSaveAs = true;
-            dialog.CallOrder = callOrder;
-            engine.CallOrder = callOrder;
-
-            await d.SignCommand.ExecuteAsync(null);
-
-            Assert.Equal(new[] { "saveAs", "signDialog", "engine" }, callOrder);
-            Assert.Equal(1, dialogs.PickPdfToSaveAsCallCount);
-        }
-    }
-
-    [Fact] // (b) diálogo de relocação CANCELADO -- Sign aborta LIMPO: funil nunca arma, motor nunca
-    // chamado, diálogo de assinatura nunca chamado, documento intocado (mesmo contrato de recusa já
-    // usado por "doc sujo -> confirmação recusada" acima).
-    public async Task Sign_NeedsSaveAs_SaveAsCancelled_AbortsCleanly_FunnelNeverArmed()
-    {
-        var dialogs = new FakeSaveAsDialogService(saveAsResult: null);
-        var (doc, _, engine, dialog, confirm, errors, _, cert) = BuildForSigning(dialogs: dialogs);
-        using var d = doc;
-        using (cert)
-        {
-            d.NeedsSaveAs = true;
-            var originalPath = d.Session.FilePath;
-
-            await d.SignCommand.ExecuteAsync(null);
-
-            Assert.Equal(1, dialogs.PickPdfToSaveAsCallCount);
-            Assert.Equal(0, confirm.CallCount); // nem chegou no dirty-check/forced-save existente
-            Assert.Equal(0, dialog.CallCount); // diálogo de assinatura NUNCA aberto
-            Assert.Equal(0, engine.SignCallCount);
-            Assert.False(d.Session.IsEditInFlight); // funil NUNCA armado
-            Assert.True(d.NeedsSaveAs); // ainda precisa relocar
-            Assert.Equal(originalPath, d.Session.FilePath); // nada mudou
-            Assert.Empty(errors); // cancelar não é uma falha -- sem notificação de erro
-        }
-    }
-
-    [Fact] // (c) integração: motor REAL + certificado efêmero REAL -- assina no caminho ESCOLHIDO
-    // (nunca no temp original), NeedsSaveAs zera, estado pós-assinatura é "limpo" (fecharia sem prompt).
-    public async Task Sign_NeedsSaveAs_Accepted_Integration_SignsAtChosenPath_NeedsSaveAsCleared()
-    {
-        var tempPath = CopyFixtureToTemp(); // simula o PDF temporário em %TEMP%\mPDF\open-<guid>\
-        var originalTempBytes = File.ReadAllBytes(tempPath);
-        var target = NewSaveAsTargetPath();
-        using var cert = CreateEphemeralRsaCertificate();
-        var realEngine = SigningEngineFactory.Create();
-        var dialogs = new FakeSaveAsDialogService(target);
-        var signDialog = new FakeSignDialogService(new SignDialogResult(cert, "Aprovação", "Escritório", ApplyDocMdp: true, PlaceStamp: false));
-
-        using var d = new DocumentViewModel(
-            DocumentSession.Open(tempPath),
-            editor: PdfEditorFactory.Create(), // real -- HasSignatures precisa ler o PDF de verdade
-            config: new AppConfig(NewConfigDir()),
-            notifyError: _ => { }, notifyInfo: _ => { },
-            dialogs: dialogs,
-            signDialog: signDialog, signingEngine: realEngine,
-            confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
-            listSigningCertificates: () => new[] { FakeCertificateInfo(cert) });
-        d.NeedsSaveAs = true;
-
-        await d.SignCommand.ExecuteAsync(null);
-
-        // CHOSEN-PATH assertion (o cerne do fix): o arquivo assinado está no destino que o usuário
-        // escolheu no diálogo de "Salvar como" -- NUNCA no arquivo temp original.
-        Assert.Equal(target, d.Session.FilePath);
-        Assert.True(File.Exists(target));
-        var signaturesAtTarget = realEngine.ReadSignatures(File.ReadAllBytes(target));
-        Assert.Single(signaturesAtTarget);
-        Assert.True(signaturesAtTarget[0].IntegrityValid);
-        Assert.Equal(File.ReadAllBytes(target), d.Session.Snapshot); // gravado atomicamente no destino ESCOLHIDO
-
-        // o arquivo TEMP original nunca foi tocado por CommitSigned -- continua exatamente como estava
-        // (a fixture sem assinatura nenhuma copiada por CopyFixtureToTemp), prova de que a assinatura
-        // NUNCA foi parar em %TEMP%.
-        Assert.Equal(originalTempBytes, File.ReadAllBytes(tempPath));
-
-        // estado pós-assinatura "limpo": NeedsSaveAs zerado + IsDirty falso (CommitSigned sempre marca
-        // salvo) -- é exatamente o par que MainViewModel.TryResolveDirtyDocument/CanSave leem pra
-        // decidir "fecha sem perguntar nada"/"Salvar desabilitado" (comportamento normal de doc limpo).
-        Assert.False(d.NeedsSaveAs);
-        Assert.False(d.IsDirty);
-        Assert.True(d.IsSignedDocument);
-    }
-
-    [Fact] // (d) regressão: documento NÃO temp-backed (NeedsSaveAs=false, o caso comum) -- fluxo
-    // BYTE-IDÊNTICO ao de antes desta fix, nenhum diálogo novo, nenhuma chamada a PickPdfToSaveAs.
-    public async Task Sign_NotNeedingSaveAs_NoRelocationPrompt_UnchangedFlow()
-    {
-        var dialogs = new FakeSaveAsDialogService(saveAsResult: "NUNCA_DEVERIA_SER_USADO");
-        var (doc, _, engine, dialog, confirm, _, _, cert) = BuildForSigning(dialogs: dialogs);
-        using var d = doc;
-        using (cert)
-        {
-            Assert.False(d.NeedsSaveAs);
-            var originalPath = d.Session.FilePath;
-
-            await d.SignCommand.ExecuteAsync(null);
-
-            Assert.Equal(0, dialogs.PickPdfToSaveAsCallCount); // SaveAs NUNCA invocado
-            Assert.Equal(0, confirm.CallCount); // documento limpo -- mesmo fluxo de Sign_DocClean_NeverPromptsToSave
-            Assert.Equal(1, dialog.CallCount);
-            Assert.Equal(1, engine.SignCallCount);
-            Assert.Equal(originalPath, d.Session.FilePath); // caminho nunca mudou
-        }
-    }
-
     // ---- integração: motor REAL + certificado efêmero REAL, pelo fluxo completo do VM ---------------
 
-    [Fact] // ponta a ponta pelo COMANDO real: motor de PRODUÇÃO (SigningEngineFactory.Create(), o mesmo
-    // PadesSigningEngine que o app usa), certificado RSA efêmero (NUNCA um certificado real do
-    // usuário/repositório). Assina uma vez -> 1 assinatura íntegra no ARQUIVO gravado; assina de novo
-    // (incremental, mesmo VM/sessão) -> 2 assinaturas, as DUAS íntegras (invariante central do plano).
-    public async Task Sign_Integration_RealEngineWithEphemeralCertificates_ProducesTwoValidIncrementalSignatures()
+    [Fact] // ponta a ponta pelo COMANDO real: motor de PRODUÇÃO (SigningEngineFactory.Create()) +
+    // certificado RSA efêmero. FLUXO ADOBE: assina o snapshot e grava o resultado num ARQUIVO NOVO (o
+    // original fica intocado) com 1 assinatura íntegra. (A assinatura incremental do motor — 2ª/3ª — é
+    // testada direto em mPdf.Signing.Tests; aqui provamos o fio VM -> motor -> arquivo novo.)
+    public async Task Sign_Integration_RealEngine_WritesNewFileWithValidSignature_OriginalUntouched()
     {
         var tmp = CopyFixtureToTemp();
-        using var cert1 = CreateEphemeralRsaCertificate("Signatario Um");
-        using var cert2 = CreateEphemeralRsaCertificate("Signatario Dois");
+        var originalBytes = File.ReadAllBytes(tmp);
+        using var cert = CreateEphemeralRsaCertificate("Signatario Um");
         var realEngine = SigningEngineFactory.Create();
-        var dialog = new FakeSignDialogService(new SignDialogResult(cert1, "Aprovação", "Escritório", ApplyDocMdp: true, PlaceStamp: false));
+        var dialog = new FakeSignDialogService(new SignDialogResult(cert, "Aprovação", "Escritório", ApplyDocMdp: true, PlaceStamp: false));
+        var outPath = Path.Combine(Path.GetTempPath(), $"mpdf-signed-{Guid.NewGuid():N}.pdf");
+        _tempFilesToDelete.Add(outPath);
 
         using var d = new DocumentViewModel(
             DocumentSession.Open(tmp),
@@ -1116,31 +977,19 @@ public class SignCommandTests : IDisposable
             notifyError: _ => { }, notifyInfo: _ => { },
             signDialog: dialog, signingEngine: realEngine,
             confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
-            listSigningCertificates: () => new[] { FakeCertificateInfo(cert1) });
-
-        await d.SignCommand.ExecuteAsync(null);
-        Assert.True(d.IsSignedDocument);
-
-        var afterFirst = realEngine.ReadSignatures(d.Session.Snapshot);
-        Assert.Single(afterFirst);
-        Assert.True(afterFirst[0].IntegrityValid);
-        Assert.Equal(DocMdpLevel.FormsAndSignatures, afterFirst[0].Certification);
-        Assert.Equal(File.ReadAllBytes(tmp), d.Session.Snapshot); // gravado atomicamente no disco
-
-        // 2ª assinatura, INCREMENTAL, mesmo VM/sessão -- sem DocMDP (doc já certificado).
-        dialog.Result = new SignDialogResult(cert2, null, null, ApplyDocMdp: false, PlaceStamp: false);
-        Assert.True(d.SignCommand.CanExecute(null)); // contrato central: doc JÁ assinado continua assinável
+            listSigningCertificates: () => new[] { FakeCertificateInfo(cert) },
+            pickPdfToSave: _ => outPath, writeAllBytes: File.WriteAllBytes,
+            openSavedDocument: _ => Task.CompletedTask);
 
         await d.SignCommand.ExecuteAsync(null);
 
-        var afterSecond = realEngine.ReadSignatures(d.Session.Snapshot);
-        Assert.Equal(2, afterSecond.Count);
-        Assert.All(afterSecond, s => Assert.True(s.IntegrityValid)); // a 1ª CONTINUA íntegra -- invariante central
-        Assert.Equal(File.ReadAllBytes(tmp), d.Session.Snapshot);
-
-        // histórico de desfazer/refazer limpo pelas DUAS assinaturas (decisão registrada).
-        Assert.False(d.CanUndo);
-        Assert.False(d.CanRedo);
+        Assert.False(d.IsSignedDocument);                         // o doc atual é o ORIGINAL, não o assinado
+        Assert.Equal(originalBytes, File.ReadAllBytes(tmp));       // original em disco intocado
+        Assert.True(File.Exists(outPath));                        // o assinado é um arquivo NOVO
+        var sigs = realEngine.ReadSignatures(File.ReadAllBytes(outPath));
+        Assert.Single(sigs);
+        Assert.True(sigs[0].IntegrityValid);
+        Assert.Equal(DocMdpLevel.FormsAndSignatures, sigs[0].Certification);
     }
 
     // ---- ACEITAÇÃO POR PIXEL (Task 2, Plano 8 -- O PONTO DO PLANO) -----------------------------------
@@ -1157,12 +1006,15 @@ public class SignCommandTests : IDisposable
     // usuário viu na tela, não um valor intermediário.
 
     [Fact]
-    public async Task Sign_Integration_StampBoxDrawAdjustConfirm_RendersExactlyInsideFinalRect()
+    public async Task Sign_Integration_StampBoxDraw_RendersExactlyInsideDrawnRect()
     {
         var tmp = CopyFixtureToTemp();
+        var originalBytes = File.ReadAllBytes(tmp); // baseline pro diff de pixels
         using var cert = CreateEphemeralRsaCertificate();
         var realEngine = SigningEngineFactory.Create();
         var dialog = new FakeSignDialogService(new SignDialogResult(cert, "Aprovação", "Escritório", ApplyDocMdp: true, PlaceStamp: true));
+        var outPath = Path.Combine(Path.GetTempPath(), $"mpdf-signed-{Guid.NewGuid():N}.pdf");
+        _tempFilesToDelete.Add(outPath);
 
         using var d = new DocumentViewModel(
             DocumentSession.Open(tmp),
@@ -1171,33 +1023,24 @@ public class SignCommandTests : IDisposable
             notifyError: _ => { }, notifyInfo: _ => { },
             signDialog: dialog, signingEngine: realEngine,
             confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
-            listSigningCertificates: () => new[] { FakeCertificateInfo(cert) });
+            listSigningCertificates: () => new[] { FakeCertificateInfo(cert) },
+            pickPdfToSave: _ => outPath, writeAllBytes: File.WriteAllBytes,
+            openSavedDocument: _ => Task.CompletedTask);
 
         await d.SignCommand.ExecuteAsync(null);
         Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool);
 
-        // Desenha um rect CONHECIDO -- longe de qualquer conteúdo pré-existente da fixture, mesmo canto
-        // do roteiro de validação manual do Marco 0 (docs/superpowers/marco0-protocolo.md).
+        // FLUXO ADOBE: desenha um rect CONHECIDO e SOLTA -> assina na hora nesse rect (sem ajuste).
         await d.BeginStampBoxPlacementAsync(0, new PdfPoint(300, 50));
-        d.UpdateDrawTo(new PdfPoint(500, 150)); // 200x100pt -- bem acima do mínimo 60x20pt
-        d.EndStampDraw();
-        Assert.Equal(StampPlacementPhase.Adjusting, d.StampPlacementPhase);
+        d.UpdateDrawTo(new PdfPoint(500, 150)); // 200x100pt
+        await d.EndStampDrawAsync();            // soltar o mouse = assina + Salvar como
+        var finalRect = new PdfQuad(300, 50, 500, 150); // o rect DESENHADO é o final (sem ajuste)
 
-        // AJUSTA (mover + redimensionar) pra um rect FINAL DIFERENTE do desenhado -- é isto que a
-        // aceitação por pixel precisa provar: o motor recebe o AJUSTADO, não o desenhado original.
-        d.MoveBoxBy(new PdfPoint(20, -10));                          // 320,40 - 520,140
-        d.ResizeBoxByHandle(StampBoxHandle.Right, new PdfPoint(30, 0)); // 320,40 - 550,140
-        var finalRect = d.StampBoxRect;
-        Assert.NotEqual(300, finalRect.LeftPt, 0.01); // sanity: realmente é DIFERENTE do desenhado
-
-        var originalBytes = File.ReadAllBytes(tmp); // ANTES de confirmar -- baseline pro diff de pixels
-
-        await d.ConfirmSignatureStampAsync();
-
-        Assert.True(d.IsSignedDocument);
+        Assert.False(d.IsSignedDocument); // o doc atual continua o original
         Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase);
         Assert.Equal(AnnotationTool.None, d.ActiveTool);
-        var signedBytes = d.Session.Snapshot;
+        Assert.True(File.Exists(outPath));
+        var signedBytes = File.ReadAllBytes(outPath);
         Assert.NotEqual(originalBytes, signedBytes);
 
         var afterSign = realEngine.ReadSignatures(signedBytes);

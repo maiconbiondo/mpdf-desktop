@@ -787,6 +787,111 @@
         </Setter>
     </Style>
 
+    <!-- ───── ComboBox escuro dos diálogos (caixa de texto: família/tamanho da fonte) ─────
+         O tema não tinha ComboBox estilizado; o combo padrão do WPF é claro (fundo branco/texto preto) e
+         destoava da superfície escura do diálogo. KEYED (opt-in), suporta editável (PART_EditableTextBox,
+         usado pelo campo de tamanho) e não-editável (ContentPresenter, campo de família). -->
+    <Style x:Key="mPdf.ComboItem" TargetType="ComboBoxItem">
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="Padding" Value="9,5"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="Bd" Background="Transparent" Padding="{TemplateBinding Padding}"
+                            CornerRadius="5" SnapsToDevicePixels="True">
+                        <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficiePressionada}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.IconeAzul}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="mPdf.Combo" TargetType="ComboBox">
+        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoPrimario}"/>
+        <Setter Property="Height" Value="32"/>
+        <Setter Property="Padding" Value="9,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="ItemContainerStyle" Value="{StaticResource mPdf.ComboItem}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Grid>
+                        <ToggleButton Focusable="False" ClickMode="Press"
+                                      IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                            <ToggleButton.Template>
+                                <ControlTemplate TargetType="ToggleButton">
+                                    <Border x:Name="Bd" Background="{DynamicResource Cor.Superficie}"
+                                            BorderBrush="{DynamicResource Cor.Borda}" BorderThickness="1"
+                                            CornerRadius="{StaticResource Raio.M}" SnapsToDevicePixels="True">
+                                        <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,9,0"
+                                                   FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12"
+                                                   Foreground="{DynamicResource Cor.TextoSecundario}"
+                                                   Text="{icons:PhosphorIcon caret-down}"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Cor.Primaria}"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </ToggleButton.Template>
+                        </ToggleButton>
+
+                        <!-- Texto/entrada NÃO cobrem os ~26px da direita (a seta): assim o clique na seta
+                             sempre atinge o ToggleButton por baixo e abre o dropdown, mesmo no editável. -->
+                        <ContentPresenter x:Name="ContentSite" IsHitTestVisible="False"
+                                          Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                          Margin="9,0,26,0" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+
+                        <TextBox x:Name="PART_EditableTextBox" Visibility="Hidden" Focusable="True"
+                                 Background="Transparent" Foreground="{DynamicResource Cor.TextoPrimario}"
+                                 CaretBrush="{DynamicResource Cor.TextoPrimario}" BorderThickness="0"
+                                 Margin="9,0,26,0" Padding="0" VerticalContentAlignment="Center"
+                                 IsReadOnly="{TemplateBinding IsReadOnly}"/>
+
+                        <Popup x:Name="PART_Popup" AllowsTransparency="True" Placement="Bottom" Focusable="False"
+                               IsOpen="{TemplateBinding IsDropDownOpen}">
+                            <Border Background="{DynamicResource Cor.FundoDialogo}" BorderBrush="{DynamicResource Cor.Borda}"
+                                    BorderThickness="1" CornerRadius="7" Margin="0,4,0,0" Padding="4"
+                                    MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ScrollViewer MaxHeight="220">
+                                    <ItemsPresenter/>
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsEditable" Value="True">
+                            <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="ContentSite" Property="Visibility" Value="Hidden"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Cor.TextoDesabilitado}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Divisória vertical do redesenho (1px, altura ~26, sutil) — separa grupos na command bar. -->
     <Style x:Key="mPdf.Divisoria.Vertical" TargetType="Border">
         <Setter Property="Width" Value="1"/>

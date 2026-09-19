@@ -51,9 +51,18 @@
             <!-- Corpo. -->
             <StackPanel Margin="22,20">
                 <TextBlock Text="Certificado" Style="{StaticResource mPdf.Dialog.LabelForte}"/>
-                <!-- Certificados ECC aparecem LISTADOS (nunca filtrados) mas DESABILITADOS com a explicação
-                     pt-BR (ver ISignDialogService.PromptForSignature). Cartões: selecionado = borda/véu azul
-                     + check; ECC = mudo + ph prohibit (ver mPdf.CertCard.* em mPdfTheme). -->
+                <!-- Busca em tempo real: filtra os certificados por NOME ou CPF/CNPJ conforme digita
+                     (acento-insensível; CPF/CNPJ compara só dígitos). Ver SignDialog.xaml.cs. -->
+                <Grid Margin="0,0,0,8">
+                    <TextBox x:Name="CertSearchBox" Style="{StaticResource mPdf.Input}"
+                             TextChanged="CertSearchBox_TextChanged"/>
+                    <TextBlock x:Name="CertSearchPlaceholder" Text="Buscar por nome ou CPF/CNPJ…"
+                               Foreground="{DynamicResource Cor.TextoDesabilitado}"
+                               IsHitTestVisible="False" VerticalAlignment="Center" Margin="9,0,0,0"/>
+                </Grid>
+                <!-- Certificados ECC aparecem LISTADOS (nunca filtrados por RSA/ECC) mas DESABILITADOS com
+                     a explicação pt-BR (ver ISignDialogService.PromptForSignature). Cartões: selecionado =
+                     borda/véu azul + check; ECC = mudo + ph prohibit (ver mPdf.CertCard.* em mPdfTheme). -->
                 <ListBox x:Name="CertificateListBox" MaxHeight="188"
                          SelectionMode="Single" KeyboardNavigation.TabNavigation="Continue"
                          Style="{StaticResource mPdf.CertCard.ListBox}"/>

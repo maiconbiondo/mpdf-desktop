@@ -178,8 +178,7 @@ public class MainViewModelTests : IDisposable
         doc1.ActiveTool = AnnotationTool.SignatureStamp;
         doc1.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "CN=X");
         doc1.UpdateDrawTo(new PdfPoint(300, 200));
-        doc1.EndStampDraw();
-        Assert.Equal(StampPlacementPhase.Adjusting, doc1.StampPlacementPhase); // sanity
+        Assert.Equal(StampPlacementPhase.Drawing, doc1.StampPlacementPhase); // sanity (Adobe: assinatura nao usa Adjusting; cancela a partir de Drawing)
 
         vm.SelectedDocument = doc2;
 
@@ -213,8 +212,7 @@ public class MainViewModelTests : IDisposable
         doc1.ActiveTool = AnnotationTool.SignatureStamp;
         doc1.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "CN=X");
         doc1.UpdateDrawTo(new PdfPoint(300, 200));
-        doc1.EndStampDraw();
-        Assert.Equal(StampPlacementPhase.Adjusting, doc1.StampPlacementPhase); // sanity
+        Assert.Equal(StampPlacementPhase.Drawing, doc1.StampPlacementPhase); // sanity (Adobe: assinatura nao usa Adjusting; cancela a partir de Drawing)
         Assert.False(doc1.IsDirty); // sanity: desenhar/ajustar a caixa nunca suja a Session
 
         var ex = Record.Exception(() => vm.CloseDocumentCommand.Execute(doc1)); // caminho REAL do "✕" da aba
@@ -978,7 +976,7 @@ public class MainViewModelTests : IDisposable
         Assert.Equal(Fixtures.A4(), File.ReadAllBytes(firstCopyPath)); // a cópia PRÉ-EXISTENTE não é tocada
     }
 
-    [Fact] // Important 2 (revisão pós-Task 2, Plano 7): EditCopy TRANSITIVAMENTE corrigido pelo fix
+    [Fact(Skip = "Fluxo Adobe: assinatura nao relocaliza mais doc temp-backed (Salvar Como antes de assinar removido); assina o snapshot e grava arquivo NOVO. Cenario deste teste (sign relocalizando -> EditCopy irmao) nao existe mais.")] // Important 2 (revisão pós-Task 2, Plano 7): EditCopy TRANSITIVAMENTE corrigido pelo fix
     // CRÍTICO de Sign/NeedsSaveAs -- depois que um documento temp-backed relocaliza (Salvar Como) ANTES
     // de assinar, `Session.FilePath` já é o caminho ESCOLHIDO pelo usuário; EditCopy deriva o nome da
     // cópia de `Session.FilePath` (`BuildEditableCopyPath`), então a cópia editável nasce IRMÃ do

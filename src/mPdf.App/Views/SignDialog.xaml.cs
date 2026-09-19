@@ -1,8 +1,13 @@
+using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -28,6 +33,30 @@ public partial class SignDialog : Window
         public string? DisabledReason => Info.IsRsa
             ? null
             : "Este certificado usa criptografia ECDSA — esta versão do mPDF assina somente com certificados RSA.";
+
+        // Chaves de BUSCA (pré-normalizadas 1x). Texto: DisplayName inteiro acento-insensível/minúsculo
+        // (cobre o NOME do titular; matches incidentais em emissor/validade são inofensivos). Dígitos:
+        // CPF/CNPJ cru pra comparar quando o usuário digita o documento.
+        public string SearchName { get; } = NormalizeForSearch(info.DisplayName);
+        public string SearchDigits { get; } = info.Document ?? "";
+    }
+
+    /// Remove acentos + minúsculo (busca acento-insensível). NFD e descarta as marcas de acento.
+    private static string NormalizeForSearch(string s)
+    {
+        var formD = s.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(formD.Length);
+        foreach (var ch in formD)
+            if (CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark)
+                sb.Append(char.ToLowerInvariant(ch));
+        return sb.ToString();
+    }
+
+    private static string DigitsOnly(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+        foreach (var ch in s) if (char.IsDigit(ch)) sb.Append(ch);
+        return sb.ToString();
     }
 
     /// Preenchido só quando o usuário confirma (`DialogResult = true`); permanece `null` se cancelado.
@@ -38,6 +67,10 @@ public partial class SignDialog : Window
     private string? _selectedRubricaId;
     private byte[]? _selectedRubricaBytes;
 
+    private ICollectionView? _certView;
+    private string _certQueryText = "";
+    private string _certQueryDigits = "";
+
     public SignDialog(
         IReadOnlyList<SigningCertificateInfo> certificates, bool allowDocMdp,
         RubricaGallery rubricas, Func<byte[]?> pickRubrica)
@@ -45,9 +78,35 @@ public partial class SignDialog : Window
         _rubricas = rubricas;
         _pickRubrica = pickRubrica;
         InitializeComponent();
-        CertificateListBox.ItemsSource = certificates.Select(c => new CertificateItem(c)).ToList();
+        var items = certificates.Select(c => new CertificateItem(c)).ToList();
+        _certView = CollectionViewSource.GetDefaultView(items);
+        _certView.Filter = FilterCertificate;
+        CertificateListBox.ItemsSource = _certView;
         DocMdpCheckBox.Visibility = allowDocMdp ? Visibility.Visible : Visibility.Collapsed;
-        Loaded += (_, _) => CertificateListBox.Focus();
+        // Foca a BUSCA (não a lista): o usuário já pode digitar pra filtrar assim que a janela abre.
+        Loaded += (_, _) => CertSearchBox.Focus();
+    }
+
+    /// Filtro em tempo real: nada digitado -> mostra tudo. Casa quando a consulta (texto acento-
+    /// insensível) é substring do nome/DisplayName, OU (se a consulta tem dígitos) os dígitos são
+    /// substring do CPF/CNPJ. É o "OU" pedido: busca por nome OU por documento.
+    private bool FilterCertificate(object o)
+    {
+        if (_certQueryText.Length == 0) return true;
+        var item = (CertificateItem)o;
+        if (item.SearchName.Contains(_certQueryText, StringComparison.Ordinal)) return true;
+        if (_certQueryDigits.Length > 0 && item.SearchDigits.Contains(_certQueryDigits, StringComparison.Ordinal))
+            return true;
+        return false;
+    }
+
+    private void CertSearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        var raw = CertSearchBox.Text;
+        CertSearchPlaceholder.Visibility = string.IsNullOrEmpty(raw) ? Visibility.Visible : Visibility.Collapsed;
+        _certQueryText = NormalizeForSearch(raw);
+        _certQueryDigits = DigitsOnly(raw);
+        _certView?.Refresh();
     }
 
     private void Ok_Click(object sender, RoutedEventArgs e)

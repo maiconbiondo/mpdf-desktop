@@ -146,8 +146,8 @@ public class StampBoxPlacementTests
     {
         var (doc, _) = BuildForStampBox();
         using var d = doc;
-        d.ActiveTool = AnnotationTool.SignatureStamp;
-        d.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "CN=X");
+        d.ActiveTool = AnnotationTool.ImageStamp; // Adobe: Adjusting via EndStampDraw e do modo IMAGEM
+        d.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "", confirmLabel: "Inserir aqui", purpose: StampBoxPurpose.EdicaoImagem);
         d.UpdateDrawTo(new PdfPoint(130, 110)); // 30x10pt -- abaixo do mínimo 60x20pt
 
         d.EndStampDraw();
@@ -165,8 +165,8 @@ public class StampBoxPlacementTests
     {
         var (doc, _) = BuildForStampBox();
         using var d = doc;
-        d.ActiveTool = AnnotationTool.SignatureStamp;
-        d.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "CN=X");
+        d.ActiveTool = AnnotationTool.ImageStamp; // Adobe: Adjusting via EndStampDraw e do modo IMAGEM
+        d.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "", confirmLabel: "Inserir aqui", purpose: StampBoxPurpose.EdicaoImagem);
         d.UpdateDrawTo(new PdfPoint(160, 120)); // exatamente 60x20pt
 
         d.EndStampDraw();
@@ -182,8 +182,8 @@ public class StampBoxPlacementTests
     {
         var (doc, _) = BuildForStampBox();
         using var d = doc;
-        d.ActiveTool = AnnotationTool.SignatureStamp;
-        d.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "CN=X");
+        d.ActiveTool = AnnotationTool.ImageStamp; // Adobe: Adjusting via EndStampDraw e do modo IMAGEM
+        d.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "", confirmLabel: "Inserir aqui", purpose: StampBoxPurpose.EdicaoImagem);
         d.EndStampDraw(); // clique puro (âncora == corrente) -> caixa padrão em Adjusting
         Assert.Equal(StampPlacementPhase.Adjusting, d.StampPlacementPhase);
         double leftAntes = d.StampBoxRect.LeftPt;
@@ -206,10 +206,13 @@ public class StampBoxPlacementTests
 
     // ---- MoveBoxBy: desloca preservando tamanho, clampado à página ----------------------------------
 
+    // Adobe: SÓ o modo IMAGEM entra em Adjusting via EndStampDraw (assinatura assina ao soltar o mouse).
+    // Estes testes exercitam a MÁQUINA DE CAIXA (mover/redimensionar/alças/cancelar/overlay), que agora
+    // pertence ao modo imagem — mesma máquina, mesmo comportamento geométrico.
     private static DocumentViewModel BeginAdjusting(DocumentViewModel d, double left = 100, double bottom = 100, double right = 300, double top = 200)
     {
-        d.ActiveTool = AnnotationTool.SignatureStamp;
-        d.BeginStampBoxPlacement(0, new PdfPoint(left, bottom), "CN=Assinante Teste");
+        d.ActiveTool = AnnotationTool.ImageStamp;
+        d.BeginStampBoxPlacement(0, new PdfPoint(left, bottom), "", confirmLabel: "Inserir aqui", purpose: StampBoxPurpose.EdicaoImagem);
         d.UpdateDrawTo(new PdfPoint(right, top));
         d.EndStampDraw();
         return d;
@@ -733,7 +736,7 @@ public class StampBoxPlacementTests
     {
         var (doc, _) = BuildForStampBox();
         using var d = BeginAdjusting(doc);
-        Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool); // continua a MESMA ferramenta
+        Assert.Equal(AnnotationTool.ImageStamp, d.ActiveTool); // continua a MESMA ferramenta (BeginAdjusting usa imagem)
 
         d.Session.ApplyEdit(Fixtures.ThirtyPages()); // edição alheia, ActiveTool intocado
 
@@ -767,8 +770,8 @@ public class StampBoxPlacementTests
     {
         var (doc, _) = BuildForStampBox();
         using var d = doc;
-        d.ActiveTool = AnnotationTool.SignatureStamp;
-        d.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "CN=X");
+        d.ActiveTool = AnnotationTool.ImageStamp; // Adobe: Adjusting/alças via EndStampDraw e do modo IMAGEM
+        d.BeginStampBoxPlacement(0, new PdfPoint(100, 100), "", confirmLabel: "Inserir aqui", purpose: StampBoxPurpose.EdicaoImagem);
         Assert.Empty(d.Pages[0].StampBoxHandlePoints); // Drawing, arrasto ainda pequeno (degenerado)
 
         d.UpdateDrawTo(new PdfPoint(300, 200)); // arrasta até um tamanho válido, mas ainda NÃO soltou

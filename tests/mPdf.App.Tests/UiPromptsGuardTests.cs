@@ -23,6 +23,8 @@ file sealed class SpyFileDialogService(string? saveResult = null) : IFileDialogS
 file sealed class SpyAnnotationTextDialogService(string? result) : IAnnotationTextDialogService
 {
     public string? PromptForText(string title, string? initialText = null) => result;
+    public AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null) =>
+        result is null ? null : new AnnotationTextResult(result, 12, false, false, "Helvetica", 0xFF000000);
 }
 
 file sealed class SpyMergeDialogService(IReadOnlyList<string>? result) : IMergeDialogService
@@ -374,39 +376,8 @@ public class UiPromptsGuardTests
         }
     }
 
-    [Fact] // Task 3 (Plano 4): confirmSaveBeforeSign OMITIDO -> SignCommand alcança o diálogo de
-    // produção via UiPrompts.CreateConfirmSaveBeforeSign (só consultado quando o doc está SUJO).
-    public async Task DocumentViewModel_ConfirmSaveBeforeSignOmitted_SignDirtyDoc_ThrowsViaUiPrompts()
-    {
-        AssertFactorySwapped<ThrowingConfirmSaveBeforeSignService>(() => UiPrompts.CreateConfirmSaveBeforeSign(), nameof(UiPrompts.CreateConfirmSaveBeforeSign));
-
-        using var doc = new DocumentViewModel(DocumentSession.Open(A4Path)); // confirmSaveBeforeSign OMITIDO
-        doc.Session.Apply(Fixtures.ThirtyPages()); // suja o documento
-        Assert.True(doc.IsDirty);
-
-        var ex = await Record.ExceptionAsync(() => doc.SignCommand.ExecuteAsync(null));
-
-        var ioe = Assert.IsType<InvalidOperationException>(ex);
-        Assert.Contains(nameof(UiPrompts.CreateConfirmSaveBeforeSign), ioe.Message);
-    }
-
-    [Fact] // controle negativo (confirmSaveBeforeSign): fake benigno local devolvendo `false` (recusado)
-    // -> não lança, e o diálogo de assinatura (CreateSignDialog) nunca é alcançado.
-    public async Task DocumentViewModel_ConfirmSaveBeforeSignOmitted_NegativeControl_WithBenignFactory_DoesNotThrow()
-    {
-        var original = UiPrompts.CreateConfirmSaveBeforeSign;
-        try
-        {
-            UiPrompts.CreateConfirmSaveBeforeSign = () => new SpyConfirmSaveBeforeSignService(false);
-            using var doc = new DocumentViewModel(DocumentSession.Open(A4Path));
-            doc.Session.Apply(Fixtures.ThirtyPages());
-
-            var ex = await Record.ExceptionAsync(() => doc.SignCommand.ExecuteAsync(null));
-
-            Assert.Null(ex);
-        }
-        finally { UiPrompts.CreateConfirmSaveBeforeSign = original; }
-    }
+    // (FLUXO ADOBE) Os 2 testes de guarda de `confirmSaveBeforeSign` sairam: a assinatura NAO pergunta
+    // mais "salvar antes" (o original nunca e tocado), entao o VM nao consulta esse servico.
 
     [Fact] // Task 3 (Plano 4): signDialog OMITIDO -> SignCommand alcança o diálogo de produção via
     // UiPrompts.CreateSignDialog (doc LIMPO -> confirmSaveBeforeSign nem é consultado, isola o alvo).

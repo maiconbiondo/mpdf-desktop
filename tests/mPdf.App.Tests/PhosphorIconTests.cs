@@ -40,9 +40,10 @@ public class PhosphorIconTests
     }
 
     [Fact] // Plano 23: +2 (sun/moon) para o toggle de tema da barra superior.
-    public void MapaTem57Icones()
+    // +1 (scan) para o botão de OCR — distinto do "text-t" da caixa de texto (feedback do usuário).
+    public void MapaTem58Icones()
     {
-        Assert.Equal(57, Ph.Glifos.Count);
+        Assert.Equal(58, Ph.Glifos.Count);
     }
 
     [Fact]

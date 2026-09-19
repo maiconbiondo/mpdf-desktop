@@ -77,6 +77,10 @@ public static class Ph
         // Phosphor 2.1 (a versao embarcada -- Assets/Fonts/Phosphor.ttf), validados contra o cmap da fonte.
         ["sun"] = "\uE472",
         ["moon"] = "\uE330",
+        // Icone do OCR (reconhecer texto) na barra de comandos. Antes usava "text-t" (um "T"), igual a
+        // ferramenta de caixa de texto -> confundia. "scan" (moldura de digitalizacao) e a metafora padrao
+        // de OCR/escanear. Code point do Phosphor 2.1, validado contra o cmap de Phosphor{,-Bold,-Fill}.ttf.
+        ["scan"] = "\uEBB6",
     };
 
     /// Glifo do icone nome. Lanca KeyNotFoundException (com o nome) se o icone nao esta no mapa - falha

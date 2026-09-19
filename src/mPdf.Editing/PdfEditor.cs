@@ -146,6 +146,14 @@ internal sealed class PdfEditor : IPdfEditor
                     (float)(annotation.RightPt - annotation.LeftPt),
                     (float)(annotation.TopPt - annotation.BottomPt));
 
+                // CAIXA DE TEXTO (feedback do usuário: "se o texto for muito grande fica cortado"):
+                // cresce a ALTURA da caixa pra caber o texto quebrado na largura dela. Cobre criar/editar/
+                // mover de uma só vez — todos passam por aqui. `bbox` é a MESMA variável usada tanto pro
+                // /Rect da anotação (BuildAnnotation abaixo) quanto pro /AP (bloco FreeText mais abaixo),
+                // então crescer aqui alinha os dois automaticamente.
+                if (annotation.Kind == AnnotationKind.FreeText)
+                    bbox = GrowFreeTextBoxToFitText(doc, annotation, bbox);
+
                 var markup = BuildAnnotation(annotation, bbox);
 
                 // Sentinela de cor (pós-M7): null -> NENHUM /C escrito (não default para preto). Vale
@@ -180,15 +188,39 @@ internal sealed class PdfEditor : IPdfEditor
                 // FreeText) — nenhuma appearance stream é construída manualmente aqui.
                 if (markup is PdfFreeTextAnnotation freeText)
                 {
-                    var da = new AnnotationDefaultAppearance()
-                        .SetFont(StandardAnnotationFont.Helvetica)
-                        .SetFontSize(12f);
-                    if (annotation.ColorArgb is { } daArgb)
+                    // Formatação (v2): tamanho/negrito/itálico/família — default 12pt, Helvetica, preto.
+                    float fontSize = annotation.FontSizePt is > 0 ? (float)annotation.FontSizePt.Value : 12f;
+                    // Cor: preto quando ausente — o texto TEM que aparecer (diferente do /C do retângulo,
+                    // onde `null` = sem cor; aqui `null` = texto preto legível).
+                    var (fr, fg, fb) = annotation.ColorArgb is { } c ? ArgbToRgb(c) : ((int)0, (int)0, (int)0);
+                    var textColor = new DeviceRgb(fr, fg, fb);
+
+                    // /DA (usado por editores de PDF ao re-editar a caixa) — fonte-base/tamanho/cor.
+                    freeText.SetDefaultAppearance(new AnnotationDefaultAppearance()
+                        .SetFont(DaFontFor(annotation.FontFamily, annotation.Bold, annotation.Italic))
+                        .SetFontSize(fontSize)
+                        .SetColor(textColor));
+
+                    // /AP /N (RENDERIZAÇÃO): sem uma appearance stream explícita, o PDFium (motor deste
+                    // app) NÃO sintetiza o texto do FreeText a partir do /DA — a caixa saía VAZIA na tela
+                    // (bug relatado: "o texto não apareceu"). Desenha o texto dentro do bbox via iText
+                    // Layout (quebra de linha automática; recorta o que exceder), fonte-base padrão-14
+                    // (o PDFium renderiza as 14 nativas sem embutir — este AddAnnotation abre um
+                    // PdfDocument comum, nunca valida PDF/A, então fonte não-embutida é OK aqui).
+                    var pdfFont = PdfFontFactory.CreateFont(
+                        StandardFontNameFor(annotation.FontFamily, annotation.Bold, annotation.Italic));
+                    var textAppearance = new PdfFormXObject(bbox);
+                    using (var layout = new iText.Layout.Canvas(textAppearance, doc))
                     {
-                        var (dr, dg, db) = ArgbToRgb(daArgb);
-                        da.SetColor(new DeviceRgb(dr, dg, db));
+                        layout.Add(new iText.Layout.Element.Paragraph(annotation.Content ?? string.Empty)
+                            .SetFont(pdfFont)
+                            .SetFontSize(fontSize)
+                            .SetFontColor(textColor)
+                            .SetMargin(0)
+                            .SetPadding(2)
+                            .SetMultipliedLeading(1.05f));
                     }
-                    freeText.SetDefaultAppearance(da);
+                    freeText.SetNormalAppearance(textAppearance.GetPdfObject());
                 }
 
                 // ImageStamp (Task 9, Plano 3a): a IMAGEM em si é uma appearance stream custom — um
@@ -1098,6 +1130,107 @@ internal sealed class PdfEditor : IPdfEditor
 
     private static (int r, int g, int b) ArgbToRgb(uint argb) =>
         ((int)((argb >> 16) & 0xFF), (int)((argb >> 8) & 0xFF), (int)(argb & 0xFF));
+
+    /// Família normalizada (case-insensitive) — "times"/"courier" caem nas suas fontes-base; qualquer
+    /// outra coisa (inclusive null, "arial", "helvetica", "sans") vira Helvetica (sem serifa).
+    private enum FontFamilyKind { Helvetica, Times, Courier }
+    private static FontFamilyKind NormalizeFamily(string? family) => family?.Trim().ToLowerInvariant() switch
+    {
+        "times" or "times-roman" or "serif" => FontFamilyKind.Times,
+        "courier" or "mono" or "monospace" => FontFamilyKind.Courier,
+        _ => FontFamilyKind.Helvetica,
+    };
+
+    /// Nome da fonte-base padrão-14 (`StandardFonts.*`) para a appearance stream `/AP` do FreeText,
+    /// escolhido por família + negrito + itálico. O PDFium renderiza as 14 nativas sem embutir.
+    private static string StandardFontNameFor(string? family, bool bold, bool italic) =>
+        NormalizeFamily(family) switch
+        {
+            FontFamilyKind.Times => (bold, italic) switch
+            {
+                (true, true) => StandardFonts.TIMES_BOLDITALIC,
+                (true, false) => StandardFonts.TIMES_BOLD,
+                (false, true) => StandardFonts.TIMES_ITALIC,
+                _ => StandardFonts.TIMES_ROMAN,
+            },
+            FontFamilyKind.Courier => (bold, italic) switch
+            {
+                (true, true) => StandardFonts.COURIER_BOLDOBLIQUE,
+                (true, false) => StandardFonts.COURIER_BOLD,
+                (false, true) => StandardFonts.COURIER_OBLIQUE,
+                _ => StandardFonts.COURIER,
+            },
+            _ => (bold, italic) switch
+            {
+                (true, true) => StandardFonts.HELVETICA_BOLDOBLIQUE,
+                (true, false) => StandardFonts.HELVETICA_BOLD,
+                (false, true) => StandardFonts.HELVETICA_OBLIQUE,
+                _ => StandardFonts.HELVETICA,
+            },
+        };
+
+    /// CAIXA DE TEXTO — cresce a ALTURA do bbox pra caber o texto (senão texto longo/fonte grande ficava
+    /// CORTADO, feedback do usuário). Mede a altura ocupada pelo Paragraph (mesmos font/tamanho/padding/
+    /// leading do /AP abaixo) na LARGURA da caixa, com altura "infinita" disponível; se exceder a altura
+    /// atual, estende PARA BAIXO — mantém o TOPO onde o usuário clicou (o texto é ancorado no topo pelo
+    /// iText.Layout), baixa o `bottom`, clampado ao rodapé da página (>= 0). Idempotente: uma caixa já
+    /// alta o suficiente não muda (importa porque MOVER re-passa por aqui a cada arrasto). Largura vazia/
+    /// conteúdo vazio -> devolve o bbox intacto. A medição usa um PdfFormXObject NÃO referenciado por
+    /// nada (só serve de parent de layout) — objeto inalcançável, o escritor do iText não o serializa.
+    private static Rectangle GrowFreeTextBoxToFitText(PdfDocument doc, AnnotationData a, Rectangle bbox)
+    {
+        string content = a.Content ?? string.Empty;
+        float width = bbox.GetWidth();
+        if (content.Length == 0 || width <= 0f) return bbox;
+
+        float fontSize = a.FontSizePt is > 0 ? (float)a.FontSizePt.Value : 12f;
+        var pdfFont = PdfFontFactory.CreateFont(StandardFontNameFor(a.FontFamily, a.Bold, a.Italic));
+        var para = new iText.Layout.Element.Paragraph(content)
+            .SetFont(pdfFont).SetFontSize(fontSize).SetMargin(0).SetPadding(2).SetMultipliedLeading(1.05f);
+
+        const float infinite = 100000f;
+        float needed;
+        var measureBox = new PdfFormXObject(new Rectangle(0, 0, width, infinite));
+        using (var canvas = new iText.Layout.Canvas(measureBox, doc))
+        {
+            var renderer = para.CreateRendererSubTree().SetParent(canvas.GetRenderer());
+            var result = renderer.Layout(new iText.Layout.Layout.LayoutContext(
+                new iText.Layout.Layout.LayoutArea(1, new Rectangle(0, 0, width, infinite))));
+            needed = result.GetOccupiedArea().GetBBox().GetHeight();
+        }
+
+        if (needed <= bbox.GetHeight()) return bbox;
+        float top = bbox.GetTop();
+        float newBottom = Math.Max(0f, top - needed);
+        return new Rectangle(bbox.GetLeft(), newBottom, width, top - newBottom);
+    }
+
+    /// Equivalente para o `/DA` (enum `StandardAnnotationFont` do iText) — família + negrito + itálico.
+    private static StandardAnnotationFont DaFontFor(string? family, bool bold, bool italic) =>
+        NormalizeFamily(family) switch
+        {
+            FontFamilyKind.Times => (bold, italic) switch
+            {
+                (true, true) => StandardAnnotationFont.TimesBoldItalic,
+                (true, false) => StandardAnnotationFont.TimesBold,
+                (false, true) => StandardAnnotationFont.TimesItalic,
+                _ => StandardAnnotationFont.TimesRoman,
+            },
+            FontFamilyKind.Courier => (bold, italic) switch
+            {
+                (true, true) => StandardAnnotationFont.CourierBoldOblique,
+                (true, false) => StandardAnnotationFont.CourierBold,
+                (false, true) => StandardAnnotationFont.CourierOblique,
+                _ => StandardAnnotationFont.Courier,
+            },
+            _ => (bold, italic) switch
+            {
+                (true, true) => StandardAnnotationFont.HelveticaBoldOblique,
+                (true, false) => StandardAnnotationFont.HelveticaBold,
+                (false, true) => StandardAnnotationFont.HelveticaOblique,
+                _ => StandardAnnotationFont.Helvetica,
+            },
+        };
 
     /// Sentinela (pós-M7): `null` quando `/C` está ausente OU vazio (0 componentes — spec PDF usa
     /// array vazio para "sem cor"/transparente), em vez do preto opaco presumido antes da revisão.

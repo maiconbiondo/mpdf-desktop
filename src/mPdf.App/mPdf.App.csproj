@@ -60,7 +60,7 @@
          este valor e passa como /DMyAppVersion pro Inno Setup — não duplicar em mpdf.iss.
          1.1.0 (Task 2, Plano 6): associação de arquivo .pdf no instalador + instância
          única/abrir-por-argumento (Task 1, Plano 6) — funcionalidades novas, não patch. -->
-    <Version>2.10.2</Version>
+    <Version>2.10.5</Version>
     <ApplicationIcon>Assets\mpdf.ico</ApplicationIcon>
   </PropertyGroup>
 

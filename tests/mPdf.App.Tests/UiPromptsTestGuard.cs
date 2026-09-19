@@ -111,6 +111,9 @@ internal sealed class ThrowingAnnotationTextDialogService : IAnnotationTextDialo
 {
     public string? PromptForText(string title, string? initialText = null) =>
         throw UiPromptsTestGuard.Guard(nameof(UiPrompts.CreateAnnotationDialog), "um IAnnotationTextDialogService fake");
+
+    public AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null) =>
+        throw UiPromptsTestGuard.Guard(nameof(UiPrompts.CreateAnnotationDialog), "um IAnnotationTextDialogService fake");
 }
 
 internal sealed class ThrowingMergeDialogService : IMergeDialogService

@@ -213,15 +213,17 @@ public class ViewerIntegrationTests
 
             // Aciona a máquina DIRETO (mesma nota de doc XML acima) — chega a Adjusting numa caixa
             // válida (200x50pt, acima do mínimo 60x20pt).
-            doc.ActiveTool = AnnotationTool.SignatureStamp;
-            doc.BeginStampBoxPlacement(0, new PdfPoint(100, 700), "CN=Assinante STA");
+            // Adobe: SÓ IMAGEM usa Adjusting/adorner agora (assinatura assina ao soltar o mouse). Este
+            // teste do adorner/virtualização passa a usar o modo IMAGEM (mesma máquina de caixa).
+            doc.ActiveTool = AnnotationTool.ImageStamp;
+            doc.BeginStampBoxPlacement(0, new PdfPoint(100, 700), "", confirmLabel: "Inserir aqui", purpose: StampBoxPurpose.EdicaoImagem);
             doc.UpdateDrawTo(new PdfPoint(300, 750));
             doc.EndStampDraw();
             Assert.Equal(StampPlacementPhase.Adjusting, doc.StampPlacementPhase);
 
             Pump(() => FindVisualChildren<Button>(window).Any(IsConfirmButtonVisible), TimeSpan.FromSeconds(5));
             var buttons = FindVisualChildren<Button>(window).ToList();
-            var confirmButton = buttons.FirstOrDefault(b => Equals(b.Content, "Assinar aqui"));
+            var confirmButton = buttons.FirstOrDefault(b => Equals(b.Content, "Inserir aqui"));
             var cancelButton = buttons.FirstOrDefault(b => Equals(b.Content, "Cancelar"));
             Assert.True(confirmButton is { IsVisible: true }, "botão Confirmar não apareceu (Adjusting)");
             Assert.True(cancelButton is { IsVisible: true }, "botão Cancelar não apareceu (Adjusting)");
@@ -269,7 +271,8 @@ public class ViewerIntegrationTests
     // fica sempre no default Visible independente do ancestral estar Collapsed; achado ao vivo: a 1ª
     // versão deste teste usava Visibility e falhava com falso-positivo em containers reciclados fora
     // de tela, cujo StackPanel pai já estava Collapsed corretamente).
-    private static bool IsConfirmButtonVisible(Button b) => Equals(b.Content, "Assinar aqui") && b.IsVisible;
+    private static bool IsConfirmButtonVisible(Button b) =>
+        (Equals(b.Content, "Assinar aqui") || Equals(b.Content, "Inserir aqui") || Equals(b.Content, "Salvar")) && b.IsVisible;
 
     private static IEnumerable<T> FindVisualChildren<T>(DependencyObject root) where T : DependencyObject
     {
@@ -323,11 +326,11 @@ public class ViewerIntegrationTests
             Pump(() => control.PageList.IsKeyboardFocusWithin, TimeSpan.FromSeconds(5));
             Assert.True(control.PageList.IsKeyboardFocusWithin, "PageList não obteve foco de teclado");
 
+            // Adobe: assinatura NAO usa Adjusting — fica em Drawing durante o arrasto; Esc cancela de lá.
             doc.ActiveTool = AnnotationTool.SignatureStamp;
             doc.BeginStampBoxPlacement(0, new PdfPoint(100, 700), "CN=Assinante STA");
             doc.UpdateDrawTo(new PdfPoint(300, 750));
-            doc.EndStampDraw();
-            Assert.Equal(StampPlacementPhase.Adjusting, doc.StampPlacementPhase);
+            Assert.Equal(StampPlacementPhase.Drawing, doc.StampPlacementPhase);
 
             var args = new KeyEventArgs(Keyboard.PrimaryDevice,
                 PresentationSource.FromVisual(control.PageList), 0, Key.Escape)
@@ -372,7 +375,7 @@ public class ViewerIntegrationTests
     /// (`SignCommandTests.Sign_Integration_StampBoxDrawAdjustConfirm_RendersExactlyInsideFinalRect`);
     /// este teste foca no que É observável deterministicamente com mouse REAL: `Mouse.Captured` (QUEM
     /// capturou) e `e.Handled`.
-    [Fact]
+    [Fact(Skip = "Fluxo Adobe: assinatura assina ao soltar o mouse e grava arquivo NOVO (Salvar como), sem botao confirmar nem carimbo in-place; o fluxo antigo deste teste WPF foi removido e o novo e coberto por SignCommandTests. Rewrite WPF pendente.")]
     public void Viewer_StampBoxRealMouseWiring_CapturesOnPageBorder_ConfirmButtonSignsWithCurrentRect()
     {
         Exception? threadEx = null;
@@ -615,8 +618,9 @@ public class ViewerIntegrationTests
                 for (int i = 0; i < 10; i++) Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Background);
             }
 
-            doc.ActiveTool = AnnotationTool.SignatureStamp;
-            doc.BeginStampBoxPlacement(0, new PdfPoint(100, 700), "CN=Teste I3");
+            // Adobe: adorner/alças (Adjusting) são só do modo IMAGEM agora (assinatura assina ao soltar).
+            doc.ActiveTool = AnnotationTool.ImageStamp;
+            doc.BeginStampBoxPlacement(0, new PdfPoint(100, 700), "", confirmLabel: "Inserir aqui", purpose: StampBoxPurpose.EdicaoImagem);
             doc.UpdateDrawTo(new PdfPoint(300, 750)); // arrasta até um tamanho válido, mas ainda NÃO soltou
             Assert.Equal(StampPlacementPhase.Drawing, doc.StampPlacementPhase); // Drawing (não soltou)
             FlushDispatcher();
@@ -1339,7 +1343,7 @@ public class ViewerIntegrationTests
     /// visualizador atualizou de verdade, `doc.Pages[0].ImageSource` tem que bater byte a byte com isso
     /// dentro do NÚCLEO do rect do carimbo (mesma folga de borda/antialiasing — Margin=4 — do teste de
     /// aceitação por pixel do motor).
-    [Fact]
+    [Fact(Skip = "Fluxo Adobe: assinatura assina ao soltar o mouse e grava arquivo NOVO (Salvar como), sem botao confirmar nem carimbo in-place; o fluxo antigo deste teste WPF foi removido e o novo e coberto por SignCommandTests. Rewrite WPF pendente.")]
     public void Viewer_AfterSign_PageBitmapReflectsSignedStamp()
     {
         Exception? threadEx = null;
@@ -1498,7 +1502,7 @@ public class ViewerIntegrationTests
     /// (`VirtualizingPanel.VirtualizationMode="Recycling"`, `CacheLength="1,1"` Page — só um punhado de
     /// páginas ao redor da visível fica realizado), diferente de um doc de 1 página cujo único item
     /// nunca sai da árvore visual. Mesma "verdade fundamental" de pixel da Tentativa 1.
-    [Fact]
+    [Fact(Skip = "Fluxo Adobe: assinatura assina ao soltar o mouse e grava arquivo NOVO (Salvar como), sem botao confirmar nem carimbo in-place; o fluxo antigo deste teste WPF foi removido e o novo e coberto por SignCommandTests. Rewrite WPF pendente.")]
     public void Viewer_AfterSign_MiddlePageOfMultiPageDoc_PageBitmapReflectsSignedStamp()
     {
         Exception? threadEx = null;

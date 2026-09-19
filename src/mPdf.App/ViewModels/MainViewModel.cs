@@ -377,7 +377,8 @@ public sealed partial class MainViewModel : ObservableObject
             // ApplyMarkupCommand) desta janela, em vez de cada documento criar o seu próprio default
             // (que funcionaria, mas duplicaria a leitura de config.json e poderia abrir um 2º
             // MessageBox com estilo diferente do resto do app).
-            var doc = new DocumentViewModel(session, config: _config, notifyError: _notifyError, annotationDialog: _annotationDialog, dialogs: _dialogs, notifyInfo: _notifyInfo)
+            var doc = new DocumentViewModel(session, config: _config, notifyError: _notifyError, annotationDialog: _annotationDialog, dialogs: _dialogs, notifyInfo: _notifyInfo,
+                    openSavedDocument: OpenPath) // fluxo Adobe: assina -> Salvar como -> ABRE o assinado numa aba nova
                 { IsSignedDocument = isSigned, SignedFillPermission = signedFillPermission };
             // Task 2 (Plano 3c): semeia o cache de campos JÁ CALCULADO acima — ver doc XML de
             // DocumentViewModel.SeedFormFieldsCache (Obs 17).
@@ -873,9 +874,10 @@ public sealed partial class MainViewModel : ObservableObject
         var vm = new BatchSignViewModel(
             _listSigningCertificates(),
             isPathOpen: IsPathOpenInAnyTab,
-            pickFiles: PickPdfFilesForBatch,
-            editor: _editor); // MESMO IPdfEditor injetável já usado por Merge/Split (GetPageRotations
-                               // pro carimbo do lote — ver revisão/doc XML de BatchSignViewModel).
+            pickFiles: PickPdfFilesForBatch);
+        // A costura de rotação do carimbo do lote agora vive inteiramente no motor
+        // (PadesSigningEngine/StampRotation, que lê o /Rotate sozinho) — o BatchSignViewModel não precisa
+        // mais de IPdfEditor.
         _batchSignDialog.ShowBatchSignDialog(vm);
     }
 

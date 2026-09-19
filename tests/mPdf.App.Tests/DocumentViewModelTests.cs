@@ -395,6 +395,8 @@ internal sealed class FakePdfEditor : IPdfEditor
 internal sealed class FakeAnnotationTextDialogService : IAnnotationTextDialogService
 {
     public string? Result { get; set; }
+    /// Formatação a devolver por PromptForTextFormatted; se null, embrulha `Result` nos defaults.
+    public AnnotationTextResult? FormatResult { get; set; }
     public int CallCount { get; private set; }
     public string? LastTitle { get; private set; }
     public string? LastInitialText { get; private set; }
@@ -405,6 +407,15 @@ internal sealed class FakeAnnotationTextDialogService : IAnnotationTextDialogSer
         LastTitle = title;
         LastInitialText = initialText;
         return Result;
+    }
+
+    public AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null)
+    {
+        CallCount++;
+        LastTitle = title;
+        LastInitialText = initialText;
+        if (FormatResult is not null) return FormatResult;
+        return Result is null ? null : new AnnotationTextResult(Result, 12, false, false, "Helvetica", 0xFF000000);
     }
 }
 
@@ -609,13 +620,13 @@ public class DocumentViewModelTests
         Assert.Equal("Página 1 de 30", doc.PageCountLabel);
     }
 
-    [Fact] // Item 4 (revisão final pré-merge) — CurrentPage/scroll PRESERVADOS através de um Apply que
-    // não muda a contagem de página: antes do fix, anotar a página 30 de um documento de 30 páginas
-    // jogava a visão de volta pro topo (CurrentPage sempre resetava pra 1, incondicional). doc com 30
-    // páginas, CurrentPage=15, Apply(mesmo documento de 30 páginas — simula uma anotação normal) ->
-    // CurrentPage continua 15 E ScrollToPageRequested dispara com 14 (0-based — mesma convenção de
-    // ApplySearchResults/hit.PageIndex, ver Search_RealFixture_HighlightsOnlyTheHitPage acima).
-    public void SessionApply_SameLargerPageCount_PreservesCurrentPage_AndRequestsScrollToIt()
+    [Fact] // Item 4 (revisão final pré-merge) + fix "pisca pro topo da página" (feedback do usuário ao
+    // mover texto): CurrentPage PRESERVADO através de um Apply que não muda a contagem de página, e a
+    // View é avisada pra PRESERVAR o offset de rolagem EXATO (px) — não mais um salto pro topo da página
+    // via ScrollToPageRequested. doc com 30 páginas, CurrentPage=15, Apply(mesmo documento de 30 páginas
+    // — simula uma anotação normal) -> CurrentPage continua 15, PreserveScrollAcrossReload dispara, e
+    // ScrollToPageRequested NÃO dispara (a rolagem é preservada em px pela View, sem "piscar").
+    public void SessionApply_SameLargerPageCount_PreservesCurrentPage_AndRequestsScrollPreservation()
     {
         using var doc = new DocumentViewModel(
             DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-30p.pdf")));
@@ -623,11 +634,14 @@ public class DocumentViewModelTests
 
         int? scrolledToPageIndex = null;
         doc.ScrollToPageRequested += pageIndex => scrolledToPageIndex = pageIndex;
+        int preserveCalls = 0;
+        doc.PreserveScrollAcrossReload += () => preserveCalls++;
 
         doc.Session.Apply(Fixtures.ThirtyPages()); // mesmo documento (30 páginas)
 
         Assert.Equal(15, doc.CurrentPage);
-        Assert.Equal(14, scrolledToPageIndex);
+        Assert.Equal(1, preserveCalls);       // a View foi avisada pra preservar o offset em px
+        Assert.Null(scrolledToPageIndex);     // NÃO salta mais pro topo da página
         Assert.True(doc.Thumbnails[14].IsCurrent);
         Assert.False(doc.Thumbnails[0].IsCurrent);
     }
@@ -2310,17 +2324,18 @@ public class DocumentViewModelTests
         Assert.Equal(AnnotationTool.None, d.ActiveTool);
     }
 
-    // ---- ImageStamp: NÃO liftável (DECISÃO v1) — mover é no-op, excluir continua funcionando --------
+    // ---- ImageStamp: mover por arrasto (nova UX) precisa dos BYTES no cache — sem cache, avisa --------
 
-    [Fact] // DECISÃO DE DESIGN (brief): ImageStamp não é liftável — MoveSelectedAnnotationAsync não
-    // chama Remove/Add nenhum, e o overlay volta pra posição REAL (mesma restauração já provada pro
-    // caso "documento assinado", exemplar MoveSelectedAnnotationAsync_SignedDocument_ResetsOverlayToActualPosition).
-    public async Task MoveSelectedAnnotationAsync_ImageStampKind_DoesNotLift_RestoresOverlayToActualPosition()
+    [Fact] // NOVA UX: arrastar move a imagem, MAS só com os bytes no cache (colocada nesta sessão) — o
+    // lift reconstrói o /AP a partir deles. Uma imagem SEM cache (lida direto do PDF, outra sessão) NÃO
+    // move: AVISA e o overlay volta pra posição REAL, sem tentar Remove/Add. (O caminho COM cache é
+    // provado em ImageBoxTests.MoveExisting_ViaDrag_MovesImageToNewPosition, com motor+cache reais.)
+    public async Task MoveSelectedAnnotationAsync_ImageStampKind_NoCachedBytes_NotifiesAndDoesNotLift()
     {
         var (doc, fake, _, errors) = BuildForAnnotations();
         using var d = doc;
         var original = new AnnotationData { Id = "carimbo-1", Kind = AnnotationKind.ImageStamp, PageIndex = 0, LeftPt = 10, BottomPt = 10, RightPt = 30, TopPt = 30 };
-        fake.ReadAnnotationsResult = new[] { original };
+        fake.ReadAnnotationsResult = new[] { original }; // lido do PDF, nunca passou pelo cache desta sessão
         await d.RefreshAnnotationsByPageAsync();
         d.SelectAnnotationAt(0, 20, 20);
         Assert.NotNull(d.SelectedAnnotation);
@@ -2331,8 +2346,8 @@ public class DocumentViewModelTests
 
         await d.MoveSelectedAnnotationAsync(200, 300);
 
-        Assert.Empty(errors);
-        Assert.Equal(0, fake.RemoveAnnotationCallCount); // nunca tentou o lift (Remove+Add)
+        Assert.Single(errors); // avisa "recoloque-a para movê-la"
+        Assert.Equal(0, fake.RemoveAnnotationCallCount); // sem cache -> nunca tentou o lift (Remove+Add)
         Assert.Equal(0, fake.AddAnnotationCallCount);
         Assert.Equal(expected, d.Pages[0].AnnotationSelectionRect); // overlay voltou pra posição REAL
     }

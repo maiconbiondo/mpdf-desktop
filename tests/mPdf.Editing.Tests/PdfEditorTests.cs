@@ -105,6 +105,53 @@ public class PdfEditorTests
         Assert.Empty(Editor.ReadAnnotations(Fixtures.A4()));
     }
 
+    // --- AddAnnotation (FreeText auto-cresce a altura pra não cortar o texto) -----
+    // Feedback do usuário: "se o texto for muito grande fica cortado". A caixa padrão é 200x60pt; um
+    // texto que quebra em muitas linhas precisa de mais altura. GrowFreeTextBoxToFitText estende PARA
+    // BAIXO (mantém o topo). Aqui: caixa de 60pt de altura (top=760, bottom=700) com texto longo ->
+    // a altura lida de volta é MAIOR que 60 e o TOPO fica onde estava (760).
+    [Fact]
+    public void AddAnnotation_FreeText_LongText_GrowsBoxHeight_KeepsTop()
+    {
+        var data = new AnnotationData
+        {
+            Kind = AnnotationKind.FreeText,
+            PageIndex = 0,
+            LeftPt = 100, BottomPt = 700, RightPt = 300, TopPt = 760, // 200x60
+            Content = string.Join(" ", Enumerable.Repeat("palavra", 120)), // quebra em muitas linhas
+            FontSizePt = 14,
+        };
+
+        var result = Editor.AddAnnotation(Fixtures.A4(), data);
+        var a = Assert.Single(Editor.ReadAnnotations(result));
+
+        Assert.Equal(AnnotationKind.FreeText, a.Kind);
+        Assert.Equal(760, a.TopPt, 0.5);                 // topo preservado (cresce pra baixo)
+        Assert.True(a.TopPt - a.BottomPt > 60.5,          // ficou MAIS ALTA que os 60pt originais
+            $"esperava caixa mais alta que 60pt; veio {a.TopPt - a.BottomPt:F1}pt");
+    }
+
+    // Simétrico: texto curto CABE nos 60pt -> a caixa NÃO cresce (idempotência importa porque MOVER
+    // re-passa pelo AddAnnotation a cada arrasto e não pode inflar a caixa a cada movimento).
+    [Fact]
+    public void AddAnnotation_FreeText_ShortText_KeepsOriginalBox()
+    {
+        var data = new AnnotationData
+        {
+            Kind = AnnotationKind.FreeText,
+            PageIndex = 0,
+            LeftPt = 100, BottomPt = 700, RightPt = 300, TopPt = 760, // 200x60
+            Content = "ok",
+            FontSizePt = 12,
+        };
+
+        var result = Editor.AddAnnotation(Fixtures.A4(), data);
+        var a = Assert.Single(Editor.ReadAnnotations(result));
+
+        Assert.Equal(760, a.TopPt, 0.5);
+        Assert.Equal(700, a.BottomPt, 0.5); // inalterada
+    }
+
     // --- AddAnnotation (Highlight) ------------------------------------------
 
     [Fact]
@@ -591,6 +638,64 @@ public class PdfEditorTests
                 if (page.Bgra[i] < 250 || page.Bgra[i + 1] < 250 || page.Bgra[i + 2] < 250) painted++;
             }
         Assert.True(painted > 100, $"carimbo não renderizado: só {painted} pixels pintados na região");
+    }
+
+    [Fact] // Regressão do bug de campo "o texto da caixa não apareceu": FreeText só gravava /DA (sem
+    // /AP), e o PDFium NÃO sintetiza a aparência do texto a partir do /DA — a caixa saía vazia na tela.
+    // AddAnnotation agora gera uma appearance stream /AP que desenha o texto; este teste renderiza de
+    // verdade (PDFium via mPdf.Rendering) e exige tinta na região da caixa. Exemplar:
+    // AddAnnotation_ImageStamp_RendersNonBlankInStampRegion acima.
+    public void AddAnnotation_FreeText_RendersTextInkInRegion()
+    {
+        var data = new AnnotationData
+        {
+            Kind = AnnotationKind.FreeText,
+            PageIndex = 0,
+            LeftPt = 100, BottomPt = 600, RightPt = 300, TopPt = 660,
+            Content = "TESTE DE TEXTO",
+            ColorArgb = 0xFF000000,
+        };
+        var result = Editor.AddAnnotation(Fixtures.A4(), data);
+
+        using var renderer = new PdfDocumentRenderer(result);
+        var page = renderer.RenderPage(0, 1.0);
+        int painted = 0, h = page.HeightPx, w = page.WidthPx;
+        for (int y = h - 660; y < h - 600; y++)
+            for (int x = 100; x < 300; x++)
+            {
+                int i = (y * w + x) * 4;
+                if (page.Bgra[i] < 250 || page.Bgra[i + 1] < 250 || page.Bgra[i + 2] < 250) painted++;
+            }
+        Assert.True(painted > 50, $"texto do FreeText não renderizou: só {painted} pixels pintados");
+    }
+
+    [Fact] // formatação: negrito+tamanho maior pinta MAIS tinta que o default (mesmo texto/caixa) — prova
+    // que FontSizePt/Bold chegam na appearance de verdade (não são ignorados).
+    public void AddAnnotation_FreeText_BoldLarger_PaintsMoreInkThanDefault()
+    {
+        static int PaintedInBox(byte[] pdf)
+        {
+            using var r = new PdfDocumentRenderer(pdf);
+            var page = r.RenderPage(0, 1.0);
+            int painted = 0, h = page.HeightPx, w = page.WidthPx;
+            for (int y = h - 700; y < h - 600; y++)
+                for (int x = 100; x < 400; x++)
+                {
+                    int i = (y * w + x) * 4;
+                    if (page.Bgra[i] < 250 || page.Bgra[i + 1] < 250 || page.Bgra[i + 2] < 250) painted++;
+                }
+            return painted;
+        }
+        AnnotationData Make(bool bold, double size) => new()
+        {
+            Kind = AnnotationKind.FreeText, PageIndex = 0,
+            LeftPt = 100, BottomPt = 600, RightPt = 400, TopPt = 700,
+            Content = "Texto de exemplo", ColorArgb = 0xFF000000,
+            Bold = bold, FontSizePt = size,
+        };
+        int small = PaintedInBox(Editor.AddAnnotation(Fixtures.A4(), Make(bold: false, size: 10)));
+        int bigBold = PaintedInBox(Editor.AddAnnotation(Fixtures.A4(), Make(bold: true, size: 20)));
+        Assert.True(bigBold > small, $"negrito+maior deveria pintar mais tinta: {bigBold} vs {small}");
     }
 
     [Fact] // pós-item 2a: Id explícito que já existe no documento -> ArgumentException, antes de escrever

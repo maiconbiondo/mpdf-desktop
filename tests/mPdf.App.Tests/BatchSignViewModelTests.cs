@@ -112,14 +112,12 @@ public class BatchSignViewModelTests : IDisposable
         IReadOnlyList<SigningCertificateInfo>? certificates = null,
         Func<string, bool>? isPathOpen = null,
         Func<IReadOnlyList<string>?>? pickFiles = null,
-        X509Certificate2? cert = null,
-        IPdfEditor? editor = null) =>
+        X509Certificate2? cert = null) =>
         new(
             certificates ?? (cert is null ? Array.Empty<SigningCertificateInfo>() : [RsaCertInfo(cert)]),
             isPathOpen: isPathOpen ?? (_ => false),
             pickFiles: pickFiles ?? (() => null),
-            signingEngine: engine,
-            editor: editor);
+            signingEngine: engine);
 
 
     private static async Task WaitUntil(Func<bool> condition, int timeoutMs = 5000)
@@ -398,99 +396,41 @@ public class BatchSignViewModelTests : IDisposable
         Assert.Null(engine.Requests[0].CertificationLevel); // v1: nunca oferece DocMDP em lote
     }
 
-    // ---- carimbo em página GIRADA: transformação de frame (achado CRÍTICO da revisão) -------------------
+    // ---- carimbo do lote: retângulo no frame de EXIBIÇÃO (a costura de rotação é do MOTOR) -----------
     //
-    // `ComputeStampRect`/`TransformVisualRectToContentFrame` são `internal static` (funções PURAS, sem
-    // I/O nenhum) especificamente pra permitir estes testes RÁPIDOS e DETERMINÍSTICOS com números
-    // EXATOS — complementares (não substitutos) do oráculo pixel-a-pixel obrigatório mais abaixo
-    // (`Start_Integration_RotatedLastPage_...`), que prova a transformação ponta-a-ponta contra o motor
-    // e o renderer REAIS. Página de referência: A4 NÃO-rotacionado 595x842pt (mesma fixture de
-    // `Start_WithStamp_LastPageBottomRightRect` acima). Valores calculados à mão pela álgebra documentada
-    // no XML doc de `TransformVisualRectToContentFrame` (mesma álgebra em task-5-report.md).
+    // A conversão frame-de-EXIBIÇÃO -> frame-de-CONTEÚDO por /Rotate saiu do App e virou responsabilidade
+    // ÚNICA do motor (mPdf.Signing.StampRotation, coberta por StampRotationTests + o oráculo de render
+    // StampRotationRenderTests). O BatchSignViewModel só posiciona o retângulo no canto inferior-direito
+    // EXIBIDO e passa ISSO pro motor, que lê o /Rotate da página sozinho. A prova ponta-a-ponta contra o
+    // motor+renderer REAIS continua em Start_Integration_RotatedLastPage_... abaixo.
 
-    [Fact] // rotação 0 = identidade -- MESMOS números de Start_WithStamp_LastPageBottomRightRect acima.
-    public void ComputeStampRect_Rotation0_Identity()
+    [Fact] // canto inferior-direito EXIBIDO, margem 20, carimbo 180x60, sobre A4 595x842.
+    public void ComputeStampRect_ReturnsVisualBottomRightRect()
     {
-        var rect = BatchSignViewModel.ComputeStampRect(0, displayWidthPt: 595, displayHeightPt: 842);
+        var rect = BatchSignViewModel.ComputeStampRect(displayWidthPt: 595, displayHeightPt: 842);
         Assert.Equal(395, rect.LeftPt, precision: 3);
         Assert.Equal(20, rect.BottomPt, precision: 3);
         Assert.Equal(575, rect.RightPt, precision: 3);
         Assert.Equal(80, rect.TopPt, precision: 3);
     }
 
-    [Fact] // rotação 90: página de EXIBIÇÃO é 842x595 (largura/altura trocadas -- GetPageSize já rotacionado).
-    // Retângulo visual (canto inferior-direito, margem 20, 180x60): dx=[642,822], dy=[20,80].
-    // Transformado pro frame de conteúdo (Wu=Hd=595 -- ver derivação): Left=Hd-dyTop=595-80=515,
-    // Right=Hd-dyBottom=595-20=575, Bottom=dxLeft=642, Top=dxRight=822.
-    public void ComputeStampRect_Rotation90_TransformsIntoContentFrame()
-    {
-        var rect = BatchSignViewModel.ComputeStampRect(90, displayWidthPt: 842, displayHeightPt: 595);
-        Assert.Equal(515, rect.LeftPt, precision: 3);
-        Assert.Equal(642, rect.BottomPt, precision: 3);
-        Assert.Equal(575, rect.RightPt, precision: 3);
-        Assert.Equal(822, rect.TopPt, precision: 3);
-        // sanity: dentro da página de CONTEÚDO real (595x842) -- a versão COM BUG (achado do revisor)
-        // produzia X 642-822, inteiramente FORA de uma página de 595pt de largura.
-        Assert.True(rect.RightPt <= 595, $"carimbo fora da página de conteúdo: RightPt={rect.RightPt}");
-    }
-
-    [Fact] // rotação 180: página de EXIBIÇÃO continua 595x842 (sem troca). Retângulo visual dx=[395,575],
-    // dy=[20,80]. Transformado: Left=Wd-dxRight=595-575=20, Right=Wd-dxLeft=595-395=200,
-    // Bottom=Hd-dyTop=842-80=762, Top=Hd-dyBottom=842-20=822 -- canto INFERIOR-DIREITO visual vira
-    // SUPERIOR-ESQUERDO no conteúdo (a página inteira virou de cabeça pra baixo).
-    public void ComputeStampRect_Rotation180_TransformsIntoContentFrame()
-    {
-        var rect = BatchSignViewModel.ComputeStampRect(180, displayWidthPt: 595, displayHeightPt: 842);
-        Assert.Equal(20, rect.LeftPt, precision: 3);
-        Assert.Equal(762, rect.BottomPt, precision: 3);
-        Assert.Equal(200, rect.RightPt, precision: 3);
-        Assert.Equal(822, rect.TopPt, precision: 3);
-    }
-
-    [Fact] // rotação 270: página de EXIBIÇÃO é 842x595. Retângulo visual dx=[642,822], dy=[20,80].
-    // Transformado (Wd=842): Left=dyBottom=20, Right=dyTop=80, Bottom=Wd-dxRight=842-822=20,
-    // Top=Wd-dxLeft=842-642=200.
-    public void ComputeStampRect_Rotation270_TransformsIntoContentFrame()
-    {
-        var rect = BatchSignViewModel.ComputeStampRect(270, displayWidthPt: 842, displayHeightPt: 595);
-        Assert.Equal(20, rect.LeftPt, precision: 3);
-        Assert.Equal(20, rect.BottomPt, precision: 3);
-        Assert.Equal(80, rect.RightPt, precision: 3);
-        Assert.Equal(200, rect.TopPt, precision: 3);
-    }
-
-    [Fact]
-    public void ComputeStampRect_UnknownRotation_ThrowsArgumentOutOfRangeException()
-    {
-        Assert.Throws<ArgumentOutOfRangeException>(() => BatchSignViewModel.ComputeStampRect(45, 595, 842));
-    }
-
-    [Fact] // WIRING (não só a álgebra pura acima): `SignOneFile` realmente consulta
-    // `_editor.GetPageRotations` e alimenta CEGAMENTE o resultado na transformação -- prova com um
-    // FakePdfEditor declarando rotação 90 sobre uma fixture NÃO-rotacionada em disco (fixture-a4.pdf).
-    // A GEOMETRIA (`renderer.GetPageSize`) vem do PDFium REAL lendo o arquivo de verdade -- como o
-    // arquivo NÃO está fisicamente rotacionado, `GetPageSize` continua devolvendo 595x842 (a fixture),
-    // NÃO o par trocado; é exatamente essa independência (rotação vem do editor, geometria vem do
-    // renderer, `SignOneFile` nunca reconcilia os dois) que este teste prova estar fiada corretamente --
-    // o `expected` usa a MESMA combinação (rotação=90 sobre 595x842) que `SignOneFile` efetivamente vê.
-    public async Task Start_WithStamp_EditorReportsRotation90_UsesTransformedRect()
+    [Fact] // WIRING: `SignOneFile` passa o retângulo VISUAL (frame de exibição) DIRETO pro motor — a
+    // rotação é resolvida lá dentro (o motor lê o /Rotate sozinho), o VM não a toca mais nem depende de
+    // IPdfEditor. Fixture fixture-a4.pdf (595x842, não-rotacionada): displaySize=595x842.
+    public async Task Start_WithStamp_PassesVisualBottomRightRectToEngine()
     {
         using var cert = SignCommandTests.CreateEphemeralRsaCertificate();
         var engine = new FakeBatchSigningEngine();
-        var fakeEditor = new FakePdfEditor { PageRotationsResult = new[] { 90 } };
-        var f1 = NewTempFixtureCopy(); // fixture-a4.pdf: 1 página, 595x842pt (mas o EDITOR FAKE diz 90)
-        var vm = BuildVm(engine, cert: cert, pickFiles: () => [f1], editor: fakeEditor);
+        var f1 = NewTempFixtureCopy();
+        var vm = BuildVm(engine, cert: cert, pickFiles: () => [f1]);
         vm.AddFilesCommand.Execute(null);
         vm.SelectedCertificate = vm.Certificates[0];
         vm.PlaceStamp = true;
 
         await vm.StartCommand.ExecuteAsync(null);
 
-        Assert.Equal(1, fakeEditor.GetPageRotationsCallCount);
         var stamp = engine.Requests[0].Stamp!;
-        // displaySize vem do renderer REAL sobre o arquivo REAL (595x842, sem rotação física) -- só a
-        // rotação em si (90) vem do fake, exatamente o que SignOneFile efetivamente consome.
-        var expected = BatchSignViewModel.ComputeStampRect(90, displayWidthPt: 595, displayHeightPt: 842);
+        var expected = BatchSignViewModel.ComputeStampRect(displayWidthPt: 595, displayHeightPt: 842);
         Assert.Equal(expected.LeftPt, stamp.Rect.LeftPt, precision: 3);
         Assert.Equal(expected.BottomPt, stamp.Rect.BottomPt, precision: 3);
         Assert.Equal(expected.RightPt, stamp.Rect.RightPt, precision: 3);
@@ -655,8 +595,7 @@ public class BatchSignViewModelTests : IDisposable
             [RsaCertInfo(cert)],
             isPathOpen: _ => false,
             pickFiles: () => [path],
-            signingEngine: realEngine,
-            editor: realEditor);
+            signingEngine: realEngine);
         vm.AddFilesCommand.Execute(null);
         vm.SelectedCertificate = vm.Certificates[0];
         vm.PlaceStamp = true;

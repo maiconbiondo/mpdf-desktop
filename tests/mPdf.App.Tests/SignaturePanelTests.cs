@@ -444,37 +444,48 @@ public class SignaturePanelTests : IDisposable
 
     // ==== Integração: motor REAL + certificado efêmero REAL, pelo fluxo completo do VM ===============
 
-    [Fact] // ponta a ponta: assina com o motor de PRODUÇÃO (SigningEngineFactory.Create()) e um
-    // certificado RSA efêmero (NUNCA um certificado real do usuário/repositório) -> o cache do painel
-    // (RefreshSignaturesAsync) mostra 1 assinatura com os campos corretos. Exemplar: SignCommandTests.
-    // Sign_Integration_RealEngineWithEphemeralCertificates_ProducesTwoValidIncrementalSignatures.
-    public async Task Sign_Integration_RealEngineWithEphemeralCertificate_PanelCacheShowsSignatureWithCorrectFields()
+    [Fact] // ponta a ponta (FLUXO ADOBE): assina com o motor de PRODUÇÃO + certificado RSA efêmero -> o
+    // ARQUIVO NOVO gravado ("Salvar como") tem a assinatura; o doc ATUAL continua o original (nao vira
+    // assinado). O painel de assinaturas do ARQUIVO ASSINADO (reaberto) mostra 1 assinatura com os
+    // campos corretos.
+    public async Task Sign_Integration_RealEngine_SignedFilePanelShowsSignatureWithCorrectFields()
     {
         var tmp = CopyFixtureToTemp();
         using var cert = SignCommandTests.CreateEphemeralRsaCertificate("Fulano de Tal");
         var realEngine = SigningEngineFactory.Create();
         var dialog = new FakeSignDialogService(
             new SignDialogResult(cert, "Aprovação", "Escritório", ApplyDocMdp: true, PlaceStamp: false));
+        var outPath = Path.Combine(Path.GetTempPath(), $"mpdf-signed-{Guid.NewGuid():N}.pdf");
 
-        using var d = new DocumentViewModel(
+        using (var d = new DocumentViewModel(
             DocumentSession.Open(tmp),
             editor: PdfEditorFactory.Create(), // real -- HasSignatures precisa ler o PDF de verdade
             config: new AppConfig(NewConfigDir()),
             notifyError: _ => { }, notifyInfo: _ => { },
             signDialog: dialog, signingEngine: realEngine,
             confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
-            listSigningCertificates: () => new[] { new SigningCertificateInfo(cert, true, "Fulano (RSA)", false, false) });
+            listSigningCertificates: () => new[] { new SigningCertificateInfo(cert, true, "Fulano (RSA)", false, false) },
+            pickPdfToSave: _ => outPath, writeAllBytes: File.WriteAllBytes,
+            openSavedDocument: _ => Task.CompletedTask))
+        {
+            await d.SignCommand.ExecuteAsync(null);
+            Assert.False(d.IsSignedDocument);  // o doc atual continua o original
+            Assert.True(File.Exists(outPath)); // o assinado e um arquivo NOVO
+        }
 
-        await d.SignCommand.ExecuteAsync(null);
-        Assert.True(d.IsSignedDocument);
+        // o painel de assinaturas do ARQUIVO ASSINADO (reaberto) mostra a assinatura.
+        using var signed = new DocumentViewModel(
+            DocumentSession.Open(outPath), editor: PdfEditorFactory.Create(),
+            config: new AppConfig(NewConfigDir()), notifyError: _ => { }, notifyInfo: _ => { });
+        await signed.RefreshSignaturesAsync();
 
-        await d.RefreshSignaturesAsync();
-
-        Assert.True(d.HasSignatures);
-        var row = Assert.Single(d.SignatureRows);
+        Assert.True(signed.HasSignatures);
+        var row = Assert.Single(signed.SignatureRows);
         Assert.Equal("Fulano de Tal", row.SignerName);
         Assert.Equal("✔ Íntegra", row.IntegrityLabel);
         Assert.Equal("Cobre o documento inteiro", row.CoverageLabel);
         Assert.Equal("Motivo: Aprovação", row.ReasonLabel);
+
+        try { File.Delete(outPath); } catch { }
     }
 }

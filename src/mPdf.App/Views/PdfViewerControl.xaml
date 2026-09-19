@@ -197,6 +197,15 @@
                              caixa fica hit-test-TRANSPARENTE de propósito, senão um 2º clique dentro do
                              retângulo ainda pequeno (aviso "caixa pequena demais") interceptaria o
                              gesto que deveria continuar o desenho em Page_MouseLeftButtonDown. -->
+                        <!-- FIX (feedback do usuário: "prévia da assinatura no MEIO da tela"): a caixa, as
+                             alças e os botões abaixo usam Canvas.Left/Top, mas ESTAVAM soltos DENTRO do
+                             Grid da página (não de um Canvas). Um Grid IGNORA Canvas.Left/Top e CENTRALIZA
+                             um filho com Width/Height explícitos → a caixa aparecia no centro da página,
+                             descolada do mouse (o retângulo em PONTOS de página, e portanto o carimbo
+                             final, sempre esteve certo — só a POSIÇÃO VISUAL do overlay quebrava). Este
+                             Canvas (sem Background = hit-test transparente nas áreas vazias, igual aos
+                             overlays de seleção/destaque acima) faz Canvas.Left/Top valerem de novo. -->
+                        <Canvas>
                         <Grid x:Name="StampBoxAdornerGrid"
                               Canvas.Left="{Binding StampBoxScreenRect.X}" Canvas.Top="{Binding StampBoxScreenRect.Y}"
                               Width="{Binding StampBoxScreenRect.Width}" Height="{Binding StampBoxScreenRect.Height}"
@@ -276,6 +285,7 @@
                                         Click="StampBoxCancel_Click"/>
                             </StackPanel>
                         </Border>
+                        </Canvas>
                     </Grid>
                 </Border>
             </DataTemplate>

@@ -66,10 +66,7 @@ public class ImageBoxTests : IDisposable
             await d.BeginImageBoxPlacementAsync(0, new PdfPoint(100, 100));
             Assert.Equal(StampPlacementPhase.Drawing, d.StampPlacementPhase);
             d.UpdateDrawTo(new PdfPoint(300, 250)); // caixa 200x150pt
-            d.EndStampDraw();
-            Assert.Equal(StampPlacementPhase.Adjusting, d.StampPlacementPhase);
-
-            await d.ConfirmStampBoxAsync();
+            await d.EndStampDrawAsync(); // Adobe: soltar o mouse COLOCA a imagem (sem botão "Inserir aqui")
 
             Assert.Equal(AnnotationTool.None, d.ActiveTool);
             Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase);
@@ -83,19 +80,21 @@ public class ImageBoxTests : IDisposable
         }
     }
 
-    [Fact] // Plano 21: clique/arrasto pequeno demais -> caixa PADRÃO em Adjusting (mesma regra do carimbo);
-    // nada é adicionado até o Confirmar.
-    public async Task PlaceViaBox_TooSmall_CreatesDefaultBox_AddsNothingUntilConfirm()
+    [Fact] // Adobe: clique/arrasto pequeno demais -> caixa PADRÃO no ponto e COLOCA na hora (sem confirmar).
+    public async Task PlaceViaBox_TooSmall_CreatesDefaultBox_AndPlaces()
     {
         using var d = NewDocWithPendingImage(out var session, out var editor);
         using (session)
         {
             await d.BeginImageBoxPlacementAsync(0, new PdfPoint(100, 100));
             d.UpdateDrawTo(new PdfPoint(105, 105)); // 5x5pt < mínimo
-            d.EndStampDraw();
-            Assert.Equal(StampPlacementPhase.Adjusting, d.StampPlacementPhase);
-            Assert.Equal(180, d.StampBoxRect.RightPt - d.StampBoxRect.LeftPt, 0.01); // tamanho padrão
-            Assert.Empty(editor.ReadAnnotations(session.Snapshot)); // só no Confirmar
+            await d.EndStampDrawAsync(); // caixa padrão -> COLOCA na hora
+
+            Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase);
+            Assert.Equal(AnnotationTool.None, d.ActiveTool);
+            var placed = Assert.Single(editor.ReadAnnotations(session.Snapshot).Where(a => a.Kind == AnnotationKind.ImageStamp));
+            // caixa padrão 180x60; imagem 1:1 aspect-fit -> 60x60 (menor lado).
+            Assert.Equal(60, placed.TopPt - placed.BottomPt, 0.5);
         }
     }
 
@@ -105,11 +104,10 @@ public class ImageBoxTests : IDisposable
         using var d = NewDocWithPendingImage(out var session, out var editor);
         using (session)
         {
-            // coloca via caixa
+            // coloca via caixa (Adobe: soltar COLOCA na hora)
             await d.BeginImageBoxPlacementAsync(0, new PdfPoint(100, 100));
             d.UpdateDrawTo(new PdfPoint(300, 300)); // 200x200 -> imagem 200x200 centralizada
-            d.EndStampDraw();
-            await d.ConfirmStampBoxAsync();
+            await d.EndStampDrawAsync();
 
             var placed = Assert.Single(d.AnnotationsByPage[0], a => a.Kind == AnnotationKind.ImageStamp);
             double larguraAntes = placed.RightPt - placed.LeftPt;
@@ -128,6 +126,83 @@ public class ImageBoxTests : IDisposable
             Assert.True(depois.RightPt - depois.LeftPt < larguraAntes - 30,
                 $"imagem não encolheu (antes={larguraAntes:0}, depois={depois.RightPt - depois.LeftPt:0})");
         }
+    }
+
+    [Fact] // NOVA UX: ARRASTAR pra mover (MoveSelectedAnnotationAsync) — antes só dava pela caixa de
+    // ajuste + "Salvar". Move a imagem colocada nesta sessão (bytes no cache) pra um novo ponto; ela
+    // continua sendo 1 imagem, agora no rect novo.
+    public async Task MoveExisting_ViaDrag_MovesImageToNewPosition()
+    {
+        using var d = NewDocWithPendingImage(out var session, out var editor);
+        using (session)
+        {
+            await d.BeginImageBoxPlacementAsync(0, new PdfPoint(100, 100));
+            d.UpdateDrawTo(new PdfPoint(300, 300)); // imagem 200x200 -> rect (100,100)-(300,300)
+            await d.EndStampDrawAsync(); // coloca a imagem (Adobe)
+
+            var placed = Assert.Single(d.AnnotationsByPage[0], a => a.Kind == AnnotationKind.ImageStamp);
+            d.SelectedAnnotation = placed;
+
+            await d.MoveSelectedAnnotationAsync(newLeftPt: 250, newBottomPt: 400); // arrasta pro novo canto
+
+            var moved = Assert.Single(
+                editor.ReadAnnotations(session.Snapshot).Where(a => a.Kind == AnnotationKind.ImageStamp));
+            Assert.Equal(250, moved.LeftPt, 0.5);
+            Assert.Equal(400, moved.BottomPt, 0.5);
+            Assert.Equal(200, moved.RightPt - moved.LeftPt, 0.5); // tamanho preservado
+        }
+    }
+
+    [Fact] // REGRESSÃO (bug de campo "move uma vez e depois dá erro"): o lift PRESERVA o Id, mas o
+    // recache antigo removia o Id do cache -> 2º move virava "imagem de outra sessão". Agora move VÁRIAS
+    // vezes (re-selecionando por Id a cada arrasto, como a View faz por hit-test).
+    public async Task MoveExisting_ViaDrag_Twice_StillMoves_NoError()
+    {
+        using var d = NewDocWithPendingImage(out var session, out var editor);
+        var errors = new List<string>();
+        using (session)
+        {
+            await d.BeginImageBoxPlacementAsync(0, new PdfPoint(100, 100));
+            d.UpdateDrawTo(new PdfPoint(300, 300));
+            await d.EndStampDrawAsync(); // coloca a imagem (Adobe)
+
+            d.SelectedAnnotation = d.AnnotationsByPage[0].Single(a => a.Kind == AnnotationKind.ImageStamp);
+            await d.MoveSelectedAnnotationAsync(250, 400);
+            // re-seleciona (a View faz isso por hit-test no proximo mouse-down)
+            d.SelectedAnnotation = d.AnnotationsByPage[0].Single(a => a.Kind == AnnotationKind.ImageStamp);
+            await d.MoveSelectedAnnotationAsync(150, 500);
+
+            var moved = Assert.Single(
+                editor.ReadAnnotations(session.Snapshot).Where(a => a.Kind == AnnotationKind.ImageStamp));
+            Assert.Equal(150, moved.LeftPt, 0.5); // o 2º move funcionou
+        }
+    }
+
+    [Fact] // sem bytes no cache (imagem de OUTRA sessão) -> mover AVISA e NÃO move (mesma limitação do
+    // BeginImageEditBox — o lift precisa dos bytes pra reconstruir a aparência).
+    public async Task MoveExisting_NoCachedBytes_NotifiesAndDoesNotMove()
+    {
+        var editor = PdfEditorFactory.Create();
+        using var session = DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf"));
+        var errors = new List<string>();
+        using var d = new DocumentViewModel(session, editor: editor, notifyError: errors.Add, notifyInfo: _ => { });
+        // coloca uma imagem "externa" DE VERDADE no PDF (com bytes), mas sem passar pelo cache da sessão.
+        var comBytes = editor.AddAnnotation(session.Snapshot, new AnnotationData
+        {
+            Kind = AnnotationKind.ImageStamp, PageIndex = 0,
+            LeftPt = 10, BottomPt = 10, RightPt = 60, TopPt = 60, ImageBytes = SquarePng,
+        });
+        session.Apply(comBytes);
+        await d.RefreshAnnotationsByPageAsync();
+        var externa = Assert.Single(d.AnnotationsByPage[0], a => a.Kind == AnnotationKind.ImageStamp);
+        d.SelectedAnnotation = externa;
+
+        await d.MoveSelectedAnnotationAsync(newLeftPt: 200, newBottomPt: 200);
+
+        Assert.Single(errors); // avisou
+        var still = Assert.Single(
+            editor.ReadAnnotations(session.Snapshot).Where(a => a.Kind == AnnotationKind.ImageStamp));
+        Assert.Equal(10, still.LeftPt, 0.5); // NÃO moveu (continua no lugar original)
     }
 
     [Fact] // sem bytes no cache (imagem de OUTRA sessão) -> BeginImageEditBox avisa e NÃO abre a caixa.

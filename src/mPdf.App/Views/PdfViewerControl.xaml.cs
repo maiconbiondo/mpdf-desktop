@@ -232,6 +232,7 @@ public partial class PdfViewerControl : UserControl
         {
             oldDoc.PropertyChanged -= OnDocumentPropertyChanged;
             oldDoc.ScrollToPageRequested -= ScrollToPage;
+            oldDoc.PreserveScrollAcrossReload -= OnPreserveScrollAcrossReload;
             oldDoc.FitWidthRecalcRequested -= OnFitWidthRecalcRequested;
             oldDoc.Search.PropertyChanged -= OnSearchPropertyChanged;
         }
@@ -240,6 +241,7 @@ public partial class PdfViewerControl : UserControl
             _lastZoom = newDoc.Zoom;
             newDoc.PropertyChanged += OnDocumentPropertyChanged;
             newDoc.ScrollToPageRequested += ScrollToPage;
+            newDoc.PreserveScrollAcrossReload += OnPreserveScrollAcrossReload;
             newDoc.FitWidthRecalcRequested += OnFitWidthRecalcRequested;
             newDoc.Search.PropertyChanged += OnSearchPropertyChanged;
             // Task 2 (Plano 9): troca de ABA (DataContext trocado num controle RECICLADO, já conectado a
@@ -268,6 +270,33 @@ public partial class PdfViewerControl : UserControl
             // documento ANTIGO na aba NOVA que ocupou este mesmo controle reciclado.
             if (!IsCurrentDocument(DataContext, doc)) return;
             doc.FitWidth(ViewportWidth);
+        });
+    }
+
+    /// Preserva o offset de rolagem EXATO (px) através da reconstrução de Pages/Thumbnails de um Apply
+    /// (ver doc XML de `DocumentViewModel.PreserveScrollAcrossReload`). Disparado ANTES do `Pages.Clear()`
+    /// do VM — então `VerticalOffset` aqui ainda é a posição de leitura REAL. O `Pages.Clear()` seguinte
+    /// zera o ScrollViewer; reaplicamos o offset adiado com `DispatcherPriority.Loaded`, DEPOIS que o
+    /// layout do rebuild recalcula o extent (mesmo adiamento pós-layout da âncora de zoom em
+    /// `OnDocumentPropertyChanged`). `ScrollToVerticalOffset` clampa sozinho se o documento encolheu.
+    private void OnPreserveScrollAcrossReload()
+    {
+        var scrollViewer = FindScrollViewer();
+        if (scrollViewer is null) return;
+        double offset = scrollViewer.VerticalOffset;
+        if (offset <= 0) return; // já no topo — nada a preservar (e evita um ScrollToVerticalOffset(0) redundante)
+
+        var doc = DataContext as DocumentViewModel;
+        // Um Apply reconstrói as coleções e pode reordenar entregas de render; abortamos o loop de
+        // convergência de ScrollToPage que porventura esteja em voo — ele miraria o offset ANTIGO.
+        CancelScrollReapply();
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            // Staleness guard: mesma disciplina de OnDocumentPropertyChanged/OnFitWidthRecalcRequested —
+            // uma troca de aba entre a captura e o layout não pode aplicar o offset do doc ANTIGO no
+            // ScrollViewer reciclado que agora pertence à aba NOVA.
+            if (!IsCurrentDocument(DataContext, doc)) return;
+            FindScrollViewer()?.ScrollToVerticalOffset(offset);
         });
     }
 
@@ -573,11 +602,11 @@ public partial class PdfViewerControl : UserControl
         {
             doc.ClearSelection();
             doc.SelectedAnnotation = hit;
-            // Plano 21 (Task 5): clicar numa IMAGEM já colocada abre a caixa ajustável sobre ela (mover +
-            // redimensionar via alças/corpo), em vez do arrasto genérico (ImageStamp nunca foi liftável
-            // pelo caminho genérico — ver MoveSelectedAnnotationAsync). Sem bytes no cache (doc reaberto),
-            // BeginImageEditBox avisa e não abre — a imagem fica só selecionada.
-            if (hit.Kind == AnnotationKind.ImageStamp)
+            // IMAGEM: ARRASTAR = MOVER direto (igual às outras anotações — MoveSelectedAnnotationAsync
+            // agora move imagem usando os bytes do cache). DUPLO-CLIQUE = abre a caixa de ajuste pra
+            // REDIMENSIONAR (BeginImageEditBox, alças). Antes, um clique simples já abria a caixa de
+            // ajuste, deixando o mover "quase impossível" (tinha que pegar o corpo/alça + "Salvar").
+            if (hit.Kind == AnnotationKind.ImageStamp && e.ClickCount == 2)
             {
                 e.Handled = true;
                 doc.BeginImageEditBox(hit);

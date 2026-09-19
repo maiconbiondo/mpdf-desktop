@@ -22,7 +22,12 @@ public sealed record SigningCertificateInfo(
     bool IsRsa,
     string DisplayName,
     bool IsIcpBrasilPersonal,
-    bool IsIcpBrasilCompany);
+    bool IsIcpBrasilCompany,
+    // Dígitos crus do CPF/CNPJ (do sufixo do CN, ICP-Brasil), sem máscara — usado pela BUSCA do diálogo
+    // de assinatura (o usuário digita o CPF/CNPJ e filtra em tempo real). `null` quando o CN não segue a
+    // convenção NOME:CPF|CNPJ. NÃO aparece no `DisplayName` (que usa o rótulo e-CPF/e-CNPJ). Opcional no
+    // fim do record pra não quebrar construções existentes (testes).
+    string? Document = null);
 
 /// Abstração sobre a FONTE dos certificados — único ponto de variabilidade pra teste. A
 /// implementação real (`WindowsX509StoreReader`) nunca é exercitada pelos testes unitários de
@@ -137,12 +142,14 @@ public static class CertificateCatalog
 
         string signerName;
         string? tipo = null;
+        string? document = null;
         var isPersonal = false;
         var isCompany = false;
         if (match.Success)
         {
             signerName = match.Groups["nome"].Value.Trim();
-            isPersonal = match.Groups["doc"].Value.Length == 11;
+            document = match.Groups["doc"].Value;
+            isPersonal = document.Length == 11;
             isCompany = !isPersonal;
             tipo = isPersonal ? "e-CPF" : "e-CNPJ";
         }
@@ -156,6 +163,6 @@ public static class CertificateCatalog
             ? $"{signerName} — {issuer} — válido até {validade}"
             : $"{signerName} ({tipo}) — {issuer} — válido até {validade}";
 
-        return new SigningCertificateInfo(cert, isRsa, displayName, isPersonal, isCompany);
+        return new SigningCertificateInfo(cert, isRsa, displayName, isPersonal, isCompany, document);
     }
 }

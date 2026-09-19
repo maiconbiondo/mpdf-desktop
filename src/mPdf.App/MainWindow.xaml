@@ -210,7 +210,7 @@
                         <!-- Plano 15 (Task 4): Reconhecer texto (OCR) — comando POR DOCUMENTO (SelectedDocument),
                              habilitado só com documento aberto e editável (assinado -> "Editar uma cópia"). -->
                         <Button Command="{Binding SelectedDocument.RecognizeTextCommand}" ToolTip="Reconhecer texto (OCR) — torna páginas escaneadas pesquisáveis" Width="38" Style="{StaticResource mPdf.Button.Command}">
-                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon text-t}"/>
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon scan}"/>
                         </Button>
                         <Button Command="{Binding BatchSignCommand}" ToolTip="Assinar vários PDFs em lote" Style="{StaticResource mPdf.Button.Command}" Padding="11,0">
                             <StackPanel Orientation="Horizontal">

@@ -86,10 +86,6 @@ public sealed partial class BatchSignViewModel : ObservableObject
     private readonly Func<string, bool> _isPathOpen;
     private readonly Func<IReadOnlyList<string>?> _pickFiles;
     private readonly ISigningEngine _signingEngine;
-    // Revisão (achado crítico): precisa de /Rotate da última página pra transformar o retângulo do
-    // carimbo do frame de EXIBIÇÃO pro frame de CONTEÚDO — ver ComputeStampRect. Mesmo padrão de
-    // DocumentViewModel/MainViewModel._editor: não mostra UI (leitura pura), fica de fora da seam UiPrompts.
-    private readonly IPdfEditor _editor;
 
     private bool _cancelRequested;
 
@@ -126,14 +122,12 @@ public sealed partial class BatchSignViewModel : ObservableObject
         IReadOnlyList<SigningCertificateInfo> certificates,
         Func<string, bool> isPathOpen,
         Func<IReadOnlyList<string>?> pickFiles,
-        ISigningEngine? signingEngine = null,
-        IPdfEditor? editor = null)
+        ISigningEngine? signingEngine = null)
     {
         Certificates = certificates.Select(c => new BatchCertificateItem(c)).ToList();
         _isPathOpen = isPathOpen;
         _pickFiles = pickFiles;
         _signingEngine = signingEngine ?? SigningEngineFactory.Create();
-        _editor = editor ?? PdfEditorFactory.Create();
 
         Files.CollectionChanged += (_, _) => StartCommand.NotifyCanExecuteChanged();
     }
@@ -267,13 +261,13 @@ public sealed partial class BatchSignViewModel : ObservableObject
                         return new BatchSignFileResult(fileName, Succeeded: false, $"{fileName}: arquivo sem páginas.");
 
                     int lastPageIndex = renderer.PageCount - 1;
-                    // Frame de EXIBIÇÃO (PDFium já aplica /Rotate aqui — é o que o usuário VÊ).
+                    // Frame de EXIBIÇÃO (PDFium já aplica /Rotate aqui — é o que o usuário VÊ). O
+                    // retângulo do carimbo é montado NESTE frame; a costura de rotação (converter pro
+                    // frame de conteúdo que o iText grava) é responsabilidade ÚNICA do motor
+                    // (PadesSigningEngine/StampRotation) — o motor lê o /Rotate da página sozinho.
                     var displaySize = renderer.GetPageSize(lastPageIndex);
-                    // /Rotate da última página (0/90/180/270) -- só a mPdf.Editing (via IPdfEditor) sabe
-                    // ler isso sem vazar iText pro App; NUNCA reimplementado aqui.
-                    int rotation = _editor.GetPageRotations(pdf)[lastPageIndex];
                     stamp = new VisibleStampSpec(lastPageIndex,
-                        ComputeStampRect(rotation, displaySize.WidthPt, displaySize.HeightPt));
+                        ComputeStampRect(displaySize.WidthPt, displaySize.HeightPt));
                 }
                 finally { PendingDisposals.Enqueue(renderer.Dispose); }
             }
@@ -298,12 +292,14 @@ public sealed partial class BatchSignViewModel : ObservableObject
     /// — ver doc XML lá pro ACHADO CRÍTICO da revisão e a álgebra completa). `internal` (não `private`):
     /// testável direto (`BatchSignViewModelTests`), sem precisar renderizar pixels pra cada asserção de
     /// número — a prova PIXEL-A-PIXEL (oráculo mandatório da revisão) vive à parte, na integração.
-    internal static PdfQuad ComputeStampRect(int rotation, double displayWidthPt, double displayHeightPt)
+    internal static PdfQuad ComputeStampRect(double displayWidthPt, double displayHeightPt)
     {
         double x = displayWidthPt - StampMarginPt - StampWidthPt;
         double y = StampMarginPt;
-        var visual = ClampToPage(x, y, StampWidthPt, StampHeightPt, displayWidthPt, displayHeightPt);
-        return TransformVisualRectToContentFrame(rotation, visual, displayWidthPt, displayHeightPt);
+        var v = ClampToPage(x, y, StampWidthPt, StampHeightPt, displayWidthPt, displayHeightPt);
+        // Retângulo no frame de EXIBIÇÃO — o motor converte pro frame de conteúdo conforme o /Rotate da
+        // página (StampRotation.DisplayedToMediaBox). Aqui NÃO há mais transformação de rotação.
+        return new PdfQuad(v.left, v.bottom, v.right, v.top);
     }
 
     /// EXEMPLAR: `DocumentViewModel.ClampToPage` (mesmo algoritmo/mesma assinatura, duplicado aqui pelo
@@ -326,54 +322,6 @@ public sealed partial class BatchSignViewModel : ObservableObject
         bottom = Math.Clamp(bottom, 0, pageHeightPt);
         top = Math.Clamp(top, 0, pageHeightPt);
         return (left, bottom, right, top);
-    }
-
-    /// ACHADO CRÍTICO DA REVISÃO (confirmado ao vivo): a 1ª versão desta task alimentava
-    /// `PdfDocumentRenderer.GetPageSize` (frame de EXIBIÇÃO — PDFium já compõe `/Rotate` ao reportar
-    /// dimensões, mesma convenção de `RotatePages_Rotate90_SwapsPageDimensions` em
-    /// `mPdf.Editing.Tests`) DIRETO em `VisibleStampSpec.Rect`, que o motor (`PadesSigningEngine.
-    /// ApplyVisibleStamp`/`SetPageRect`) consome no frame de CONTEÚDO NÃO-ROTACIONADO (mesma convenção
-    /// de `AnnotationData`/`FormFieldData.WidgetRect` — `/Rotate` é atributo de EXIBIÇÃO, o `/Rect`
-    /// gravado no PDF nunca muda quando a página gira). Numa página `/Rotate=90`, o retângulo calculado
-    /// pro canto inferior-direito do frame EXIBIDO (642pt–822pt de X, medido ao vivo pelo revisor contra
-    /// uma página de 595pt de largura NÃO-rotacionada) caía INTEIRAMENTE fora da página real quando
-    /// interpretado como coordenada de conteúdo — o carimbo saía do PDF assinado sem NENHUM erro
-    /// (`PadesSigningEngine.ValidateStamp` só valida índice de página + retângulo não-degenerado, nunca
-    /// que o retângulo caiba dentro da página).
-    ///
-    /// DERIVAÇÃO (composição de frames, não pattern-matching — álgebra completa também em
-    /// task-5-report.md): `/Rotate=r` pede ao visualizador pra girar a página `r` graus no sentido
-    /// HORÁRIO ao exibir. Rastreando os 4 cantos do retângulo unitário (BL/BR/TR/TL) do frame de
-    /// CONTEÚDO (origem inferior-esquerda, X direita, Y cima, extensão `Wu`x`Hu`) pro frame de EXIBIÇÃO
-    /// (mesma convenção, extensão `Wd`x`Hd` — `Wd=Hu`/`Hd=Wu` quando r=90/270, `Wd=Wu`/`Hd=Hu` quando
-    /// r=0/180) sob uma rotação física horária de `r` graus, e resolvendo o mapa linear consistente com
-    /// os 4 pontos, dá o mapa direto CONTEÚDO->EXIBIÇÃO; a fórmula abaixo é o INVERSO dele (EXIBIÇÃO->
-    /// CONTEÚDO, o que este método precisa), aplicado aos 4 cantos do retângulo de entrada e depois
-    /// reduzido a min/max (a transformação pode inverter qual canto vira "esquerda"/"direita"):
-    ///   r=0:   identidade.
-    ///   r=90:  Left'=Hd-dyTop, Right'=Hd-dyBottom, Bottom'=dxLeft, Top'=dxRight.
-    ///   r=180: Left'=Wd-dxRight, Right'=Wd-dxLeft, Bottom'=Hd-dyTop, Top'=Hd-dyBottom.
-    ///   r=270: Left'=dyBottom, Right'=dyTop, Bottom'=Wd-dxRight, Top'=Wd-dxLeft.
-    /// (dxLeft/dxRight/dyBottom/dyTop = retângulo de ENTRADA, no frame de exibição; Wd/Hd = dimensões
-    /// de EXIBIÇÃO da página, mesmas que `GetPageSize` devolve.) Cada fórmula foi verificada mapeando os
-    /// 4 cantos do retângulo unitário nos dois frames e conferindo que width'/height' resultantes batem
-    /// com a troca de eixos esperada (90/270 trocam largura&lt;-&gt;altura; 0/180 preservam).
-    internal static PdfQuad TransformVisualRectToContentFrame(
-        int rotation, (double left, double bottom, double right, double top) visual,
-        double displayWidthPt, double displayHeightPt)
-    {
-        double dxL = visual.left, dxR = visual.right, dyB = visual.bottom, dyT = visual.top;
-        double wd = displayWidthPt, hd = displayHeightPt;
-
-        return rotation switch
-        {
-            0 => new PdfQuad(dxL, dyB, dxR, dyT),
-            90 => new PdfQuad(hd - dyT, dxL, hd - dyB, dxR),
-            180 => new PdfQuad(wd - dxR, hd - dyT, wd - dxL, hd - dyB),
-            270 => new PdfQuad(dyB, wd - dxR, dyT, wd - dxL),
-            _ => throw new ArgumentOutOfRangeException(nameof(rotation), rotation,
-                "Rotação de página inesperada — esperado 0, 90, 180 ou 270."),
-        };
     }
 
     /// "nome (assinado).pdf" AO LADO do original (brief); colisão de nome -> " (2)", " (3)"... MESMA

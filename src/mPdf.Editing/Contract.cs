@@ -110,6 +110,16 @@ public sealed record AnnotationData
     /// a appearance de um ImageStamp sem os bytes originais — por isso ImageStamp é NÃO-liftável nesta
     /// v1 (só colocar e excluir; mover/editar ficam desabilitados para este Kind, ver CanExecute lá).
     public byte[]? ImageBytes { get; init; }
+
+    /// FreeText (caixa de texto) — formatação. `null`/default: 12pt, não-negrito, não-itálico, fonte
+    /// sem serifa (Helvetica). Estes campos alimentam a appearance stream `/AP` que o `AddAnnotation`
+    /// gera para o texto (sem ela o PDFium não desenha o texto — só o `/DA` não basta). `FontFamily`
+    /// aceita "Helvetica"/"Times"/"Courier" (mapeadas para as fontes-base do PDF); valor desconhecido
+    /// cai em Helvetica. Só se aplicam a `Kind == FreeText` (ignorados nos demais).
+    public double? FontSizePt { get; init; }
+    public bool Bold { get; init; }
+    public bool Italic { get; init; }
+    public string? FontFamily { get; init; }
 }
 
 /// Tipo de campo de formulário (AcroForm), Task 1 do Plano 3c — neutro, nenhum tipo iText

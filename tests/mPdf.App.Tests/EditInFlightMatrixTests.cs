@@ -315,7 +315,11 @@ public class EditInFlightMatrixTests
             using var doc = new DocumentViewModel(session, editor: docEditorFake, config: new AppConfig(configDir),
                 notifyError: _ => { }, notifyInfo: _ => { }, signDialog: dialog, signingEngine: signEngine,
                 confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
-                listSigningCertificates: () => Array.Empty<SigningCertificateInfo>());
+                listSigningCertificates: () => Array.Empty<SigningCertificateInfo>(),
+                // Fluxo Adobe: assinar grava um arquivo NOVO via "Salvar como" — seams pra nao abrir o
+                // diálogo real (travaria o teste). Este teste so verifica que o motor foi/nao foi chamado.
+                pickPdfToSave: _ => tmp + ".assinado.pdf", writeAllBytes: (_, _) => { },
+                openSavedDocument: _ => System.Threading.Tasks.Task.CompletedTask);
             using (session) using (organizer)
             {
                 Assert.True(doc.SignCommand.CanExecute(null)); // sanity

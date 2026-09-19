@@ -217,6 +217,10 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// Gravação do arquivo NOVO do PDF/A — default `File.WriteAllBytes` (mesmo exemplar de
     /// `DialogoImpressao.SalvarPdf_Click`). `Action<string,byte[]>` (mesma isenção estrutural acima).
     private readonly Action<string, byte[]> _writeAllBytes;
+    /// Abre um arquivo recém-gravado numa aba nova (o documento ASSINADO — fluxo Adobe: assina -> Salvar
+    /// como -> abre o assinado, sem tocar o original). Default no-op (testes headless / quando não há
+    /// MainViewModel); em produção o MainViewModel injeta `OpenPath`.
+    private readonly Func<string, Task> _openSavedDocument;
 
     private const double DefaultStampWidthPt = 180.0, DefaultStampHeightPt = 60.0;
     /// Tamanho MÍNIMO da caixa ajustável do carimbo (Task 1, Plano 8, brief: "60×20pt — legibilidade do
@@ -664,6 +668,20 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// por isso é um evento simples, não um ObservableProperty (que suprimiria valores repetidos).
     public event Action<int>? ScrollToPageRequested;
 
+    /// Disparado no INÍCIO de `OnSessionApplied` (ANTES do `Pages.Clear()`), pedindo à View que
+    /// PRESERVE o offset de rolagem EXATO (em px) através da reconstrução de Pages/Thumbnails que todo
+    /// Apply faz. Antes deste evento, uma edição in loco (mover/editar/excluir uma anotação, colocar um
+    /// carimbo) reconstruía as coleções — o que zera o ScrollViewer — e o VM só restaurava a rolagem no
+    /// nível da PÁGINA (`ScrollToPageRequested`, topo da página corrente): quem estava lendo no MEIO de
+    /// uma página (ou numa página mais alta que o viewport) via a tela "piscar" pro TOPO da página a cada
+    /// arrasto de texto. Preservar o offset em px é estritamente melhor quando a altura total não muda
+    /// (o caso de toda edição de anotação — nenhuma insere/remove página); quando o documento encolhe
+    /// (ex.: Undo pra um snapshot mais curto) o `ScrollToVerticalOffset` da View clampa sozinho. Evento
+    /// SEM parâmetro — só a View sabe ler/gravar o offset em px do ScrollViewer real (mesmo motivo de
+    /// `FitWidthRecalcRequested`); ela CAPTURA o offset agora e o REAPLICA adiado (prioridade Loaded,
+    /// depois do layout do rebuild), exatamente como a âncora de zoom (`ComputeAnchoredOffset`).
+    public event Action? PreserveScrollAcrossReload;
+
     /// Deferência (Task 2, Plano 5) — "FitWidth com organizador aberto deixa o viewport obsoleto":
     /// `FitWidth(viewportWidthPx)` computa `Zoom` a partir da largura de tela QUE A VIEW leu na hora do
     /// clique (ver `MainWindow.FitWidth_Click`) — mas `PdfViewerControl` fica `Visibility=Collapsed`
@@ -752,7 +770,10 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         // injeção do resto do ctor (ver docs XML dos campos `_pdfADialog`/`_pickPdfToSave`/`_writeAllBytes`).
         IPdfADialogService? pdfADialog = null,
         Func<string, string?>? pickPdfToSave = null,
-        Action<string, byte[]>? writeAllBytes = null)
+        Action<string, byte[]>? writeAllBytes = null,
+        // Fluxo Adobe de assinatura: abre o documento ASSINADO recém-salvo numa aba nova. Default no-op
+        // (headless/testes); MainViewModel injeta `OpenPath`.
+        Func<string, Task>? openSavedDocument = null)
     {
         Session = session;
         _editor = editor ?? PdfEditorFactory.Create();
@@ -796,6 +817,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         _pdfADialog = pdfADialog;
         _pickPdfToSave = pickPdfToSave ?? new FileDialogService().PickPdfToSave;
         _writeAllBytes = writeAllBytes ?? File.WriteAllBytes;
+        _openSavedDocument = openSavedDocument ?? (_ => Task.CompletedTask);
         // SEAM (Task 3, Plano 3a — "o lugar mais provável de quebrar em silêncio" do Apply): a forma
         // ANTIGA, `new RenderScheduler(session.Renderer.RenderPage)`, é uma conversão de GRUPO DE
         // MÉTODO — ela avalia `session.Renderer` UMA VEZ, na hora desta linha, e produz um delegate
@@ -950,24 +972,34 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         // CurrentPage depois de um Apply em documento com mais de 1 página).
         int previousPage = CurrentPage;
 
+        // Rolagem "pisca pro topo da página" (feedback do usuário ao mover texto): pede à View pra
+        // CAPTURAR o offset de rolagem EXATO (px) AGORA — antes do `Pages.Clear()` abaixo zerar o
+        // ScrollViewer — pra REAPLICAR depois do rebuild (a View adia pra prioridade Loaded). Só a View
+        // tem o ScrollViewer real; ver doc XML de `PreserveScrollAcrossReload`. Substitui o antigo
+        // `ScrollToPageRequested(previousPage - 1)` lá embaixo, que só restaurava no nível da PÁGINA
+        // (topo dela) — perdia a posição DENTRO da página. `CurrentPage`/miniatura continuam restaurados
+        // abaixo (rótulo "Página X de Y" + destaque de miniatura), independentes do offset em px.
+        PreserveScrollAcrossReload?.Invoke();
+
         Pages.Clear();
         Thumbnails.Clear();
         BuildPagesAndThumbnails();
 
-        // Restaura CurrentPage se a página capturada ainda existir no documento NOVO — e pede à View
-        // pra rolar até ela (ScrollToPageRequested, 0-based, mesma convenção de ApplySearchResults/
-        // hit.PageIndex acima: a View espera um ÍNDICE de página, não o número 1-based exibido).
+        // Restaura CurrentPage se a página capturada ainda existir no documento NOVO (rótulo "Página X
+        // de Y" + destaque de miniatura). A ROLAGEM em si já é preservada em px por
+        // `PreserveScrollAcrossReload` acima — não chamamos mais `ScrollToPageRequested(previousPage-1)`
+        // aqui (ele saltava pro TOPO da página, perdendo a posição de leitura DENTRO dela e "piscando").
         // `CurrentPage = previousPage` pode ser um NO-OP de notificação (SetProperty não dispara
         // OnCurrentPageChanged se o valor não mudou — ver comentário original abaixo, preservado), mas
         // Pages/Thumbnails acabaram de ser RECRIADOS: SyncCurrentThumbnail() garante o destaque de
         // miniatura correto de qualquer forma, sem depender dessa notificação.
         //
         // Página capturada NÃO existe mais (documento encolheu — ex.: Undo pra um snapshot mais curto)
-        // -> cai pro comportamento ANTIGO (volta pro topo).
+        // -> CurrentPage volta pra 1 (rótulo/miniatura); o offset em px capturado acima é clampado pela
+        // View (ScrollToVerticalOffset satura no extent novo, menor).
         if (previousPage >= 1 && previousPage <= Pages.Count)
         {
             CurrentPage = previousPage;
-            ScrollToPageRequested?.Invoke(previousPage - 1);
         }
         else
         {
@@ -1444,8 +1476,25 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
 
             var kind = ActiveTool == AnnotationTool.StickyNote ? AnnotationKind.StickyNote : AnnotationKind.FreeText;
             string title = kind == AnnotationKind.StickyNote ? "Nova nota adesiva" : "Nova caixa de texto";
-            string? text = _annotationDialog.PromptForText(title);
-            if (text is null) return; // cancelado: ferramenta continua ativa
+
+            // CAIXA DE TEXTO (FreeText): diálogo COM formatação (tamanho/negrito/itálico/cor/família).
+            // NOTA ADESIVA (StickyNote): só texto — o ícone não usa fonte; cor vem da paleta de marcação.
+            string content;
+            uint? colorArgb;
+            double? fontSize = null; bool bold = false, italic = false; string? family = null;
+            if (kind == AnnotationKind.FreeText)
+            {
+                var fmt = _annotationDialog.PromptForTextFormatted(title);
+                if (fmt is null) return; // cancelado: ferramenta continua ativa
+                content = fmt.Text; colorArgb = fmt.ColorArgb;
+                fontSize = fmt.FontSizePt; bold = fmt.Bold; italic = fmt.Italic; family = fmt.FontFamily;
+            }
+            else
+            {
+                var text = _annotationDialog.PromptForText(title);
+                if (text is null) return; // cancelado: ferramenta continua ativa
+                content = text; colorArgb = SelectedMarkupColorArgb;
+            }
 
             var page = Pages[pageIndex];
             var (w, h) = FixedSize(kind);
@@ -1456,9 +1505,10 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
                 Kind = kind,
                 PageIndex = pageIndex,
                 LeftPt = left, BottomPt = bottom, RightPt = right, TopPt = top,
-                Content = text,
-                ColorArgb = SelectedMarkupColorArgb,
+                Content = content,
+                ColorArgb = colorArgb,
                 Author = _config.Autor,
+                FontSizePt = fontSize, Bold = bold, Italic = italic, FontFamily = family,
             };
 
             byte[]? pdfDepois = await TryAddAnnotationAsync(data);
@@ -2030,12 +2080,22 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     {
         if (SelectedAnnotation is not { Id: not null } sel) return;
 
-        string title = sel.Kind == AnnotationKind.StickyNote ? "Editar nota adesiva" : "Editar caixa de texto";
-        string? text = _annotationDialog.PromptForText(title, sel.Content);
-        if (text is null) return; // cancelado
+        // CAIXA DE TEXTO: reabre COM formatação (a formatação não é lida de volta do PDF nesta versão —
+        // começa nos defaults; o usuário reaplica se quiser). NOTA ADESIVA: só texto.
+        if (sel.Kind == AnnotationKind.FreeText)
+        {
+            var fmt = _annotationDialog.PromptForTextFormatted("Editar caixa de texto", sel.Content);
+            if (fmt is null) return; // cancelado
+            await LiftSelectedAnnotationAsync(sel with
+            {
+                Content = fmt.Text, ColorArgb = fmt.ColorArgb,
+                FontSizePt = fmt.FontSizePt, Bold = fmt.Bold, Italic = fmt.Italic, FontFamily = fmt.FontFamily,
+            });
+            return;
+        }
 
-        // Edição não guia nenhuma preview de arrasto na View (diferente de Mover, abaixo) — o `bool` de
-        // retorno não tem nada extra pra fazer aqui além do que Session.Applied já dispara sozinho.
+        string? text = _annotationDialog.PromptForText("Editar nota adesiva", sel.Content);
+        if (text is null) return; // cancelado
         await LiftSelectedAnnotationAsync(sel with { Content = text });
     }
 
@@ -2085,14 +2145,31 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             _notifyError(RotatedPageNotice);
             return;
         }
-        // Task 9 (Plano 3a) — DECISÃO DE DESIGN: ImageStamp NÃO é liftável nesta v1 (ver doc XML de
-        // AnnotationData.ImageBytes). `ReadAnnotations` sempre devolve ImageBytes null — um lift
-        // (Remove+Add, ver LiftSelectedAnnotationAsync) não teria como reconstruir a appearance stream
-        // da imagem sem os bytes originais. Mover fica desabilitado para este Kind (Excluir continua
-        // funcionando — RemoveAnnotation só apaga por Id, nunca precisa reler a imagem, ver
-        // DeleteSelectedAnnotation). Overlay volta pra posição REAL, nunca fica preso na prévia de
-        // arrasto que a View já tinha desenhado.
-        if (target.Kind == AnnotationKind.ImageStamp) { SetAnnotationSelectionRectFor(sel); return; }
+        // IMAGEM: ARRASTAR PARA MOVER (melhoria de UX — antes só dava pra mover pela caixa de ajuste +
+        // "Salvar"). O lift precisa dos BYTES pra reconstruir o /AP (ReadAnnotations nunca devolve
+        // ImageBytes) — o cache `_imageStampBytes` os tem quando a imagem foi colocada/editada NESTA
+        // sessão. Sem cache (imagem de outra sessão): não dá pra mover — overlay volta e avisa
+        // (mesma limitação de BeginImageEditBox). Excluir continua funcionando sem os bytes.
+        if (target.Kind == AnnotationKind.ImageStamp)
+        {
+            if (target.Id is not { } imgId || !_imageStampBytes.TryGetValue(imgId, out var imgBytes))
+            {
+                SetAnnotationSelectionRectFor(sel);
+                _notifyError("Esta imagem foi inserida em outra sessão — recoloque-a para movê-la.");
+                return;
+            }
+            double iw = target.RightPt - target.LeftPt, ih = target.TopPt - target.BottomPt;
+            var ipage = Pages[target.PageIndex];
+            var (il, ib, ir, it) = ClampToPage(newLeftPt, newBottomPt, iw, ih, ipage.WidthPt, ipage.HeightPt);
+            var prevImgIds = CurrentImageStampIds();
+            bool okImg = await LiftSelectedAnnotationAsync(target with
+            {
+                LeftPt = il, BottomPt = ib, RightPt = ir, TopPt = it, ImageBytes = imgBytes,
+            });
+            if (okImg) await RecacheAfterImageEditAsync(prevImgIds, imgId, imgBytes);
+            else SetAnnotationSelectionRectFor(target);
+            return;
+        }
 
         double w = target.RightPt - target.LeftPt, h = target.TopPt - target.BottomPt;
         var page = Pages[target.PageIndex];
@@ -2963,7 +3040,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     // aparência do carimbo posicionado vira essa imagem (carregada de `AppConfig.LerRubrica` no momento
     // em que o diálogo devolveu, coerente com o resto do contexto capturado). `null` = carimbo padrão.
     private sealed record PendingSignPlacement(
-        SignDialogResult Result, byte[] SnapshotAtDialogOk, bool DidForcedSave, byte[]? RubricaBytes);
+        SignDialogResult Result, byte[] SnapshotAtDialogOk, byte[]? RubricaBytes);
     private PendingSignPlacement? _pendingSignPlacement;
 
     /// Habilitado com qualquer documento aberto, desde que não seja XFA (o motor de assinatura passa
@@ -3021,26 +3098,10 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         // o resto do método já segue. Recusa (diálogo de "Salvar como" cancelado) aborta o fluxo INTEIRO
         // aqui mesmo, SEM tocar `_confirmSaveBeforeSign`/o diálogo de assinatura/o motor — mesmo
         // contrato de "recusa aborta sem armar o funil" que a linha seguinte já tinha pro dirty-check.
-        if (NeedsSaveAs && !TryRelocateBeforeSign()) return;
-
-        bool didForcedSave = false;
-        if (Session.IsDirty)
-        {
-            if (!_confirmSaveBeforeSign.Confirm(ConfirmSaveBeforeSignMessage)) return; // recusado -> funil NUNCA arma
-            // INVARIANTE (Task 2, Plano 5 — MainViewModel.SaveCommand virou assíncrono, TryBeginEdit
-            // ANTES do 1º await, ver doc XML lá): este Session.Save é SÍNCRONO e roda ANTES de
-            // Session.TryBeginEdit ser armado (o funil de Sign só arma bem mais abaixo, imediatamente
-            // antes de SignCoreAsync — ver doc XML da assinatura do método). Como a UI thread é única e
-            // este trecho não tem NENHUM `await`, nada mais pode rodar concorrentemente enquanto ele
-            // executa — um SaveCommand.ExecuteAsync concorrente só alcançaria este `Sign()` ignorando
-            // CanExecute/CanSign de propósito (CanSign já compõe !Session.IsEditInFlight — a UI de
-            // produção nunca oferece essa janela). Qualquer refactor que torne ESTE save assíncrono, ou
-            // que adicione um caminho de entrada pra Sign() que não passe por SignCommand (logo, que não
-            // passe por CanSign), precisa RE-VERIFICAR esta invariante — ela é o que hoje garante que
-            // este Save forçado nunca corre em paralelo com um Save/edição armados pelo funil.
-            try { Session.Save(_config); didForcedSave = true; }
-            catch (IOException ex) { _notifyError(ex.Message); return; }
-        }
+        // FLUXO ADOBE (nova UX): assinar NUNCA toca o arquivo original. O motor assina o snapshot EM
+        // MEMÓRIA (com as edições não salvas) e o resultado vai pra um arquivo NOVO via "Salvar como"
+        // (SignAndSaveAsAsync). Por isso NÃO há mais: relocação de doc temp-backed, save forçado do
+        // original, nem a pergunta "salvar antes de assinar" (removida a pedido — igual ao Adobe).
 
         // 1ª assinatura (nenhuma ainda) -> DocMDP disponível; 2ª+ -> motor RECUSA CertificationLevel !=
         // None num doc já assinado (ArgumentException), então o diálogo nem oferece o checkbox.
@@ -3055,23 +3116,23 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             certificates, allowDocMdp: !hasSignatures, _rubricaGallery, PickAndValidateRubrica);
         if (result is null) return; // cancelado
 
-        // Capturado NO INSTANTE em que o diálogo devolveu ("dialog-OK", revisão do coordenador) — o
-        // BELT de SignCoreAsync compara esta referência contra Session.Snapshot corrente.
+        // Capturado NO INSTANTE em que o diálogo devolveu — o BELT de SignAndSaveAsAsync compara esta
+        // referência contra Session.Snapshot corrente.
         byte[] snapshotAtDialogOk = Session.Snapshot;
 
         if (result.PlaceStamp)
         {
-            // Plano 22: `result.RubricaBytes` (não-null quando o usuário escolheu uma rubrica na galeria do
-            // diálogo) faz a aparência virar a imagem; null = carimbo padrão. Modo de colocação (exemplar:
-            // ToggleStampTool/PlaceStampAtAsync) — o commit de verdade acontece no Confirmar da caixa
-            // ajustável (ConfirmSignatureStampAsync). NADA de motor/funil ainda aqui.
-            _pendingSignPlacement = new PendingSignPlacement(result, snapshotAtDialogOk, didForcedSave, result.RubricaBytes);
+            // Modo de colocação: o usuário DESENHA a caixa na página; ao SOLTAR o mouse (EndStampDraw)
+            // a assinatura é gerada e salva na hora — SEM fase de ajuste nem botão "Assinar aqui"
+            // (removidos a pedido, igual ao Adobe). `result.RubricaBytes` não-null = aparência é a imagem.
+            _pendingSignPlacement = new PendingSignPlacement(result, snapshotAtDialogOk, result.RubricaBytes);
             ActiveTool = AnnotationTool.SignatureStamp;
             return;
         }
 
+        // Sem carimbo (assinatura invisível): assina e salva-como já.
         if (!Session.TryBeginEdit()) return; // outra edição em voo — mesmo funil de qualquer outro comando
-        try { await SignCoreAsync(result, stamp: null, snapshotAtDialogOk, didForcedSave); }
+        try { await SignAndSaveAsAsync(result, stamp: null, snapshotAtDialogOk); }
         finally { Session.EndEdit(); }
     }
 
@@ -3139,24 +3200,23 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// `CertificateCatalog`/`PadesSigningEngine`, sem depender de nenhum parsing novo — a View não
     /// precisa saber nada sobre certificados. O commit de verdade (motor/funil) só acontece no
     /// CONFIRMAR — ver `ConfirmSignatureStampAsync` abaixo.
-    public async Task BeginStampBoxPlacementAsync(int pageIndex, PdfPoint startPt)
+    public Task BeginStampBoxPlacementAsync(int pageIndex, PdfPoint startPt)
     {
-        if (ActiveTool != AnnotationTool.SignatureStamp) return;
-        if (_pendingSignPlacement is not { } pending) return;
-        if (pageIndex < 0 || pageIndex >= Pages.Count) return;
+        if (ActiveTool != AnnotationTool.SignatureStamp) return Task.CompletedTask;
+        if (_pendingSignPlacement is not { } pending) return Task.CompletedTask;
+        if (pageIndex < 0 || pageIndex >= Pages.Count) return Task.CompletedTask;
 
-        // COSTURA DE ROTAÇÃO (exemplar: PlaceSignatureStampAtAsync original) — refresca o cache ANTES
-        // de confiar em IsPageRotated; no-op com aviso, ferramenta continua ativa (usuário tenta outra
-        // página). RefreshAnnotationsByPageAsync já engole qualquer exceção internamente (retry + desiste
-        // — ver doc XML lá), então este `await` nunca lança.
-        await EnsureRotationCacheFreshAsync();
-        if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
-
+        // SÍNCRONO de propósito (fix do "arrasto não fiel"): a caixa entra em Drawing IMEDIATAMENTE no
+        // mouse-down, pra o `UpdateDrawTo` de cada mouse-move seguir o mouse desde o clique. ANTES havia
+        // um `await EnsureRotationCacheFreshAsync()` aqui (herança do gate de rotação, REMOVIDO da
+        // assinatura — a costura de rotação vive no motor, ver StampRotation.cs); esse await atrasava o
+        // Drawing pra DEPOIS do arrasto, então o UpdateDrawTo não pegava e caía numa caixa PADRÃO parada.
         string cn = pending.Result.Certificate.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
         // Plano 21: no modo rubrica, a prévia da caixa é a IMAGEM da rubrica (não o texto do CN) — o
         // usuário vê exatamente o que vai carimbar. Carimbo padrão continua com a prévia de texto.
         ImageSource? preview = TryDecodeFrozenImage(pending.RubricaBytes);
         BeginStampBoxPlacement(pageIndex, startPt, cn, preview, confirmLabel: "Assinar aqui");
+        return Task.CompletedTask;
     }
 
     /// Plano 21 (Task 5): gatilho da colocação de IMAGEM pela caixa ajustável — chamado pela View no
@@ -3213,8 +3273,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             // Plano 21: `pending.RubricaBytes` (não-null quando "Minha rubrica") faz a aparência do
             // carimbo virar SÓ a imagem — ver PadesSigningEngine.ApplyVisibleStamp. `null` = carimbo padrão.
             var stamp = new VisibleStampSpec(placement.PageIndex, placement.Rect, pending.RubricaBytes);
-            bool committed = await SignCoreAsync(pending.Result, stamp, pending.SnapshotAtDialogOk, pending.DidForcedSave);
-            if (committed)
+            bool ok = await SignAndSaveAsAsync(pending.Result, stamp, pending.SnapshotAtDialogOk);
+            if (ok)
             {
                 ActiveTool = AnnotationTool.None;
                 _pendingSignPlacement = null;
@@ -3222,7 +3282,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            _notifyError(ComposeSignFailureMessage(ex.Message, pending.DidForcedSave));
+            _notifyError(ex.Message);
         }
         finally { Session.EndEdit(); }
     }
@@ -3376,11 +3436,15 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     private async Task RecacheAfterImageEditAsync(HashSet<string> prevIds, string oldId, byte[] bytes)
     {
         await EnsureRotationCacheFreshAsync();
-        _imageStampBytes.Remove(oldId);
-        foreach (var pageAnns in AnnotationsByPage)
-            foreach (var a in pageAnns)
-                if (a.Kind == AnnotationKind.ImageStamp && a.Id is { } id && !prevIds.Contains(id))
-                    _imageStampBytes[id] = bytes;
+        // ACHADO (bug de campo "imagem move uma vez e depois dá erro"): o lift (Remove+Add) PRESERVA o
+        // Id da anotação (AddAnnotation honra o Id informado) — então o `oldId` continua VÁLIDO na página
+        // depois do lift, e removê-lo cegamente esvaziava o cache (2º move/edição virava "imagem de outra
+        // sessão"). Só remove o `oldId` se ele REALMENTE sumiu (caso o lift algum dia troque o Id) — e
+        // cacheia os bytes para QUALQUER imagem nova (Id que não existia antes), cobrindo os dois casos.
+        var currentIds = CurrentImageStampIds();
+        if (!currentIds.Contains(oldId)) _imageStampBytes.Remove(oldId);
+        foreach (var id in currentIds)
+            if (!prevIds.Contains(id)) _imageStampBytes[id] = bytes;
     }
 
     /// Assume o funil JÁ armado pelo chamador (`Sign` ou `ConfirmSignatureStampAsync`) — roda o motor
@@ -3411,8 +3475,15 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// SEMPRE (mesma referência) — não é código morto, é a mesma garantia estrutural que protege o
     /// caminho COM carimbo, só que trivialmente satisfeita aqui; continua correta se `Sign()` algum dia
     /// ganhar um `await` genuíno antes desta chamada.
-    private async Task<bool> SignCoreAsync(SignDialogResult result, VisibleStampSpec? stamp, byte[] snapshotAtDialogOk, bool didForcedSave)
+    /// FLUXO ADOBE: assina o snapshot EM MEMÓRIA e grava o resultado num arquivo NOVO via "Salvar como"
+    /// — NUNCA sobrescreve o original (`Session`/`FilePath` ficam intocados). Cancelar o "Salvar como"
+    /// aborta sem gravar nada. Ao salvar, ABRE o assinado numa aba nova (`_openSavedDocument`) pra o
+    /// usuário ver o resultado. `IsSignedDocument`/`SignedFillPermission` NÃO são mexidos aqui: o
+    /// documento atual continua sendo o original (não-assinado); o assinado é o arquivo novo, cujo estado
+    /// é computado normalmente ao abrir (HasSignatures na abertura, MainViewModel).
+    private async Task<bool> SignAndSaveAsAsync(SignDialogResult result, VisibleStampSpec? stamp, byte[] snapshotAtDialogOk)
     {
+        // BELT: o snapshot não pode ter mudado entre o diálogo/colocação e aqui (mesma referência).
         if (!ReferenceEquals(snapshotAtDialogOk, Session.Snapshot))
         {
             _notifyError(DocumentChangedDuringPlacementNotice);
@@ -3430,34 +3501,20 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         // cartão (ex.: SafeSign) só consegue abrir a janela de PIN a partir de uma thread STA — ver
         // StaTask para o diagnóstico completo do bug "não pede o PIN e dá erro".
         try { signed = await StaTask.Run(() => _signingEngine.Sign(request)); }
-        catch (PdfSigningException ex) { _notifyError(ComposeSignFailureMessage(ex.Message, didForcedSave)); return false; }
-        catch (ArgumentException ex) { _notifyError(ComposeSignFailureMessage(ex.Message, didForcedSave)); return false; }
+        catch (PdfSigningException ex) { _notifyError(ex.Message); return false; }
+        catch (ArgumentException ex) { _notifyError(ex.Message); return false; }
 
-        // I2 (revisão final, achado do revisor): `Session.CommitSigned` grava em disco de verdade
-        // (`AtomicWrite` no `FilePath` da sessão) — DIFERENTE de qualquer outro mutador deste VM
-        // (`ApplyEdit`/`FlattenForm`/etc. só mutam `Snapshot` em memória, gravação fica pra `Save`
-        // manual). Uma falha de I/O aqui (arquivo travado por outro processo, disco cheio) é real e
-        // ATÉ AGORA escapava SEM catch nenhum: no caminho SEM carimbo, virava uma exceção não tratada
-        // subindo pelo `AsyncRelayCommand`; no caminho COM carimbo (`ConfirmSignatureStampAsync`, Task 2/
-        // Plano 8, invocado fire-and-forget via `_ = doc.ConfirmSignatureStampAsync()` em
-        // `PdfViewerControl.StampBoxConfirm_Click`), virava uma Task NÃO OBSERVADA —
-        // `TaskScheduler.UnobservedTaskException` (App.xaml.cs) só REGISTRA em `CrashLog`, nunca mostra
-        // nada ao usuário: silêncio TOTAL do ponto de vista de quem assinou. Mesma disciplina de
-        // `ComposeSignFailureMessage`/`didForcedSave` que os 2 catches acima já usam — se o salvamento
-        // forçado pré-assinatura já aconteceu, o usuário PRECISA saber que o arquivo em disco foi
-        // sobrescrito sem a assinatura.
-        try { Session.CommitSigned(signed); }
-        catch (IOException ex) { _notifyError(ComposeSignFailureMessage(ex.Message, didForcedSave)); return false; }
+        // "Salvar como" com nome sugerido "<nome> (assinado).pdf". Cancelar -> aborta SEM gravar nada
+        // (original intocado). Mesmo par de seams do "Salvar como PDF/A" (_pickPdfToSave/_writeAllBytes).
+        string baseName = Path.GetFileNameWithoutExtension(Session.FileName);
+        var destino = _pickPdfToSave($"{baseName} (assinado).pdf");
+        if (destino is null) return false;
 
-        IsSignedDocument = true; // acabou de assinar -- reflete de imediato (banner/CanEdit reagem via OnIsSignedDocumentChanged)
-        // Task 6 (Plano 4): SignedFillPermission também precisa refletir de imediato — CanFillForms/o
-        // painel de Campos usam esse valor pra decidir se o preenchimento continua liberado logo após
-        // assinar. Recalculado de VERDADE via o motor (não hardcoded como "sempre Allowed" — mesmo
-        // que nenhuma assinatura que ESTE app produza hoje resulte em outra coisa, P2/aprovação, nunca
-        // P1/P3 — o oráculo continua sendo o motor, não uma suposição sobre o que ele deveria produzir).
-        try { SignedFillPermission = await Task.Run(() => _signingEngine.CanFillIncremental(signed)); }
-        catch (PdfSigningException) { /* leitura auxiliar best-effort — não desfaz a assinatura já commitada */ }
+        try { _writeAllBytes(destino, signed); }
+        catch (IOException ex) { _notifyError($"Não foi possível salvar o documento assinado: {ex.Message}"); return false; }
+
         _notifyInfo(SignedDocumentNotice);
+        await _openSavedDocument(destino); // abre o assinado numa aba nova (original fica intocado)
         return true;
     }
 
@@ -3612,32 +3669,65 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// de onde parou — próximos `UpdateDrawTo` continuam funcionando normalmente); retângulo válido ->
     /// CANONICALIZA os 4 brutos (ver `CanonicalizeRawScalars`/doc XML da seção acima) e avança pra
     /// Adjusting.
-    public void EndStampDraw()
+    /// Wrapper SÍNCRONO chamado pela View no mouse-up (e por testes de imagem/estado). Pro caminho de
+    /// IMAGEM roda tudo de forma síncrona (não há `await` antes de entrar em Adjusting); pro caminho de
+    /// ASSINATURA dispara a assinatura como fire-and-forget (mesma disciplina do antigo botão confirmar).
+    /// Testes de ASSINATURA devem aguardar `EndStampDrawAsync()` diretamente pra determinismo.
+    public void EndStampDraw() => _ = EndStampDrawAsync();
+
+    public async Task EndStampDrawAsync()
     {
         if (StampPlacementPhase != StampPlacementPhase.Drawing) return;
 
         double width = Math.Abs(_boxXb - _boxXa);
         double height = Math.Abs(_boxYb - _boxYa);
-        if (width < MinStampBoxWidthPt || height < MinStampBoxHeightPt)
+        // Um CLIQUE (ou arrasto pequeno demais) usa uma caixa de TAMANHO PADRÃO no ponto clicado (evita o
+        // "carimbo cobrindo a tela toda"); um arrasto de verdade usa a caixa desenhada.
+        bool tooSmall = width < MinStampBoxWidthPt || height < MinStampBoxHeightPt;
+
+        if (_stampBoxPurpose is StampBoxPurpose.Assinatura)
         {
-            // Plano 21 (fix dogfood): um CLIQUE (ou arrasto pequeno demais) solta uma caixa de TAMANHO
-            // PADRÃO no ponto clicado — o usuário só move/redimensiona/confirma, sem precisar desenhar uma
-            // caixa grande (evita o "carimbo cobrindo a tela toda" relatado). Antes ficava em Drawing com
-            // um aviso "arraste uma área maior"; agora sempre entrega uma caixa pequena utilizável.
-            SetDefaultBoxAtAnchor();
+            // FLUXO ADOBE: soltar o mouse ASSINA na hora — sem fase de ajuste (alças) nem botão
+            // "Assinar aqui". Finaliza o retângulo, captura tudo, LIMPA a caixa da tela (CancelStampBox
+            // também zera _pendingSignPlacement — por isso capturamos `pending` ANTES), e dispara o motor.
+            if (_pendingSignPlacement is not { } pending) { CancelStampBox(); return; }
+            if (tooSmall) SetDefaultBoxRawAtAnchor(); else CanonicalizeRawScalars();
+            RecomputeStampBoxRect();
+            int pageIndex = StampBoxPageIndex;
+            var rect = StampBoxRect;
+            CancelStampBox();
+            await SignPlacedStampAsync(pageIndex, rect, pending);
             return;
         }
 
+        if (_stampBoxPurpose is StampBoxPurpose.Imagem)
+        {
+            // INSERIR IMAGEM (Adobe): soltar o mouse COLOCA a imagem na hora — SEM botão "Inserir aqui"
+            // (confirmação desnecessária, removida a pedido). Redimensionar/mover DEPOIS: arrastar move;
+            // duplo-clique abre a caixa de ajuste (EdicaoImagem).
+            byte[]? imgBytes = _stampBoxImageBytes;
+            if (imgBytes is not { Length: > 0 }) { CancelStampBox(); return; }
+            if (tooSmall) SetDefaultBoxRawAtAnchor(); else CanonicalizeRawScalars();
+            RecomputeStampBoxRect();
+            var placement = new StampBoxPlacement(StampBoxPageIndex, StampBoxRect);
+            CancelStampBox(); // limpa a caixa da tela (já capturamos bytes + rect)
+            await PlaceImageStampFromBoxAsync(placement, imgBytes);
+            return;
+        }
+
+        // EdicaoImagem (e qualquer outro propósito): desenhar -> AJUSTAR (alças + "Salvar"). O EDIT real
+        // de imagem entra em Adjusting DIRETO via BeginImageEditBox (não passa por aqui); este ramo cobre
+        // o caminho genérico da máquina de caixa.
+        if (tooSmall) { SetDefaultBoxAtAnchor(); return; }
         StampBoxNotice = null;
         CanonicalizeRawScalars();
         StampPlacementPhase = StampPlacementPhase.Adjusting;
     }
 
-    /// Posiciona uma caixa de tamanho PADRÃO (`DefaultStampWidthPt`×`DefaultStampHeightPt`) com o canto
-    /// superior-esquerdo na ÂNCORA do gesto (`_boxXa`/`_boxYa` = ponto do mouse-down, preservado por
-    /// `UpdateDrawTo`), clampada à página, e vai pra Adjusting. Chamada por `EndStampDraw` quando o gesto
-    /// foi um clique/arrasto pequeno demais — dá ao usuário uma caixa pequena pronta pra ajustar.
-    private void SetDefaultBoxAtAnchor()
+    /// Escreve os 4 escalares brutos de uma caixa de tamanho PADRÃO ancorada no ponto do mouse-down
+    /// (`_boxXa`/`_boxYa`), clampada à página — SEM mexer em fase. Base de `SetDefaultBoxAtAnchor` (imagem,
+    /// que ainda entra em Adjusting) e do caminho de assinatura (que assina direto, sem Adjusting).
+    private void SetDefaultBoxRawAtAnchor()
     {
         if (StampBoxPageIndex < 0 || StampBoxPageIndex >= Pages.Count) return;
         var page = Pages[StampBoxPageIndex];
@@ -3645,9 +3735,33 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         double h = Math.Min(DefaultStampHeightPt, page.HeightPt);
         var (left, bottom, right, top) = ClampToPage(_boxXa, _boxYa - h, w, h, page.WidthPt, page.HeightPt);
         _boxXa = left; _boxXb = right; _boxYa = bottom; _boxYb = top;
+    }
+
+    /// Caixa de tamanho PADRÃO no ponto do clique, indo pra Adjusting — caminho de IMAGEM (clique/arrasto
+    /// pequeno demais). Assinatura NÃO usa mais Adjusting (ver EndStampDraw).
+    private void SetDefaultBoxAtAnchor()
+    {
+        if (StampBoxPageIndex < 0 || StampBoxPageIndex >= Pages.Count) return;
+        SetDefaultBoxRawAtAnchor();
         StampBoxNotice = null;
         RecomputeStampBoxRect();
         StampPlacementPhase = StampPlacementPhase.Adjusting;
+    }
+
+    /// FLUXO ADOBE: assina o carimbo posicionado (rect no frame EXIBIDO) e salva-como (SignAndSaveAsAsync),
+    /// abrindo o assinado numa aba nova. Chamado por `EndStampDraw` no mouse-up — sem confirmação. Arma o
+    /// funil (`TryBeginEdit`) como qualquer operação; toda exceção não antecipada vira erro pt-BR (nunca
+    /// uma Task não observada, já que é fire-and-forget pela View).
+    private async Task SignPlacedStampAsync(int pageIndex, PdfQuad rect, PendingSignPlacement pending)
+    {
+        if (!Session.TryBeginEdit()) return;
+        try
+        {
+            var stamp = new VisibleStampSpec(pageIndex, rect, pending.RubricaBytes);
+            await SignAndSaveAsAsync(pending.Result, stamp, pending.SnapshotAtDialogOk);
+        }
+        catch (Exception ex) { _notifyError(ex.Message); }
+        finally { Session.EndEdit(); }
     }
 
     /// FIX (revisão final da branch, achado real reproduzido pelo revisor — I1/I2, a mesma raiz): os 4

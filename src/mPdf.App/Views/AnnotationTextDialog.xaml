@@ -1,20 +1,101 @@
 <Window x:Class="mPdf.App.Views.AnnotationTextDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Height="200" Width="380" WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize" ShowInTaskbar="False">
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        Width="472" SizeToContent="Height" WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" FontFamily="{DynamicResource Fonte.Inter}">
     <Window.Resources>
-        <!-- Task 2 (Plano 12, rider) — mescla o tema LOCALMENTE, mesmo motivo dos outros diálogos. -->
+        <!-- Mescla o tema LOCALMENTE — mesmo motivo dos outros diálogos (ExportDocumentDialog etc.). -->
         <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
     </Window.Resources>
-    <StackPanel Margin="12">
-        <TextBlock Text="Texto:" Margin="0,0,0,6"/>
-        <TextBox x:Name="ContentTextBox" AcceptsReturn="True" TextWrapping="Wrap"
-                 Height="80" VerticalScrollBarVisibility="Auto"/>
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-            <Button x:Name="CancelButton" Content="Cancelar" Width="80" Margin="0,0,8,0"
-                    IsCancel="True" Click="Cancel_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
-            <Button x:Name="OkButton" Content="OK" Width="80" IsDefault="True" Click="Ok_Click" Style="{StaticResource mPdf.Button.Dialog}"/>
-        </StackPanel>
-    </StackPanel>
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <DockPanel>
+            <!-- Header: ícone (caixa de texto) + título/subtítulo. Arrastável (janela sem chrome). -->
+            <Border DockPanel.Dock="Top" Background="Transparent" BorderBrush="{DynamicResource Cor.BordaSutil}"
+                    BorderThickness="0,0,0,1" Padding="22,18" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <StackPanel Orientation="Horizontal">
+                    <Border Style="{StaticResource mPdf.Dialog.IconeHeader}">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="17" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon textbox}"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,0,0">
+                        <TextBlock x:Name="HeaderTitle" Style="{StaticResource mPdf.Dialog.Titulo}"/>
+                        <TextBlock x:Name="HeaderSubtitle" Style="{StaticResource mPdf.Dialog.Subtitulo}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Rodapé: Cancelar / OK. -->
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Cor.FundoDialogoRodape}"
+                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,13,13" Padding="22,16">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="CancelButton" Content="Cancelar" Margin="0,0,10,0" IsCancel="True"
+                            Click="Cancel_Click" Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+                    <Button x:Name="OkButton" Content="OK" IsDefault="True" Click="Ok_Click"
+                            Style="{StaticResource mPdf.Button.DialogPrimario}"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Corpo: texto + (opcional) formatação. -->
+            <StackPanel Margin="22,20">
+                <TextBlock Text="Texto" Style="{StaticResource mPdf.Dialog.Label}"/>
+                <Border Background="{DynamicResource Cor.Superficie}" BorderBrush="{DynamicResource Cor.Borda}"
+                        BorderThickness="1" CornerRadius="{StaticResource Raio.M}" Padding="9,7">
+                    <TextBox x:Name="ContentTextBox" AcceptsReturn="True" TextWrapping="Wrap" Height="88"
+                             Background="Transparent" BorderThickness="0" Padding="0"
+                             Foreground="{DynamicResource Cor.TextoPrimario}"
+                             CaretBrush="{DynamicResource Cor.TextoPrimario}"
+                             SelectionBrush="{DynamicResource Cor.Primaria}"
+                             VerticalScrollBarVisibility="Auto" FocusVisualStyle="{x:Null}"/>
+                </Border>
+
+                <!-- Formatação (só na CAIXA DE TEXTO / FreeText) — mostrada por showFormatting no code-behind. -->
+                <StackPanel x:Name="FormatPanel" Visibility="Collapsed" Margin="0,16,0,0">
+                    <TextBlock Text="Formatação" Style="{StaticResource mPdf.Dialog.LabelForte}"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="12"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <!-- Família (coluna elástica) -->
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="Fonte" FontSize="11" Margin="0,0,0,4"
+                                       Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                            <ComboBox x:Name="FamilyCombo" SelectedIndex="0" Style="{StaticResource mPdf.Combo}">
+                                <ComboBoxItem Content="Sem serifa" Tag="Helvetica"/>
+                                <ComboBoxItem Content="Com serifa" Tag="Times"/>
+                                <ComboBoxItem Content="Monoespaçada" Tag="Courier"/>
+                            </ComboBox>
+                        </StackPanel>
+                        <!-- Tamanho + estilo (N/I) -->
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Tamanho e estilo" FontSize="11" Margin="0,0,0,4"
+                                       Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                            <StackPanel Orientation="Horizontal">
+                                <ComboBox x:Name="SizeCombo" Width="64" IsEditable="True" Text="12"
+                                          Style="{StaticResource mPdf.Combo}">
+                                    <ComboBoxItem Content="8"/><ComboBoxItem Content="10"/><ComboBoxItem Content="12"/>
+                                    <ComboBoxItem Content="14"/><ComboBoxItem Content="18"/>
+                                    <ComboBoxItem Content="24"/><ComboBoxItem Content="36"/>
+                                </ComboBox>
+                                <ToggleButton x:Name="BoldToggle" Content="N" Width="34" Height="32" Margin="8,0,0,0"
+                                              FontWeight="Bold" FontSize="13" ToolTip="Negrito"
+                                              Style="{StaticResource mPdf.Toggle.Command}"/>
+                                <ToggleButton x:Name="ItalicToggle" Content="I" Width="34" Height="32" Margin="6,0,0,0"
+                                              FontStyle="Italic" FontSize="13" ToolTip="Itálico"
+                                              Style="{StaticResource mPdf.Toggle.Command}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock Text="Cor" FontSize="11" Margin="0,12,0,5"
+                               Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                    <StackPanel x:Name="ColorPanel" Orientation="Horizontal"/>
+                </StackPanel>
+            </StackPanel>
+        </DockPanel>
+    </Border>
 </Window>

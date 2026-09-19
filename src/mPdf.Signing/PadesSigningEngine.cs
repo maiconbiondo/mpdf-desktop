@@ -63,7 +63,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
             // WrapPassword/WrapGeneric, mesmo quando ainda não chegamos na parte que assina de fato
             // (achado de revisão: a 1ª versão desta task tinha essa chamada ANTES do try, vazando
             // ITextException cru pra fora da fronteira neutra num PDF malformado).
-            var inspection = InspectDocument(request.Pdf);
+            var inspection = InspectDocument(request.Pdf, request.Stamp?.PageIndex);
 
             // M8 (revisão): a redação anterior deste comentário dizia que a recusa abaixo acontecia
             // "ANTES de tocar o iText" — impreciso: `InspectDocument`, uma linha acima, JÁ abriu o PDF
@@ -121,7 +121,8 @@ internal sealed class PadesSigningEngine : ISigningEngine
                 props.SetCertificationLevel(AccessPermissions.FORM_FIELDS_MODIFICATION);
 
             if (request.Stamp is { } stamp)
-                ApplyVisibleStamp(props, stamp, request.Certificate, request.Reason, request.Location);
+                ApplyVisibleStamp(props, stamp, request.Certificate, request.Reason, request.Location,
+                    inspection.StampPageRotation, inspection.StampPageMediaW, inspection.StampPageMediaH);
 
             padesSigner.SignWithBaselineBProfile(props, chain, signature);
             return output.ToArray();
@@ -169,10 +170,19 @@ internal sealed class PadesSigningEngine : ISigningEngine
     /// hipóteses ficam truncados com "..." (nunca um comportamento pior que uma linha cortada).
     private static void ApplyVisibleStamp(
         SignerProperties props, VisibleStampSpec stamp, X509Certificate2 certificate, string? reason,
-        string? location)
+        string? location, int rotation, double mediaW, double mediaH)
     {
         var r = stamp.Rect;
+        // Dimensões EXIBIDAS (o que o usuário desenhou/vê) — a camada de aparência (texto/selo/rubrica)
+        // sempre desenha nestas, mesmo em página girada: o iText endireita a aparência da assinatura pro
+        // leitor, então o `Div`/renderer trabalha no frame VISUAL.
         float widthPt = (float)(r.RightPt - r.LeftPt), heightPt = (float)(r.TopPt - r.BottomPt);
+
+        // Costura de rotação: o `/Rect` do campo vai em coordenadas do MEDIABOX (o que o iText espera),
+        // convertidas do retângulo EXIBIDO. Em rot 0 é identidade (`mbRect` == retângulo exibido).
+        var mb = StampRotation.DisplayedToMediaBox(r, rotation, mediaW, mediaH);
+        var mbRect = new Rectangle((float)mb.LeftPt, (float)mb.BottomPt,
+            (float)(mb.RightPt - mb.LeftPt), (float)(mb.TopPt - mb.BottomPt));
 
         // Plano 21: rubrica — a aparência vira SÓ a imagem (aspect-fit centralizada), sem moldura/selo/
         // texto. Mesma mecânica de `SignatureFieldAppearance`/`Div`/renderer customizado do carimbo
@@ -190,7 +200,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
             rubricaAppearance.SetProperty(Property.PADDING_BOTTOM, UnitValue.CreatePointValue(0));
             rubricaAppearance.SetProperty(Property.PADDING_LEFT, UnitValue.CreatePointValue(0));
             props.SetPageNumber(stamp.PageIndex + 1)
-                 .SetPageRect(new Rectangle((float)r.LeftPt, (float)r.BottomPt, widthPt, heightPt))
+                 .SetPageRect(mbRect)
                  .SetSignatureAppearance(rubricaAppearance);
             return;
         }
@@ -221,7 +231,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
         appearance.SetProperty(Property.PADDING_BOTTOM, UnitValue.CreatePointValue(0));
         appearance.SetProperty(Property.PADDING_LEFT, UnitValue.CreatePointValue(0));
         props.SetPageNumber(stamp.PageIndex + 1) // contrato 0-based -> iText 1-based
-             .SetPageRect(new Rectangle((float)r.LeftPt, (float)r.BottomPt, widthPt, heightPt))
+             .SetPageRect(mbRect)
              .SetSignatureAppearance(appearance);
     }
 
@@ -556,16 +566,32 @@ internal sealed class PadesSigningEngine : ISigningEngine
     /// aberto só, nunca reaberto por checagem (mesma disciplina de custo de `CountSignatures` original).
     private readonly record struct DocumentInspection(
         int ExistingSignatures, int PageCount, string FieldName,
-        DocMdpCertificationProbe.Result CertificationProbe, int CertificationP);
+        DocMdpCertificationProbe.Result CertificationProbe, int CertificationP,
+        int StampPageRotation, double StampPageMediaW, double StampPageMediaH);
 
-    private static DocumentInspection InspectDocument(byte[] pdf)
+    private static DocumentInspection InspectDocument(byte[] pdf, int? stampPageIndex)
     {
         using var doc = new PdfDocument(new PdfReader(new MemoryStream(pdf)));
         int existing = new SignatureUtil(doc).GetSignatureNames().Count;
         int pageCount = doc.GetNumberOfPages();
         string fieldName = ChooseNonCollidingFieldName(doc);
         var certProbe = DocMdpCertificationProbe.ReadLevel(doc, out int certP);
-        return new DocumentInspection(existing, pageCount, fieldName, certProbe, certP);
+
+        // Rotação + MediaBox (NÃO-rotacionado) da página do carimbo — a costura de rotação
+        // (`StampRotation`) converte o retângulo EXIBIDO que o app manda para o frame do MediaBox que o
+        // iText espera. Só lido quando há carimbo numa página válida; caso contrário fica em 0 (rot 0 =
+        // identidade, o caminho comum não muda em nada).
+        int rotation = 0;
+        double mediaW = 0, mediaH = 0;
+        if (stampPageIndex is { } idx && idx >= 0 && idx < pageCount)
+        {
+            var page = doc.GetPage(idx + 1);
+            rotation = page.GetRotation();
+            var box = page.GetPageSize(); // MediaBox, NÃO-rotacionado (iText nunca aplica /Rotate aqui)
+            mediaW = box.GetWidth();
+            mediaH = box.GetHeight();
+        }
+        return new DocumentInspection(existing, pageCount, fieldName, certProbe, certP, rotation, mediaW, mediaH);
     }
 
     /// M7 (achado do revisor, escalado a hard gate PRÉ-ROLLOUT): o nome gerado ANTES
