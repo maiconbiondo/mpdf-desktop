@@ -1,0 +1,282 @@
+<UserControl x:Class="mPdf.App.Views.AnnotationToolsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:icons="clr-namespace:mPdf.App.Icons"
+             xmlns:local="clr-namespace:mPdf.App.Views"
+             xmlns:editing="clr-namespace:mPdf.Editing;assembly=mPdf.Editing">
+    <!-- Plano 17 (Task 3): as MESMAS ferramentas da pílula flutuante (Plano 14 T5), agora num controle
+         reutilizável apresentado em 2 layouts (Orientation Horizontal = pílula; Vertical = tira do rail).
+         Cada botão liga aos comandos de anotação EXISTENTES (nenhum handler/lógica nova). DynamicResource
+         nos estilos/tokens (mesma convenção de SearchBar/PageOrganizerView — um UserControl separado não
+         enxerga o Window.Resources em StaticResource). -->
+    <UserControl.Resources>
+        <!-- Divisória: em layout HORIZONTAL é uma barrinha vertical (1×22); em VERTICAL vira horizontal
+             (22×1). Um único estilo, trocado por DataTrigger na Orientation do próprio UserControl. -->
+        <Style x:Key="Divisor" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource Cor.Borda}"/>
+            <Setter Property="Width" Value="1"/>
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="Margin" Value="4,0"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Orientation, RelativeSource={RelativeSource AncestorType={x:Type local:AnnotationToolsView}}}" Value="Vertical">
+                    <Setter Property="Width" Value="22"/>
+                    <Setter Property="Height" Value="1"/>
+                    <Setter Property="Margin" Value="0,4"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Task 2 (SDD desenho-caixa-melhorias): "Nenhum" (sem preenchimento) — mesmo tamanho/forma do
+             swatch de cor (mPdf.Anota.Swatch acima), mas VAZADO (só borda) em vez de um fundo colorido
+             fixo, porque não representa uma cor, e sim a AUSÊNCIA de uma (SelectedFillColorArgb==null).
+             Tema-aware (Cor.TextoSecundario), ao contrário dos 3 swatches de cor abaixo, cujo Background
+             fixo (#FFFFD43B etc.) É a própria informação que o botão comunica — trocar por um token do
+             tema mudaria a cor que o usuário aplicaria, não é o mesmo caso de "hex fixo evitável" do
+             resto do arquivo. -->
+        <!-- Autossuficiente (SEM BasedOn): `mPdf.Anota.Swatch` é recurso de TEMA (mPdfTheme.xaml), e
+             Style.BasedOn exige StaticResource — que NÃO resolve um recurso de tema do escopo local do
+             UserControl em tempo de parse (XamlParseException -> MainWindow inteiro não carrega). Por
+             isso replicamos aqui os 5 setters de tamanho do Swatch em vez de herdar. -->
+        <Style x:Key="mPdf.Anota.SwatchVazado" TargetType="Button">
+            <Setter Property="Width" Value="16"/>
+            <Setter Property="Height" Value="16"/>
+            <Setter Property="Margin" Value="2,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="Transparent" BorderBrush="{DynamicResource Cor.TextoSecundario}"
+                                BorderThickness="1.5" CornerRadius="8" SnapsToDevicePixels="True"/>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.82"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Task C (SDD desenho-caixa-revisao): swatch BRANCO precisa de uma borda fina pra não sumir
+             contra um fundo claro (brief). Cópia autossuficiente de mPdf.Anota.Swatch (mesmo motivo do
+             SwatchVazado acima: BasedOn de um recurso de TEMA não resolve no escopo local do UserControl
+             -> XamlParseException). Só difere por ter BorderBrush/BorderThickness fixos. -->
+        <Style x:Key="mPdf.Anota.SwatchClaro" TargetType="Button">
+            <Setter Property="Width" Value="16"/>
+            <Setter Property="Height" Value="16"/>
+            <Setter Property="Margin" Value="2,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{DynamicResource Cor.Borda}"
+                                BorderThickness="1" CornerRadius="8" SnapsToDevicePixels="True"/>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.82"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <StackPanel Orientation="{Binding Orientation, RelativeSource={RelativeSource AncestorType={x:Type local:AnnotationToolsView}}}"
+                HorizontalAlignment="Center" VerticalAlignment="Center">
+        <!-- Marcação a partir da seleção de texto (ApplyMarkup + AnnotationKind tipado). -->
+        <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}" CommandParameter="{x:Static editing:AnnotationKind.Highlight}"
+                ToolTip="Marca-texto" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon highlighter}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}" CommandParameter="{x:Static editing:AnnotationKind.Underline}"
+                ToolTip="Sublinhar" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon text-underline}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ApplyMarkupCommand}" CommandParameter="{x:Static editing:AnnotationKind.Strikeout}"
+                ToolTip="Riscar" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon text-strikethrough}"/>
+        </Button>
+
+        <Border Style="{StaticResource Divisor}"/>
+
+        <!-- Ferramentas de colocação/desenho (ActiveTool no VM — mutuamente exclusivas, "clicar de novo desliga"). -->
+        <Button Command="{Binding SelectedDocument.ToggleStickyNoteToolCommand}" ToolTip="Nota adesiva" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon note}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ToggleFreeTextToolCommand}" ToolTip="Caixa de texto" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon text-t}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ToggleInkToolCommand}" ToolTip="Desenho livre" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon scribble-loop}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ToggleRectangleToolCommand}" ToolTip="Retângulo" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon rectangle}"/>
+        </Button>
+        <Button Command="{Binding SelectedDocument.ToggleLineToolCommand}" ToolTip="Linha" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon line-segment}"/>
+        </Button>
+        <!-- Seta: existe no app, não aparece no mockup — mantida acessível (brief). -->
+        <Button Command="{Binding SelectedDocument.ToggleArrowToolCommand}" ToolTip="Seta" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon arrow-up-right}"/>
+        </Button>
+
+        <Border Style="{StaticResource Divisor}"/>
+
+        <!-- Task C (SDD desenho-caixa-revisao): paleta de CONTORNO ampliada de 3 pra 7 cores + "Nenhum"
+             (SelectColor{Preto,Branco,Vermelho,Laranja,Amarelo,Verde,Azul,Nenhum} — os 8 comandos da
+             Task B). O fundo de cada swatch agora É o hex exato aplicado pelo comando (mesmos valores de
+             DocumentViewModel.Color{Preto,Branco,...}), não mais uma aproximação de mockup — o hex do
+             swatch É a informação (comentário original acima, no início do arquivo). Branco usa
+             mPdf.Anota.SwatchClaro (borda fina, senão some no fundo claro); "Nenhum" reusa
+             mPdf.Anota.SwatchVazado. Sub-painel segue a orientação do controle (cabe nos 2 layouts —
+             pílula horizontal e tira do rail, que rola por dentro). -->
+        <StackPanel Orientation="{Binding Orientation, RelativeSource={RelativeSource AncestorType={x:Type local:AnnotationToolsView}}}"
+                    HorizontalAlignment="Center" VerticalAlignment="Center" Margin="4,0">
+            <Button Command="{Binding SelectedDocument.SelectColorPretoCommand}" ToolTip="Contorno: preto" Background="#FF000000" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectColorBrancoCommand}" ToolTip="Contorno: branco" Background="#FFFFFFFF" Style="{StaticResource mPdf.Anota.SwatchClaro}"/>
+            <Button Command="{Binding SelectedDocument.SelectColorVermelhoCommand}" ToolTip="Contorno: vermelho" Background="#FFFF5555" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectColorLaranjaCommand}" ToolTip="Contorno: laranja" Background="#FFFF8800" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectColorAmareloCommand}" ToolTip="Contorno: amarelo" Background="#FFFFFF00" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectColorVerdeCommand}" ToolTip="Contorno: verde" Background="#FF00FF66" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectColorAzulCommand}" ToolTip="Contorno: azul" Background="#FF1E6FE0" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectColorNenhumCommand}" ToolTip="Contorno: nenhum" Style="{StaticResource mPdf.Anota.SwatchVazado}"/>
+        </StackPanel>
+
+        <Border Style="{StaticResource Divisor}"/>
+
+        <!-- Task C (SDD desenho-caixa-revisao): controle de ESPESSURA de contorno (brief: "fina/média/
+             grossa"), 3 botões-ícone (mesmo estilo mPdf.Anota.Ferramenta dos outros ícones da barra)
+             ligados aos comandos SelectEspessura{Fina,Media,Grossa} (Task B). Cada um desenha uma barrinha
+             horizontal com a espessura correspondente em vez de um glifo Phosphor — não existe glifo de
+             "espessura de linha" no mapa (Icons/Ph.cs) e a barra já É a própria informação (mesma lógica
+             do hex fixo dos swatches de cor acima), tema-aware via Cor.TextoPrimario (troca com o
+             Foreground do botão no hover/desabilitado, ver trigger de mPdf.Anota.Ferramenta). -->
+        <StackPanel Orientation="{Binding Orientation, RelativeSource={RelativeSource AncestorType={x:Type local:AnnotationToolsView}}}"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+            <Button Command="{Binding SelectedDocument.SelectEspessuraFinaCommand}" ToolTip="Espessura: fina" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+                <Border Width="18" Height="1.5" Background="{DynamicResource Cor.TextoPrimario}"/>
+            </Button>
+            <Button Command="{Binding SelectedDocument.SelectEspessuraMediaCommand}" ToolTip="Espessura: média" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+                <Border Width="18" Height="3" Background="{DynamicResource Cor.TextoPrimario}"/>
+            </Button>
+            <Button Command="{Binding SelectedDocument.SelectEspessuraGrossaCommand}" ToolTip="Espessura: grossa" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+                <Border Width="18" Height="5" Background="{DynamicResource Cor.TextoPrimario}"/>
+            </Button>
+        </StackPanel>
+
+        <Border Style="{StaticResource Divisor}"/>
+
+        <!-- Task 2 (SDD desenho-caixa-melhorias): swatches de PREENCHIMENTO (Preench.) — mesmo padrão do
+             sub-painel de cor de contorno acima, ligado a SelectedFillColorArgb (via SelectFill*) em vez
+             de SelectedMarkupColorArgb. "Nenhum" primeiro (default/vazado — mPdf.Anota.SwatchVazado
+             acima), depois as 3 cores. Sem indicador de seleção corrente (mesma decisão v1 já registrada
+             no comentário de mPdf.Anota.Ferramenta — os swatches de cor existentes também não têm um).
+             Cada clique, além de trocar o padrão de PRÓXIMA caixa, repinta a Rectangle selecionada na
+             hora, se houver (ver DocumentViewModel.SelectFillAsync) — por isso NENHUM CommandParameter
+             textual aqui também (mesmo motivo dos SelectColor* acima).
+             Task C: a VM (Task B) só ampliou SelectColor* (contorno) pras 7 cores + Nenhum — SelectFill*
+             CONTINUA com só Nenhum+Amarelo+Verde+Vermelho (nenhum SelectFillPreto/Branco/Laranja/Azul
+             existe em DocumentViewModel.cs). Como esta task NÃO pode tocar a VM, o preenchimento fica
+             com a mesma contagem de antes; só troquei os 3 hex pros MESMOS valores exatos do contorno
+             (Color{Amarelo,Verde,Vermelho} do VM) pra a cor "amarelo" parecer a MESMA nos dois
+             sub-painéis (antes usava um hex de mockup levemente diferente). -->
+        <StackPanel Orientation="{Binding Orientation, RelativeSource={RelativeSource AncestorType={x:Type local:AnnotationToolsView}}}"
+                    HorizontalAlignment="Center" VerticalAlignment="Center" Margin="4,0">
+            <Button Command="{Binding SelectedDocument.SelectFillPretoCommand}" ToolTip="Preenchimento: preto" Background="#FF000000" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectFillBrancoCommand}" ToolTip="Preenchimento: branco" Background="#FFFFFFFF" Style="{StaticResource mPdf.Anota.SwatchClaro}"/>
+            <Button Command="{Binding SelectedDocument.SelectFillVermelhoCommand}" ToolTip="Preenchimento: vermelho" Background="#FFFF5555" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectFillLaranjaCommand}" ToolTip="Preenchimento: laranja" Background="#FFFF8800" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectFillAmareloCommand}" ToolTip="Preenchimento: amarelo" Background="#FFFFFF00" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectFillVerdeCommand}" ToolTip="Preenchimento: verde" Background="#FF00FF66" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectFillAzulCommand}" ToolTip="Preenchimento: azul" Background="#FF1E6FE0" Style="{DynamicResource mPdf.Anota.Swatch}"/>
+            <Button Command="{Binding SelectedDocument.SelectFillNenhumCommand}" ToolTip="Preenchimento: nenhum" Style="{StaticResource mPdf.Anota.SwatchVazado}"/>
+        </StackPanel>
+
+        <Border Style="{StaticResource Divisor}"/>
+
+        <!-- Carimbo de imagem (galeria — Popup) + inserir imagem avulsa. -->
+        <ToggleButton x:Name="StampGalleryToggle" ToolTip="Carimbos de imagem" Style="{DynamicResource mPdf.Anota.FerramentaToggle}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon stamp}"/>
+        </ToggleButton>
+        <Popup PlacementTarget="{Binding ElementName=StampGalleryToggle}" IsOpen="{Binding IsChecked, ElementName=StampGalleryToggle}"
+               StaysOpen="False" Placement="Top" AllowsTransparency="True"
+               DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+            <Border Background="{DynamicResource Cor.Superficie}" BorderBrush="{DynamicResource Cor.Borda}" BorderThickness="1"
+                    CornerRadius="9" Padding="8" MinWidth="240" MaxHeight="320" Margin="0,0,0,8">
+                <Border.Effect>
+                    <DropShadowEffect Color="#000000" BlurRadius="28" ShadowDepth="8" Opacity="0.5"/>
+                </Border.Effect>
+                <DockPanel>
+                    <Button DockPanel.Dock="Top" Command="{Binding AddStampCommand}" Margin="0,0,0,6"
+                            HorizontalContentAlignment="Left" Style="{DynamicResource mPdf.Button.Command}" Padding="10,0" Height="34">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="15" Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon plus}"/>
+                            <TextBlock Text="Adicionar carimbo…" Margin="9,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl x:Name="StampItemsList" ItemsSource="{Binding StampItems}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Button Grid.Column="0" HorizontalContentAlignment="Left" Padding="6" Height="44"
+                                                Style="{DynamicResource mPdf.Button.Command}"
+                                                ToolTip="Clique para colocar este carimbo na página"
+                                                Command="{Binding DataContext.SelectStampCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding Name}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <Image Source="{Binding Thumbnail}" Width="32" Height="32" Stretch="Uniform"/>
+                                                <TextBlock Text="{Binding Name}" Margin="8,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Grid.Column="1" Padding="6,0" Margin="4,0,0,0" Style="{DynamicResource mPdf.Button.Status}"
+                                                ToolTip="Remover carimbo da galeria"
+                                                Command="{Binding DataContext.RemoveStampCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding Name}">
+                                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="13" Text="{icons:PhosphorIcon x}"/>
+                                        </Button>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Popup>
+        <Button Command="{Binding SelectedDocument.ToggleImageToolCommand}" ToolTip="Inserir imagem" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="17" Text="{icons:PhosphorIcon image}"/>
+        </Button>
+
+        <Border Style="{StaticResource Divisor}"/>
+
+        <!-- Task C (SDD desenho-caixa-revisao): ícone de "Replicar na próxima página" (substitui o botão
+             de TEXTO removido do MainWindow — o comando ReplicarProximaPaginaCommand (Task B) continua
+             existindo; agora fica acessível também sem o menu de anotação na pílula flutuante, incluindo
+             o modo rail, já que este UserControl serve os 2 layouts). Nenhum glifo do mapa (Icons/Ph.cs)
+             cobre essa semântica sem ambiguidade: "stack" já é usado noutros lugares do app (BatchSignDialog,
+             WelcomeView, painel de miniaturas) pra "múltiplos documentos/lote", o que confundiria aqui;
+             não há "copy"/"cards"/"copy-simple" no mapa. Por isso, DESENHADO em vetor (mesmo padrão do
+             "RestoreGlyph" em MainWindow.xaml): duas "páginas" (retângulos) sobrepostas + uma seta pra
+             baixo = "replicar na página seguinte". Cores via Foreground do próprio Button (herda de
+             mPdf.Anota.Ferramenta -> Cor.TextoSecundario/Cor.TextoPrimario no hover, mesmo padrão do
+             RestoreGlyph) — nenhum hex fixo. -->
+        <Button Command="{Binding SelectedDocument.ReplicarProximaPaginaCommand}" ToolTip="Replicar na próxima página" Style="{DynamicResource mPdf.Anota.Ferramenta}">
+            <Grid Width="18" Height="20">
+                <Border Width="9" Height="10" HorizontalAlignment="Left" VerticalAlignment="Top"
+                        BorderBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" BorderThickness="1.2"/>
+                <Border Width="9" Height="10" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="3,3,0,0"
+                        Background="{DynamicResource Cor.SuperficieHover}"
+                        BorderBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" BorderThickness="1.2"/>
+                <Polygon Points="0,0 6,0 3,5" HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                         Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+            </Grid>
+        </Button>
+    </StackPanel>
+</UserControl>
