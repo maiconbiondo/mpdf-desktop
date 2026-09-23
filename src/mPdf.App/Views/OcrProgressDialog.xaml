@@ -1,0 +1,45 @@
+<Window x:Class="mPdf.App.Views.OcrProgressDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:icons="clr-namespace:mPdf.App.Icons"
+        Title="Reconhecer texto (OCR)" Width="420" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" ResizeMode="NoResize"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        FontFamily="{DynamicResource Fonte.Inter}">
+    <Window.Resources>
+        <!-- Mescla o tema LOCALMENTE — mesmo motivo/mesma nota de SobreDialog.xaml/MainWindow.xaml. -->
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/mPdf.App;component/Themes/mPdfTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+    <Border Style="{StaticResource mPdf.Dialog.Superficie}" Margin="16">
+        <StackPanel Margin="24,22">
+            <!-- Cabeçalho: ícone + título (arrasta a janela). -->
+            <StackPanel Orientation="Horizontal" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="20"
+                           Foreground="{DynamicResource Cor.IconeAzul}" VerticalAlignment="Center"
+                           Margin="0,0,12,0" Text="{icons:PhosphorIcon text-t}"/>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="Reconhecendo texto (OCR)" FontWeight="Bold" FontSize="15"
+                               Foreground="{DynamicResource Cor.TextoPrimario}"/>
+                    <TextBlock x:Name="MensagemText" Text="Preparando…" FontSize="12" Margin="0,2,0,0"
+                               Foreground="{DynamicResource Cor.TextoSecundario}"/>
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Barra de progresso (determinada — atualizada por página). -->
+            <ProgressBar x:Name="Barra" Height="12" Minimum="0" Maximum="1" Value="0" Margin="0,18,0,0"/>
+
+            <!-- Nota honesta discreta (limites do OCR). -->
+            <TextBlock TextWrapping="Wrap" Margin="0,14,0,0" FontSize="11" LineHeight="16"
+                       Foreground="{DynamicResource Cor.TextoSecundario}"
+                       Text="O OCR pode conter erros em documentos de baixa qualidade."/>
+
+            <!-- Cancelar sempre disponível. -->
+            <Button x:Name="CancelarButton" Content="Cancelar" HorizontalAlignment="Right" Margin="0,18,0,0"
+                    Click="Cancelar_Click" Style="{StaticResource mPdf.Button.DialogCancelar}"/>
+        </StackPanel>
+    </Border>
+</Window>
