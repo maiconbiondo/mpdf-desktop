@@ -73,35 +73,35 @@
          Inter e aplica a fonte lá. O T1 só EMBARCA + EXPÕE as fontes (Fonte.* + o helper Ph); a prova
          de que Inter resolve/cobre acentos pt-BR está em ThemeSwapProbeTests/GlyphTypeface. -->
     <!-- ============================ LOGO mPDF (Plano 14 T2) ============================
-         Vetor da logo do app (traduzido de Assets/logo.svg — documento navy #1D4E89, dobra #0F2E52,
-         linhas #7FA8D9, rubrica verde-água #3EC1A7). DrawingImage escala nítido em qualquer tamanho
+         Vetor da logo do app (traduzido de Assets/logo.svg — documento laranja fosco #C0692F, dobra #86431A,
+         linhas #F0C39B, rubrica creme #FFF4E8). DrawingImage escala nítido em qualquer tamanho
          (title bar 23px, estado vazio grande em T3), sem raster nem dependência de SVG. -->
     <DrawingImage x:Key="Logo.mPDF">
         <DrawingImage.Drawing>
             <DrawingGroup>
-                <GeometryDrawing Brush="#1D4E89">
+                <GeometryDrawing Brush="#C0692F">
                     <GeometryDrawing.Geometry>
                         <RectangleGeometry Rect="38,16,180,224" RadiusX="15" RadiusY="15"/>
                     </GeometryDrawing.Geometry>
                 </GeometryDrawing>
-                <GeometryDrawing Brush="#0F2E52" Geometry="M176,16 L218,16 L218,58 Z"/>
-                <GeometryDrawing Brush="#7FA8D9">
+                <GeometryDrawing Brush="#86431A" Geometry="M176,16 L218,16 L218,58 Z"/>
+                <GeometryDrawing Brush="#F0C39B">
                     <GeometryDrawing.Geometry><RectangleGeometry Rect="58,54,110,14" RadiusX="7" RadiusY="7"/></GeometryDrawing.Geometry>
                 </GeometryDrawing>
-                <GeometryDrawing Brush="#7FA8D9">
+                <GeometryDrawing Brush="#F0C39B">
                     <GeometryDrawing.Geometry><RectangleGeometry Rect="58,76,90,14" RadiusX="7" RadiusY="7"/></GeometryDrawing.Geometry>
                 </GeometryDrawing>
-                <GeometryDrawing Brush="#7FA8D9">
+                <GeometryDrawing Brush="#F0C39B">
                     <GeometryDrawing.Geometry><RectangleGeometry Rect="58,98,125,14" RadiusX="7" RadiusY="7"/></GeometryDrawing.Geometry>
                 </GeometryDrawing>
                 <GeometryDrawing Geometry="M55,205 C85,165 115,255 140,195 C160,175 175,205 195,185">
                     <GeometryDrawing.Pen>
                         <Pen Thickness="12" StartLineCap="Round" EndLineCap="Round" LineJoin="Round">
-                            <Pen.Brush><SolidColorBrush Color="#3EC1A7"/></Pen.Brush>
+                            <Pen.Brush><SolidColorBrush Color="#FFF4E8"/></Pen.Brush>
                         </Pen>
                     </GeometryDrawing.Pen>
                 </GeometryDrawing>
-                <GeometryDrawing Brush="#3EC1A7">
+                <GeometryDrawing Brush="#FFF4E8">
                     <GeometryDrawing.Geometry><EllipseGeometry Center="202,178" RadiusX="5" RadiusY="5"/></GeometryDrawing.Geometry>
                 </GeometryDrawing>
             </DrawingGroup>
