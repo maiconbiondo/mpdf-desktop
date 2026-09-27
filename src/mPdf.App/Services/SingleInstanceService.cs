@@ -12,6 +12,16 @@ namespace mPdf.App.Services;
 /// (SingleInstanceNames + App.xaml.cs) só precisa mandar 1 argv[0] por processo secundário que nasce e
 /// morre.
 ///
+/// v2.13.0 (verbo `/assinar`): a linha também pode ser um COMANDO — `?<verbo>|<caminho absoluto>` (ver
+/// <see cref="ProtocoloInstanciaUnica"/>). O prefixo '?' NUNCA começa um caminho absoluto do Windows
+/// (letra de unidade, '\' de raiz, '\\' de UNC ou '\\?\' estendido), e '?'/'|' são proibidos em nome de
+/// arquivo — um caminho puro jamais é confundido com um comando e vice-versa. COMPATIBILIDADE com uma
+/// primária antiga (≤ 2.12.x) que receba a linha nova: ela só repassa linhas com `Path.IsPathRooted`
+/// verdadeiro, e `Path.IsPathRooted("?assinar|C:\x.pdf")` é FALSO (1º char não é separador, 2º não é
+/// ':') — a linha cai no mesmo ramo "malformada, ignorada" do Item 5, sem exceção, e o loop volta a
+/// escutar (provado em `SingleInstanceServiceTests`). Nesta versão, um comando com verbo DESCONHECIDO
+/// (ex.: de uma versão futura) também é ignorado em silêncio, pela mesma regra.
+///
 /// Endurecimento do protocolo (brief da Task 1 + revisão pós-Task 1):
 ///  - Teto de tamanho de linha (<see cref="MaxLineLengthBytes"/>, 32KB — nenhum caminho de arquivo
 ///    legítimo chega perto disso): uma linha que ultrapassa o teto SEM nunca achar '\n' é descartada
@@ -66,6 +76,7 @@ public sealed class SingleInstanceService : ISingleInstanceService
     private bool _disposed;
 
     public event Action<string>? PathReceived;
+    public event Action<ComandoInstancia>? CommandReceived;
 
     public SingleInstanceService(string mutexName, string pipeName)
         : this(mutexName, pipeName, backoffDelay: null, acceptConnection: null) { }
@@ -141,7 +152,18 @@ public sealed class SingleInstanceService : ISingleInstanceService
                 // linha relativa (protocolo malformado OU um bug em algum futuro remetente) chegaria a
                 // PathReceived e MainViewModel.OpenPath tentaria abrir relativo ao diretório de
                 // trabalho ATUAL do processo primário — quase certamente não é o que o usuário quis.
-                if (!string.IsNullOrWhiteSpace(line) && Path.IsPathRooted(line))
+                //
+                // v2.13.0: linha que começa com o prefixo de comando ('?') é COMANDO (`?assinar|<caminho>`)
+                // — verbo desconhecido/caminho não-absoluto/linha malformada = ignorada, mesma regra do
+                // caminho relativo acima (ver doc XML da classe). `IsPathRooted` já seria falso pra ela
+                // de qualquer forma — é isso que protege as primárias antigas.
+                if (string.IsNullOrWhiteSpace(line)) { /* ignorada */ }
+                else if (ProtocoloInstanciaUnica.EhComando(line))
+                {
+                    if (ProtocoloInstanciaUnica.TryParse(line, out var comando))
+                        CommandReceived?.Invoke(comando);
+                }
+                else if (Path.IsPathRooted(line))
                 {
                     PathReceived?.Invoke(line);
                 }
@@ -232,4 +254,52 @@ public sealed class SingleInstanceService : ISingleInstanceService
             mutex.Dispose();
         }
     }
+}
+
+/// Verbos que uma instância secundária pode encaminhar à primária pelo pipe (além do caminho puro de
+/// "abrir"). Hoje só `Assinar` (v2.13.0); um verbo futuro (ex.: `/pdfa`) entra aqui, no dicionário de
+/// <see cref="ProtocoloInstanciaUnica"/> e no switch de `MainViewModel.ExecutarComandoAsync`.
+public enum VerboInstancia { Assinar }
+
+public readonly record struct ComandoInstancia(VerboInstancia Verbo, string Caminho);
+
+/// Formato da linha de COMANDO no pipe da instância única: `?<verbo>|<caminho absoluto>` (UTF-8; o '\n'
+/// final é acrescentado por quem envia). Ver doc XML de <see cref="SingleInstanceService"/> para o porquê
+/// do prefixo e a compatibilidade com primárias antigas.
+public static class ProtocoloInstanciaUnica
+{
+    public const char PrefixoComando = '?';
+    public const char Separador = '|';
+
+    private static readonly Dictionary<string, VerboInstancia> Verbos = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["assinar"] = VerboInstancia.Assinar,
+    };
+
+    public static string MontarLinha(VerboInstancia verbo, string caminhoAbsoluto) =>
+        $"{PrefixoComando}{Nome(verbo)}{Separador}{caminhoAbsoluto}";
+
+    public static bool EhComando(string linha) => linha.Length > 0 && linha[0] == PrefixoComando;
+
+    /// Falso (linha ignorada pelo chamador) se: sem o prefixo, sem o separador, verbo desconhecido, ou
+    /// caminho vazio/não-absoluto (mesma regra do caminho puro, Item 5 da revisão do Plano 6).
+    public static bool TryParse(string linha, out ComandoInstancia comando)
+    {
+        comando = default;
+        if (!EhComando(linha)) return false;
+        int sep = linha.IndexOf(Separador);
+        if (sep < 0) return false;
+        var verbo = linha[1..sep];
+        var caminho = linha[(sep + 1)..];
+        if (!Verbos.TryGetValue(verbo, out var v)) return false;
+        if (string.IsNullOrWhiteSpace(caminho) || !Path.IsPathRooted(caminho)) return false;
+        comando = new ComandoInstancia(v, caminho);
+        return true;
+    }
+
+    private static string Nome(VerboInstancia verbo) => verbo switch
+    {
+        VerboInstancia.Assinar => "assinar",
+        _ => throw new ArgumentOutOfRangeException(nameof(verbo)),
+    };
 }

@@ -68,6 +68,10 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly ISobreDialogService _sobreDialog;
     // Diálogo "Configurações" (Task 2, Plano 17) — mesma disciplina de injeção via UiPrompts.
     private readonly IConfiguracoesDialogService _configuracoesDialog;
+    // v2.13.0 (verbo /assinar): diálogo "Assinar" repassado a cada DocumentViewModel aberto por OpenPath.
+    // null = default do próprio DocumentViewModel (UiPrompts.CreateSignDialog) — produção nunca injeta;
+    // existe para testar AbrirEAssinarAsync/pipe com um diálogo FAKE (sem janela real).
+    private readonly ISignDialogService? _signDialog;
     // Injetável SÓ para Merge/Split (revisão pós-Task 4, achado "Important"): as demais chamadas a
     // IPdfEditor deste VM (EditCopy) continuam usando `PdfEditorFactory.Create()` INLINE (precedente
     // original, não mexido aqui) — este campo existe especificamente para permitir testar o catch de
@@ -225,8 +229,10 @@ public sealed partial class MainViewModel : ObservableObject
         IBatchSignDialogService? batchSignDialog = null,
         Func<IReadOnlyList<SigningCertificateInfo>>? listSigningCertificates = null,
         ISobreDialogService? sobreDialog = null,
-        IConfiguracoesDialogService? configuracoesDialog = null)
+        IConfiguracoesDialogService? configuracoesDialog = null,
+        ISignDialogService? signDialog = null)
     {
+        _signDialog = signDialog;
         _dialogs = dialogs;
         _recent = recent;
         _notifyError = notifyError;
@@ -383,7 +389,11 @@ public sealed partial class MainViewModel : ObservableObject
             // (que funcionaria, mas duplicaria a leitura de config.json e poderia abrir um 2º
             // MessageBox com estilo diferente do resto do app).
             var doc = new DocumentViewModel(session, config: _config, notifyError: _notifyError, annotationDialog: _annotationDialog, dialogs: _dialogs, notifyInfo: _notifyInfo,
-                    openSavedDocument: OpenPath) // fluxo Adobe: assina -> Salvar como -> ABRE o assinado numa aba nova
+                    openSavedDocument: OpenPath, // fluxo Adobe: assina -> Salvar como -> ABRE o assinado numa aba nova
+                    // v2.13.0: o MESMO catálogo de certificados desta janela (default idêntico ao do
+                    // DocumentViewModel: CertificateCatalog.ListSigningCertificates) e o diálogo de
+                    // assinatura injetável (null = default do DocumentViewModel) — em produção nada muda.
+                    signDialog: _signDialog, listSigningCertificates: _listSigningCertificates)
                 { IsSignedDocument = isSigned, SignedFillPermission = signedFillPermission };
             // Task 2 (Plano 3c): semeia o cache de campos JÁ CALCULADO acima — ver doc XML de
             // DocumentViewModel.SeedFormFieldsCache (Obs 17).
@@ -415,6 +425,48 @@ public sealed partial class MainViewModel : ObservableObject
             _opening.Remove(path);
             IsOpening = _opening.Count > 0;
         }
+    }
+
+    /// v2.13.0: executa um comando vindo de fora (linha de comando `/assinar` na 1ª instância, ou linha
+    /// `?assinar|<caminho>` recebida pelo pipe da instância única). Único ponto de despacho — um verbo
+    /// futuro (ex.: `/pdfa`) entra neste switch.
+    public Task ExecutarComandoAsync(ComandoInstancia comando) => comando.Verbo switch
+    {
+        VerboInstancia.Assinar => AbrirEAssinarAsync(comando.Caminho),
+        _ => Task.CompletedTask,
+    };
+
+    /// v2.13.0 (verbo `/assinar <pdf>`, chamado pelo mOffice depois de exportar um PDF): abre o PDF (ou
+    /// só seleciona a aba, se já estiver aberto — dedupe de `OpenPath`) e, com o documento JÁ CARREGADO
+    /// (o `await OpenPath` só volta depois de `DocumentSession.OpenAsync` + checagens + `Documents.Add`),
+    /// dispara o `SignCommand` dele — daí em diante é o fluxo de sempre (certificado A1/A3, carimbo
+    /// opcional, "Salvar como" num arquivo novo que abre numa aba). Arquivo inexistente/não-PDF -> mesma
+    /// notificação de erro (`_notifyError`) que `OpenPath` usa numa falha de abertura.
+    public async Task AbrirEAssinarAsync(string caminho)
+    {
+        if (string.IsNullOrWhiteSpace(caminho)
+            || !caminho.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(caminho))
+        {
+            _notifyError($"Não foi possível assinar: o arquivo PDF não foi encontrado ou é inválido.\n{caminho}");
+            return;
+        }
+
+        await OpenPath(caminho);
+
+        // Falha de abertura já foi notificada por OpenPath (doc nunca entrou em Documents). Mesma
+        // comparação do dedupe de OpenPath.
+        if (Documents.FirstOrDefault(d => string.Equals(d.Session.FilePath, caminho, StringComparison.OrdinalIgnoreCase)) is not { } doc)
+            return;
+
+        SelectedDocument = doc;
+        if (!doc.SignCommand.CanExecute(null))
+        {
+            // CanSign falso: formulário XFA, outra edição em voo ou colocação de carimbo já ativa.
+            _notifyError("Este documento não pode ser assinado agora.");
+            return;
+        }
+        await doc.SignCommand.ExecuteAsync(null);
     }
 
     [RelayCommand]

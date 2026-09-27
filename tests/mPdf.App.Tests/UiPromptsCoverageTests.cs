@@ -74,6 +74,10 @@ public class UiPromptsCoverageTests
         // Task 2 (Plano 17): diálogo "Configurações" — hospeda Tema/Nitidez/Atualização, migrados do
         // "Sobre" (ver ConfiguracoesViewModel).
         [("MainViewModel", "configuracoesDialog")] = "UiPrompts.CreateConfiguracoesDialog",
+        // v2.13.0 (verbo /assinar): MainViewModel só REPASSA ao DocumentViewModel de cada aba; null (o
+        // default de produção) cai no `signDialog ?? UiPrompts.CreateSignDialog()` do próprio
+        // DocumentViewModel (entrada ("DocumentViewModel","signDialog") acima) — mesma seam.
+        [("MainViewModel", "signDialog")] = "UiPrompts.CreateSignDialog (repassado ao DocumentViewModel)",
         // Task 2 (Plano 17): prompt "fechar e instalar agora?" do fluxo de atualização, MIGRADO de
         // SobreViewModel pra ConfiguracoesViewModel. `createSource` (Func<IUpdateSource>) NÃO entra aqui
         // de propósito — é um parâmetro FUNC (fábrica deferida), não um tipo de serviço direto; a

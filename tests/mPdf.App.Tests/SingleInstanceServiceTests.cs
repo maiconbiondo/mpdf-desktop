@@ -128,6 +128,63 @@ public class SingleInstanceServiceTests
         Assert.Equal(@"D:\ok.pdf", received);
     }
 
+    [Fact] // v2.13.0: linha de COMANDO ?assinar|<caminho> pelo pipe real -> CommandReceived (nunca PathReceived)
+    public void TryAcquire_SecondInstance_ForwardsAssinarCommand_FiresCommandReceivedOnly()
+    {
+        var (mutexName, pipeName) = NewNames();
+        using var first = new SingleInstanceService(mutexName, pipeName);
+
+        bool pathFired = false;
+        ComandoInstancia? received = null;
+        var gotIt = new ManualResetEventSlim(false);
+        first.PathReceived += _ => pathFired = true;
+        first.CommandReceived += c => { received = c; gotIt.Set(); };
+
+        Assert.True(first.TryAcquire(null));
+
+        var caminho = @"C:\Usuários\Fulano\Relatório exportado.pdf";
+        using var second = new SingleInstanceService(mutexName, pipeName);
+        Assert.False(second.TryAcquire(ProtocoloInstanciaUnica.MontarLinha(VerboInstancia.Assinar, caminho)));
+
+        Assert.True(gotIt.Wait(TimeSpan.FromSeconds(5)), "primária não recebeu o comando a tempo");
+        Assert.Equal(new ComandoInstancia(VerboInstancia.Assinar, caminho), received);
+        Assert.False(pathFired); // a linha de comando NUNCA vira "abrir caminho"
+    }
+
+    [Theory] // v2.13.0: linha desconhecida/malformada começando com '?' -> ignorada, sem exceção, e o
+             // servidor continua escutando (mesma regra do caminho relativo — é também o que uma
+             // primária 2.12.x faz com a linha nova, ver AssinarContextoTests)
+    [InlineData("?qualquercoisa|x")]
+    [InlineData(@"?pdfa|C:\x.pdf")]          // verbo que ESTA versão não conhece
+    [InlineData(@"?assinar|relativo.pdf")]   // comando conhecido, caminho não-absoluto
+    [InlineData("?assinar")]
+    public void UnknownCommandLine_Ignored_ServerKeepsListening(string linha)
+    {
+        var (mutexName, pipeName) = NewNames();
+        using var first = new SingleInstanceService(mutexName, pipeName);
+
+        bool fired = false;
+        first.PathReceived += _ => fired = true;
+        first.CommandReceived += _ => fired = true;
+
+        Assert.True(first.TryAcquire(null));
+
+        using (var second = new SingleInstanceService(mutexName, pipeName))
+            Assert.False(second.TryAcquire(linha));
+
+        Thread.Sleep(300);
+        Assert.False(fired);
+
+        string? received = null;
+        var gotIt = new ManualResetEventSlim(false);
+        first.PathReceived += p => { received = p; gotIt.Set(); };
+
+        using var third = new SingleInstanceService(mutexName, pipeName);
+        Assert.False(third.TryAcquire(@"D:\ok.pdf"));
+        Assert.True(gotIt.Wait(TimeSpan.FromSeconds(5)), "servidor não voltou a escutar após linha desconhecida");
+        Assert.Equal(@"D:\ok.pdf", received);
+    }
+
     [Fact] // Dispose libera o mutex — a PRÓXIMA instância com o MESMO nome vira primária
     public void Dispose_ReleasesMutex_AllowsNewPrimary()
     {
@@ -265,6 +322,7 @@ public class SingleInstanceLaunchGateTests
     private sealed class ThrowingOnAcquireService : ISingleInstanceService
     {
         public event Action<string>? PathReceived { add { } remove { } }
+        public event Action<ComandoInstancia>? CommandReceived { add { } remove { } }
         public bool TryAcquire(string? pathToForward) =>
             throw new UnauthorizedAccessException("mutex squatted (simulado)");
         public void Dispose() { }

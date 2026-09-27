@@ -115,6 +115,24 @@ public partial class App : Application
             return;
         }
 
+        // v2.13.0 — verbo /assinar <pdf> (chamado pelo mOffice depois de exportar um PDF). Roteado AQUI,
+        // na mesma posição do /print (ANTES da instância única), mas NÃO é efêmero: o PDF abre numa aba
+        // do editor e o comando de assinar do documento roda em seguida. Sem caminho -> erro e sai. Com
+        // caminho: se esta instância virar a primária, abre+assina depois que a janela carregar (ver o
+        // BeginInvoke no fim deste método); se já houver uma primária, encaminha pelo pipe a linha de
+        // COMANDO `?assinar|<caminho absoluto>` (ver ProtocoloInstanciaUnica) em vez do caminho puro.
+        var ctxAssinar = Services.AssinarContextoService.Parse(e.Args);
+        if (ctxAssinar.Assinar && ctxAssinar.Caminho is null)
+        {
+            MessageBox.Show("Informe o arquivo PDF a assinar: mPdf.App.exe /assinar \"arquivo.pdf\"",
+                "mPDF", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Shutdown();
+            return;
+        }
+        ComandoInstancia? comandoInicial = ctxAssinar.Assinar
+            ? new ComandoInstancia(VerboInstancia.Assinar, Services.AssinarContextoService.CaminhoAbsoluto(ctxAssinar.Caminho!))
+            : null;
+
         // Task 2 (Plano 6, associação .pdf) + Task 2 (Plano 7, imagens): args[0] é o caminho que o
         // Windows passa ao abrir um .pdf/.jpg/.jpeg/.png associado a este .exe (ou uma linha de comando
         // manual) — só aceito se realmente parecer um desses formatos; qualquer outro argumento em
@@ -146,6 +164,7 @@ public partial class App : Application
         // começou a aceitar ainda) e pro caso SECUNDÁRIO (TryAcquire abaixo nunca inicia listener
         // nenhum, então PathReceived nunca dispara nesta instância de qualquer forma).
         _singleInstance.PathReceived += OnPathReceivedFromOtherInstance;
+        _singleInstance.CommandReceived += OnCommandReceivedFromOtherInstance; // v2.13.0, mesma regra (antes de TryAcquire)
 
         // Item 1 (revisão pós-Task 1): instância única é BEST-EFFORT — uma falha em TryAcquire (ex.:
         // mutex nomeado já existindo com um tipo de handle incompatível, ou permissão negada) NUNCA
@@ -153,7 +172,12 @@ public partial class App : Application
         // CrashLog (chamável a qualquer momento, mesmo ANTES dos 3 handlers de crash abaixo serem
         // registrados — ver doc XML da classe) e devolve true — falha ABERTA: segue como lançamento
         // normal (só perde a proteção de instância única NESTA sessão).
-        if (!SingleInstanceLaunchGate.ShouldContinueLaunch(_singleInstance, argPath, CrashLog.Append))
+        // v2.13.0: com /assinar, o que vai pro pipe é a linha de COMANDO (argPath é null nesse caso —
+        // args[0] é "/assinar", que não passa em IsSupportedOpenArgument).
+        string? linhaParaEncaminhar = comandoInicial is { } cmdEnc
+            ? ProtocoloInstanciaUnica.MontarLinha(cmdEnc.Verbo, cmdEnc.Caminho)
+            : argPath;
+        if (!SingleInstanceLaunchGate.ShouldContinueLaunch(_singleInstance, linhaParaEncaminhar, CrashLog.Append))
         {
             Shutdown();
             return;
@@ -195,20 +219,31 @@ public partial class App : Application
             // depende cegamente da prioridade do dispatcher pra provar que a janela já carregou.
             Dispatcher.BeginInvoke(new Action(() => OpenExternalPathWhenWindowReady(argPath)), DispatcherPriority.ContextIdle);
         }
+        else if (comandoInicial is { } cmdInicial)
+        {
+            // v2.13.0 (/assinar na 1ª instância): MESMO adiamento do argPath acima (ContextIdle + checagem
+            // IsLoaded/Loaded) — só então `ExecutarComandoAsync` abre o PDF e, com o documento carregado
+            // (o await de OpenPath só volta depois dele estar em Documents), dispara o SignCommand.
+            Dispatcher.BeginInvoke(new Action(() => RunWhenWindowReady(vm => vm.ExecutarComandoAsync(cmdInicial))), DispatcherPriority.ContextIdle);
+        }
     }
 
     /// Roda depois que o `DoStartup` interno do framework já criou e mostrou a `MainWindow` do
     /// `StartupUri` (ver comentário em `OnStartup`) — mesmo assim confere `null`/tipo e `IsLoaded` por
     /// defesa, nunca assume a garantia de prioridade do dispatcher cegamente.
-    private void OpenExternalPathWhenWindowReady(string path)
+    private void OpenExternalPathWhenWindowReady(string path) => RunWhenWindowReady(vm => vm.OpenPath(path));
+
+    /// v2.13.0: generalização de `OpenExternalPathWhenWindowReady` (mesma checagem, ação qualquer sobre o
+    /// VM) — usada também pelo /assinar da 1ª instância.
+    private void RunWhenWindowReady(Func<ViewModels.MainViewModel, Task> acao)
     {
         if (Application.Current.MainWindow is not mPdf.App.MainWindow mw) return; // defensivo: não deveria faltar aqui
-        if (mw.IsLoaded) { _ = mw.ViewModel.OpenPath(path); return; }
+        if (mw.IsLoaded) { _ = acao(mw.ViewModel); return; }
         mw.Loaded += OnceLoaded;
         void OnceLoaded(object sender, RoutedEventArgs args)
         {
             mw.Loaded -= OnceLoaded;
-            _ = mw.ViewModel.OpenPath(path);
+            _ = acao(mw.ViewModel);
         }
     }
 
@@ -228,6 +263,21 @@ public partial class App : Application
         // piscar a barra de tarefas em vez de trazer a janela pra frente de verdade — aceito, mesmo
         // comportamento de outros leitores de PDF nesse cenário.
         mw.Activate();
+    }
+
+    /// v2.13.0: uma instância secundária encaminhou um COMANDO (`/assinar` com o mPDF já aberto). Mesmo
+    /// marshal pra UI de `OnPathReceivedFromOtherInstance`.
+    private void OnCommandReceivedFromOtherInstance(ComandoInstancia comando) =>
+        Dispatcher.BeginInvoke(new Action(() => _ = HandleExternalCommandAsync(comando)));
+
+    private async Task HandleExternalCommandAsync(ComandoInstancia comando)
+    {
+        if (Application.Current.MainWindow is not mPdf.App.MainWindow mw) return;
+        // Traz a janela pra frente ANTES: o diálogo de assinatura é modal e o await abaixo só volta
+        // depois dele (e do "Salvar como") — ativar depois deixaria o diálogo atrás de outra janela.
+        if (mw.WindowState == WindowState.Minimized) mw.WindowState = WindowState.Normal;
+        mw.Activate();
+        await mw.ViewModel.ExecutarComandoAsync(comando);
     }
 
     protected override void OnExit(ExitEventArgs e)

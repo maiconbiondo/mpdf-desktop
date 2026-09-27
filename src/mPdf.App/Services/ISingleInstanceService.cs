@@ -15,9 +15,15 @@ public interface ISingleInstanceService : IDisposable
     /// UI antes de tocar em MainWindow/ViewModel (afinidade STA do WPF).
     event Action<string>? PathReceived;
 
+    /// v2.13.0: mesma thread e mesma regra de marshal de <see cref="PathReceived"/>, mas para uma linha
+    /// de COMANDO (`?assinar|<caminho>`, ver <see cref="ProtocoloInstanciaUnica"/>) — ex.: `/assinar`
+    /// encaminhado por uma instância secundária.
+    event Action<ComandoInstancia>? CommandReceived;
+
     /// Tenta se tornar a instância PRIMÁRIA (dona do mutex nomeado). Se conseguir, já deixa o loop de
     /// escuta do pipe rodando em background e devolve true — o chamador segue o startup normal. Se já
     /// existe uma primária, conecta como CLIENTE no pipe dela, encaminha `pathToForward` (se não for
-    /// nulo/vazio) e devolve false — o chamador deve encerrar SEM criar nenhuma janela.
+    /// nulo/vazio — um caminho puro ou, desde a v2.13.0, uma linha de comando montada por
+    /// <see cref="ProtocoloInstanciaUnica.MontarLinha"/>) e devolve false — o chamador deve encerrar SEM criar nenhuma janela.
     bool TryAcquire(string? pathToForward);
 }
