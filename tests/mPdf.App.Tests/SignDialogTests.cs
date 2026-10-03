@@ -63,6 +63,26 @@ public class SignDialogTests
         finally { dialog.Close(); }
     }
 
+    // v2.13.2: "Proteger contra alterações" (DocMDP/certificação) passa a vir DESMARCADO. Com ela marcada
+    // o documento sai certificado e o Adobe impede o cliente de assinar depois (o "Preencher e assinar"
+    // é bloqueado/acusa a certificação como inválida). Continua oferecida na 1ª assinatura, só deixa de
+    // ser o padrão.
+    [Fact]
+    public void SignDialog_FirstSignature_DocMdpOfferedButUncheckedByDefault()
+    {
+        RunOnSta(() =>
+        {
+            var dialog = new SignDialog(Array.Empty<SigningCertificateInfo>(), allowDocMdp: true, NewGallery(0), () => null);
+            try
+            {
+                var docMdp = (CheckBox)dialog.FindName("DocMdpCheckBox")!;
+                Assert.Equal(System.Windows.Visibility.Visible, docMdp.Visibility);
+                Assert.False(docMdp.IsChecked == true, "\"Proteger contra alterações\" não deveria vir marcado por padrão");
+            }
+            finally { dialog.Close(); }
+        });
+    }
+
     // Plano 22: "Minha rubrica" abre a galeria (escondida até selecionar); com rubricas salvas mostra as
     // miniaturas + o "+".
     [Fact]

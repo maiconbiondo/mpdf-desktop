@@ -85,14 +85,15 @@
 
                 <!-- DocMDP: só oferecido na 1ª assinatura do documento (ver SignDialog(certificates,
                      allowDocMdp) e ISignDialogService) — o motor RECUSA CertificationLevel != None num doc
-                     já assinado. Default LIGADO. -->
-                <CheckBox x:Name="DocMdpCheckBox" Margin="0,16,0,0" IsChecked="True"
+                     já assinado. Default DESLIGADO (v2.13.2): certificado, o documento não aceita a assinatura do
+                     cliente no Adobe ("Preencher e assinar" bloqueado / certificação acusada de inválida). -->
+                <CheckBox x:Name="DocMdpCheckBox" Margin="0,16,0,0" IsChecked="False"
                           Style="{StaticResource mPdf.CheckCard}">
                     <StackPanel>
                         <TextBlock FontSize="12.5" Foreground="{DynamicResource Cor.TextoPrimario}">
-                            <Run Text="Proteger contra alterações "/><Run Text="(recomendado)" Foreground="{DynamicResource Cor.IconeAzul}"/>
+                            <Run Text="Proteger contra alterações"/>
                         </TextBlock>
-                        <TextBlock Text="DocMDP — bloqueia edições após esta assinatura" FontSize="10.5"
+                        <TextBlock Text="Bloqueia edições depois desta assinatura — outras pessoas podem não conseguir assinar no Adobe" FontSize="10.5" TextWrapping="Wrap"
                                    Foreground="{DynamicResource Cor.TextoSecundario}" Margin="0,2,0,0"/>
                     </StackPanel>
                 </CheckBox>
