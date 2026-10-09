@@ -214,6 +214,10 @@
                         <Button Command="{Binding SelectedDocument.RecognizeTextCommand}" ToolTip="Reconhecer texto (OCR) — torna páginas escaneadas pesquisáveis" Width="38" Style="{StaticResource mPdf.Button.Command}">
                             <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon scan}"/>
                         </Button>
+                        <!-- Corrigir texto (2026-10-09): troca o trecho selecionado (uma linha) removendo o antigo de verdade. -->
+                        <Button Command="{Binding SelectedDocument.CorrigirTextoCommand}" ToolTip="Corrigir texto — selecione um trecho de uma linha e troque o texto" Width="38" Style="{StaticResource mPdf.Button.Command}">
+                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Text="{icons:PhosphorIcon text-t}"/>
+                        </Button>
                         <Button Command="{Binding BatchSignCommand}" ToolTip="Assinar vários PDFs em lote" Style="{StaticResource mPdf.Button.Command}" Padding="11,0">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="16" Foreground="{DynamicResource Cor.TextoSecundario}" Text="{icons:PhosphorIcon stack}"/>
@@ -362,6 +366,22 @@
                         <Button Content="Ver assinaturas" Click="VerAssinaturas_Click" Style="{StaticResource mPdf.Button.FaixaVerde}" Margin="8,0,0,0"/>
                         <Button Content="Editar uma cópia" Command="{Binding EditCopyCommand}" Style="{StaticResource mPdf.Button.FaixaNeutra}" Margin="8,0,0,0"/>
                     </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- PDF embrulhado em Base64 (2026-10-09): abriu desembrulhado; oferece regravar como PDF de verdade. -->
+            <Border x:Name="Base64Banner" DockPanel.Dock="Top"
+                    Background="{DynamicResource Cor.FaixaInfo}" BorderBrush="#334A90E2" BorderThickness="0,0,0,1" Padding="18,9"
+                    Visibility="{Binding SelectedDocument.NeedsEnvelopeFix, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock FontFamily="{DynamicResource Fonte.PhosphorFill}" FontSize="16" Foreground="{DynamicResource Cor.IconeAzul}" Text="{icons:PhosphorIcon info}" VerticalAlignment="Center"/>
+                        <TextBlock Margin="10,0,0,0" Foreground="{DynamicResource Cor.TextoPrimario}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                   Text="Este arquivo estava codificado (Base64) — outros programas não conseguem abri-lo."/>
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="Consertar arquivo" Command="{Binding SelectedDocument.ConsertarArquivoCommand}"
+                            Style="{StaticResource mPdf.Button.FaixaNeutra}" Margin="8,0,0,0"/>
                 </Grid>
             </Border>
 

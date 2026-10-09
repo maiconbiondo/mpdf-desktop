@@ -1,0 +1,4 @@
+iText pdfSweep (itext.pdfsweep 5.0.7) - Copyright (c) Apryse Group NV
+Licenciado sob a GNU Affero General Public License v3.0 (AGPL-3.0), a mesma licenca do iText Core
+usado pelo mPDF. O texto completo da licenca esta em LICENCA-iText-AGPL-3.0.txt nesta pasta.
+Codigo-fonte: https://github.com/itext/i7n-pdfsweep

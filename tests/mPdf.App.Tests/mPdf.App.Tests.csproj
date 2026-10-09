@@ -25,10 +25,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- System.Drawing.Common (Windows) só para GERAR o bitmap sintético do fixture-imagem de OCR
-         (Task 2, Plano 15), mesmo precedente de tests/mPdf.Ocr.Tests/mPdf.Ocr.Tests.csproj. Não é
-         dependência do módulo de produto mPdf.App. -->
-    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
     <!-- Item A (Task 3, Plano 12 fixes finais): a mescla do tema (Task 2) faz TODA janela/diálogo WPF
          construído por esta suíte puxar a mesma PackagePart `mpdftheme.baml` — coleções de teste xUnit
          rodando em paralelo batem no bug conhecido do WPF (não thread-safe) em

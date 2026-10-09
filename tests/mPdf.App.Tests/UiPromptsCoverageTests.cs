@@ -62,6 +62,9 @@ public class UiPromptsCoverageTests
         // de `rasterizerFactory`/`documentHasText` (tipo Func/Action de namespace System com aridade !=
         // Action<string>, não mora em mPdf.App.Services).
         [("DocumentViewModel", "pdfADialog")] = "UiPrompts.CreatePdfADialog",
+        // Corrigir texto (2026-10-09): janela de correção -- resolvida LAZY no comando (o default é um
+        // placeholder que lança até a Task 4 ligar a view real; mesmo precedente de `pdfADialog`).
+        [("DocumentViewModel", "corrigirTextoDialog")] = "UiPrompts.CreateCorrigirTextoDialog",
         [("OrganizerViewModel", "dialogs")] = "UiPrompts.CreateFileDialog",
         [("OrganizerViewModel", "notifyInfo")] = "UiPrompts.NotifyInfo",
         [("MainViewModel", "annotationDialog")] = "UiPrompts.CreateAnnotationDialog",

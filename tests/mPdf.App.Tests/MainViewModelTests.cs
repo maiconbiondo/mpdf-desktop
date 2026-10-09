@@ -151,6 +151,20 @@ public class MainViewModelTests : IDisposable
         Assert.Equal("fixture-a4.pdf", vm.Documents[0].Title);
     }
 
+    [Fact] // PDF embrulhado em Base64: abre desembrulhado e a aba pede conserto
+    public async Task OpenPath_Base64WrappedFile_NeedsEnvelopeFix()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"mpdf-b64open-{Guid.NewGuid():N}.pdf");
+        File.WriteAllText(path, "\"" + Convert.ToBase64String(Fixtures.A4()) + "\"");
+        try
+        {
+            var vm = Vm();
+            await vm.OpenPath(path);
+            Assert.True(Assert.Single(vm.Documents).NeedsEnvelopeFix);
+        }
+        finally { TryDelete(path); }
+    }
+
     [Fact] // diálogo cancelado (null) não adiciona nada
     public void OpenFileCommand_DialogCancelled_AddsNothing()
     {

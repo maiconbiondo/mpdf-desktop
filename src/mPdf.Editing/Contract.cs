@@ -187,6 +187,45 @@ public sealed record OcrTextLayer(int PageIndex, int SourceWidthPx, int SourceHe
 /// é IGNORADO (nenhum operador de texto é gravado para ele).
 public sealed record OcrTextBox(string Text, double LeftPx, double TopPx, double WidthPx, double HeightPx);
 
+/// Família de fonte do "Corrigir texto" — mapeada para as fontes padrão-14 (Times/Helvetica/Courier).
+public enum TextFontFamily { Serif, SansSerif, Monospace }
+
+/// FRAME DE COORDENADAS do "Corrigir texto" (revisão final 2026-10-09): todas as coordenadas de
+/// `TextStyleProbe`, `TextCorrection` e do `areaPt` de `ProbeTextStyle` estão em PONTOS, relativas à
+/// origem (canto inferior-esquerdo) da CropBox da página — a página EXIBIDA, o mesmo frame das caixas
+/// de caractere do PDFium/Docnet que o App usa —, com orientação PDF (y para cima). O motor converte
+/// para o espaço do usuário (somando a origem da CropBox) antes de rodar o pdfSweep/escrever e
+/// converte de volta no resultado do probe. Sem /CropBox, vale a MediaBox.
+///
+/// Estilo do texto encontrado numa área (frame acima).
+/// `TokenText`/`TokenAreaPt` (rodada 2, só para texto INVISÍVEL — camada OCR; null no texto visível):
+/// os tokens OCR INTEIROS tocados pela área — cada glifo tocado puxa a sequência sem espaço do mesmo
+/// operador de texto, com a pontuação colada (ex.: "NOVEMBRO,") — unidos por espaço, e a área que eles
+/// ocupam (da linha de descida à de subida da fonte invisível). O App encaixa a seleção nesses tokens:
+/// as caixas de caractere do PDFium não separam tokens OCR colados (sem espaço sintetizado entre eles).
+/// Rodada 5 (só texto invisível): `NextTokenLeftPt` = início do próximo token OCR da MESMA linha (= borda
+/// esquerda da caixa OCR dele; null se a palavra é a última da linha) — a borda direita estrutural da área a
+/// limpar; `NeighbourBoxesPt` = caixas OCR dos tokens das linhas VIZINHAS que tocam a faixa vertical da
+/// palavra ([início, início do próximo token da linha dele] x [base, base + tamanho]) — pixels dentro delas
+/// pertencem à outra linha e não devem ser limpos.
+public sealed record TextStyleProbe(string Text, TextFontFamily Family, bool Bold, bool Italic,
+    double SizePt, uint ColorArgb, double BaselineYPt, double LeftXPt, double RightXPt, bool Invisible,
+    string? TokenText = null, PdfQuad? TokenAreaPt = null,
+    double? NextTokenLeftPt = null, IReadOnlyList<PdfQuad>? NeighbourBoxesPt = null);
+
+/// Pedido de correção (frame acima): remove tudo dentro de AreaPt (glifos, inclusive invisíveis de OCR, e pixels de
+/// imagem pintados com BackgroundArgb) e escreve NewText visível a partir de (LeftXPt, BaselineYPt).
+/// `MinOverlapRatio` (revisão final, rodada 2): null = qualquer glifo que TOQUE a área é removido (texto
+/// digital — comportamento original). Com valor (0..1), só sai o glifo cuja caixa fica pelo menos essa
+/// fração dentro da área (`CleanUpProperties.SetOverlapRatio` do pdfSweep) — usado na camada OCR, onde a
+/// descida da Helvetica invisível da linha vizinha invade a área e não pode ser apagada.
+/// `AreasPt` (rodada 5): quando não-nulo, a limpeza usa ESTES retângulos (ex.: a área menos as caixas OCR das
+/// linhas vizinhas, mais uma faixa no miolo da palavra para os glifos invisíveis dela) em vez de `AreaPt`;
+/// `AreaPt` continua sendo a área total (validada e usada como referência).
+public sealed record TextCorrection(int PageIndex, PdfQuad AreaPt, string NewText, TextFontFamily Family,
+    bool Bold, bool Italic, double SizePt, uint ColorArgb, double BaselineYPt, double LeftXPt, uint BackgroundArgb,
+    double? MinOverlapRatio = null, IReadOnlyList<PdfQuad>? AreasPt = null);
+
 /// Nível de conformidade PDF/A oferecido pela conversão "Salvar como PDF/A". Só os níveis "b"
 /// (fidelidade visual, sem exigência de estrutura/tags) — os "a" (acessíveis/marcados) não são
 /// fabricáveis a partir de uma página rasterizada.
@@ -660,6 +699,26 @@ public interface IPdfEditor
     byte[] CriarPdfADeImagens(
         IReadOnlyList<PdfAPaginaImagem> paginas, PdfANivel nivel, PdfAMetadados metadados,
         byte[]? fonteInvisivelTtf);
+
+    // --- Corrigir texto (2026-10-09): remoção real (pdfSweep) + texto novo ------------------------
+
+    /// Estilo do texto encontrado em `areaPt` (pontos, relativos à origem da CropBox — ver o bloco
+    /// "FRAME DE COORDENADAS" acima de `TextStyleProbe`) na página `pageIndex` (0-based);
+    /// null se não houver texto na área.
+    TextStyleProbe? ProbeTextStyle(byte[] pdf, int pageIndex, PdfQuad areaPt);
+
+    /// Remove DE VERDADE tudo dentro de `correction.AreaPt` (glifos — inclusive invisíveis de OCR — e
+    /// pixels de imagem, pintados com `BackgroundArgb`) e escreve `NewText` visível com fonte padrão-14.
+    /// Coordenadas relativas à origem da CropBox (ver `TextStyleProbe`). Anotações da página são
+    /// preservadas (o pdfSweep roda com `processAnnotations=false`).
+    /// Documento assinado -> `PdfSignedDocumentException`; página inválida ->
+    /// `ArgumentOutOfRangeException` pt-BR (mesma disciplina de `ApplyOcrTextLayer`).
+    /// Exceções: `ArgumentException` (área inválida), `PdfEditingException` (caracteres não suportados
+    /// pela fonte / falha de processamento), `PdfSignedDocumentException`, `PdfPasswordRequiredException`.
+    byte[] ApplyTextCorrection(byte[] pdf, TextCorrection correction);
+
+    /// Largura em pontos de `text` na fonte padrão-14 equivalente a (família, negrito, itálico, tamanho).
+    double MeasureTextWidth(TextFontFamily family, bool bold, bool italic, double sizePt, string text);
 }
 
 public static class PdfEditorFactory

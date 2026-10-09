@@ -753,6 +753,12 @@
         <GradientStop Color="#083EC1A7" Offset="1"/>
     </LinearGradientBrush>
 
+    <!-- Faixa informativa (azul) — ex.: PDF que veio codificado em Base64. -->
+    <LinearGradientBrush x:Key="Cor.FaixaInfo" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#1F4A90E2" Offset="0"/>
+        <GradientStop Color="#084A90E2" Offset="1"/>
+    </LinearGradientBrush>
+
     <!-- ───── Campo de entrada escuro (Plano 14 T3): superfície #1A1C29 (Cor.Superficie), usado pelos
          editores do painel "Campos" (FormPanel). Sem isto, um TextBox usa o template padrão do WPF
          (fundo branco de sistema) — gritante no painel escuro. KEYED (opt-in), nunca implícito, pra não

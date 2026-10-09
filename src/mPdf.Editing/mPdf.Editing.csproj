@@ -18,6 +18,19 @@
     <PackageReference Include="itext.bouncy-castle-adapter" Version="9.7.0">
       <PrivateAssets>compile</PrivateAssets>
     </PackageReference>
+    <!-- Corrigir texto (2026-10-09): pdfSweep (PdfCleaner) remove glifos/pixels de uma área. AGPL como o
+         iText. O pacote só traz lib/net461 (NU1701 esperado) — validado em net10 pela Task 1 (POC). -->
+    <PackageReference Include="itext.pdfsweep" Version="5.0.7">
+      <PrivateAssets>compile</PrivateAssets>
+    </PackageReference>
+    <!-- itext.cleanup (net461) referencia System.Drawing 4.0.0.0, que no net10 encaminha para
+         System.Drawing.Common. Sem este pacote o pdfSweep falha (FileNotFoundException) ao limpar áreas
+         com imagem fora do runtime WindowsDesktop (ex.: testes net10.0). Windows-only, licença MIT. -->
+    <PackageReference Include="System.Drawing.Common" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="mPdf.Editing.Tests" />
   </ItemGroup>
 
   <ItemGroup>

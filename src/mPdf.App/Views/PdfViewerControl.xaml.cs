@@ -506,6 +506,38 @@ public partial class PdfViewerControl : UserControl
         if (e.NewValue is PageViewModel newPage) newPage.OnRealized();
     }
 
+    // Corrigir texto (2026-10-09): menu de contexto da página (PdfViewerControl.xaml). O ContextMenu vive
+    // num HwndSource próprio, fora da árvore visual — por isso handlers, não bindings. O DocumentViewModel
+    // é o DataContext DESTE controle, mesmo acesso de Page_MouseLeftButtonDown.
+    private void PageContextMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        var menu = (ContextMenu)sender;
+        var (corrigir, copiar) = EstadoMenuPagina(DataContext as DocumentViewModel);
+        ((MenuItem)menu.Items[0]).IsEnabled = corrigir;
+        ((MenuItem)menu.Items[1]).IsEnabled = copiar;
+    }
+
+    /// Itens habilitados do menu da página: "Corrigir texto" segue o CanExecute do comando; "Copiar"
+    /// exige seleção de texto ativa.
+    internal static (bool Corrigir, bool Copiar) EstadoMenuPagina(DocumentViewModel? doc) =>
+        (doc?.CorrigirTextoCommand.CanExecute(null) == true, doc?.HasActiveSelection == true);
+
+    private void CorrigirTexto_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is DocumentViewModel doc && doc.CorrigirTextoCommand.CanExecute(null))
+            doc.CorrigirTextoCommand.Execute(null);
+    }
+
+    private void CopiarTexto_Click(object sender, RoutedEventArgs e) => CopiarSelecao(DataContext as DocumentViewModel);
+
+    /// Mesmo comportamento de MainWindow.CopySelectedText (Ctrl+C).
+    internal static void CopiarSelecao(DocumentViewModel? doc)
+    {
+        if (doc?.SelectedText is not { Length: > 0 } text) return;
+        try { Clipboard.SetText(text); }
+        catch (System.Runtime.InteropServices.ExternalException) { /* clipboard preso por outro app — não derrubar o app por causa de uma cópia */ }
+    }
+
     // Seleção de texto (Task 3) + ferramenta de anotação/hit-test/arrastar (Task 7, Plano 3a):
     // mouse-down decide entre 4 caminhos, nesta ordem —
     //   1) ferramenta de COLOCAÇÃO ativa (Nota/Texto): o clique COLOCA uma anotação nova (one-shot, sem

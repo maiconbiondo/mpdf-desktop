@@ -218,6 +218,12 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// FÁBRICA), mantido por ser inofensivo: `SalvarComoPdfACoreAsync` (usado pelos testes desta task)
     /// nunca toca este campo, e o comando resolve o default no instante em que o diálogo é preciso.
     private readonly IPdfADialogService? _pdfADialog;
+
+    /// Corrigir texto (2026-10-09): janela de correção. Guardada CRUA e resolvida LAZY no comando
+    /// (`??= UiPrompts.CreateCorrigirTextoDialog()`), não no ctor — mesmo precedente de `_pdfADialog`
+    /// acima: até a Task 4 ligar a view real, o default de produção é um placeholder que LANÇA já na
+    /// fábrica; resolvê-lo no ctor quebraria a construção de TODO DocumentViewModel em produção.
+    private ICorrigirTextoDialogService? _corrigirTextoDialog;
     /// Diálogo "Salvar como…" para o arquivo NOVO do PDF/A. Seam PRÓPRIO (não `_dialogs`/`IFileDialogService`
     /// acima) — exemplar `DialogoImpressao.SalvarPdf_Click` (`new FileDialogService().PickPdfToSave(...)`
     /// direto, fora da seam UiPrompts): mesma forma aqui, só que injetável, pra testes de orquestração
@@ -642,6 +648,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         FlattenFormCommand.NotifyCanExecuteChanged();
         // Task 4 (Plano 15): RecognizeTextCommand — mesmo gate CanEdit (assinado -> "Editar uma cópia").
         RecognizeTextCommand.NotifyCanExecuteChanged();
+        // Corrigir texto (2026-10-09): mesmo gate CanEdit.
+        CorrigirTextoCommand.NotifyCanExecuteChanged();
     }
 
     /// Espelho exato de `OnIsSignedDocumentChanged` acima — mesmas notificações, mesmo motivo (`CanEdit`
@@ -676,6 +684,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         SignCommand.NotifyCanExecuteChanged();
         // Task 4 (Plano 15): RecognizeTextCommand compõe CanEdit (que já compõe !IsXfaForm) — mesmo disparo.
         RecognizeTextCommand.NotifyCanExecuteChanged();
+        // Corrigir texto (2026-10-09): idem.
+        CorrigirTextoCommand.NotifyCanExecuteChanged();
     }
 
     public ObservableCollection<PageViewModel> Pages { get; } = [];
@@ -798,6 +808,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     {
         OnPropertyChanged(nameof(HasActiveSelection));
         ApplyMarkupCommand.NotifyCanExecuteChanged();
+        // Corrigir texto (2026-10-09): CanCorrigirTexto também compõe HasActiveSelection.
+        CorrigirTextoCommand.NotifyCanExecuteChanged();
     }
 
     public DocumentViewModel(
@@ -839,7 +851,10 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         Action<string, byte[]>? writeAllBytes = null,
         // Fluxo Adobe de assinatura: abre o documento ASSINADO recém-salvo numa aba nova. Default no-op
         // (headless/testes); MainViewModel injeta `OpenPath`.
-        Func<string, Task>? openSavedDocument = null)
+        Func<string, Task>? openSavedDocument = null,
+        // Corrigir texto (2026-10-09): janela de correção (seam UiPrompts) — guardada CRUA e resolvida
+        // no comando (ver doc XML do campo `_corrigirTextoDialog`).
+        ICorrigirTextoDialogService? corrigirTextoDialog = null)
     {
         Session = session;
         _editor = editor ?? PdfEditorFactory.Create();
@@ -884,6 +899,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         _pickPdfToSave = pickPdfToSave ?? new FileDialogService().PickPdfToSave;
         _writeAllBytes = writeAllBytes ?? File.WriteAllBytes;
         _openSavedDocument = openSavedDocument ?? (_ => Task.CompletedTask);
+        _corrigirTextoDialog = corrigirTextoDialog; // resolvido LAZY no comando — ver doc XML do campo
         // SEAM (Task 3, Plano 3a — "o lugar mais provável de quebrar em silêncio" do Apply): a forma
         // ANTIGA, `new RenderScheduler(session.Renderer.RenderPage)`, é uma conversão de GRUPO DE
         // MÉTODO — ela avalia `session.Renderer` UMA VEZ, na hora desta linha, e produz um delegate
@@ -923,6 +939,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         // em Dispose — ver lá.
         Session.Applied += OnSessionApplied;
         Session.DirtyChanged += OnSessionDirtyChanged;
+        Session.NeedsEnvelopeFixChanged += OnSessionNeedsEnvelopeFixChanged;
         Session.FilePathChanged += OnSessionFilePathChanged;
         // Task 4 (Plano 3a): mantém CanUndo/CanRedo (e o CanExecute de UndoCommand/RedoCommand)
         // sincronizados com a pilha de desfazer/refazer da sessão. Desinscrito em Dispose — ver lá.
@@ -1099,6 +1116,28 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
 
     private void OnSessionFilePathChanged(object? sender, EventArgs e) => OnPropertyChanged(nameof(Title));
 
+    private void OnSessionNeedsEnvelopeFixChanged(object? sender, EventArgs e) => OnPropertyChanged(nameof(NeedsEnvelopeFix));
+
+    /// PDF que veio codificado em Base64 (download tipo "Alvará Online"): abriu desembrulhado, falta regravar.
+    public bool NeedsEnvelopeFix => Session.NeedsEnvelopeFix;
+
+    internal const string ArquivoConsertadoNotice = "Arquivo consertado — agora ele abre em qualquer programa.";
+    internal const string AlteracoesNaoSalvasNotice = " Suas alterações ainda não foram salvas.";
+
+    /// Guarda contra duplo clique: `AsyncRelayCommand` com `AllowConcurrentExecutions=false` (padrão do
+    /// toolkit) deixa `CanExecute` falso enquanto a gravação roda (teste
+    /// ConsertarArquivo_EmAndamento_ComandoDesabilitado); depois de consertado, nova execução é no-op.
+    [RelayCommand]
+    private async Task ConsertarArquivo()
+    {
+        if (!Session.NeedsEnvelopeFix) return;
+        try { await Task.Run(Session.FixEnvelopeOnDisk); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { _notifyError($"Não foi possível consertar o arquivo: {ex.Message}"); return; }
+        // O conserto grava o PDF ORIGINAL desembrulhado; edições feitas nesta sessão continuam só em memória.
+        _notifyInfo(IsDirty ? ArquivoConsertadoNotice + AlteracoesNaoSalvasNotice : ArquivoConsertadoNotice);
+    }
+
     /// Texto EXATO do brief (Task 1, Plano 5) — teto de disco do histórico de desfazer/refazer atingido.
     private const string UndoHistoryLimitReachedNotice =
         "Limite de histórico atingido; as edições mais antigas não podem mais ser desfeitas.";
@@ -1142,6 +1181,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         SignCommand.NotifyCanExecuteChanged();
         // Task 4 (Plano 15): RecognizeTextCommand compõe CanEdit && !Session.IsEditInFlight — mesma disciplina.
         RecognizeTextCommand.NotifyCanExecuteChanged();
+        // Corrigir texto (2026-10-09): CanCorrigirTexto também compõe !Session.IsEditInFlight.
+        CorrigirTextoCommand.NotifyCanExecuteChanged();
     }
 
     // Task 4 (Plano 3a): ↶ Desfazer (Ctrl+Z) / ↷ Refazer (Ctrl+Y) — comandos por DOCUMENTO (cada aba
@@ -3057,6 +3098,128 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         finally { Session.EndEdit(); }
     }
 
+    // ---- Corrigir texto (2026-10-09) ------------------------------------------------------------------
+
+    /// Mesmo gate de `CanApplyMarkup` (precisa de seleção ativa + edição permitida + nenhuma edição em
+    /// voo). Reavaliado em `NotifySelectionChanged`/`OnIsSignedDocumentChanged`/`OnIsXfaFormChanged`/
+    /// `OnSessionEditInFlightChanged` — os mesmos sites de `ApplyMarkupCommand`/`RecognizeTextCommand`.
+    private bool CanCorrigirTexto() => CanEdit && HasActiveSelection && !Session.IsEditInFlight;
+
+    /// "Corrigir texto": troca o trecho selecionado (UMA linha) por um texto novo no mesmo estilo.
+    /// Fluxo: funil `TryBeginEdit` -> gate de rotação (mesmo de `ApplyMarkup`) -> área = retângulo da
+    /// seleção -> detecta o estilo (`ProbeTextStyle`) e a cor de fundo (mediana da moldura em volta,
+    /// render 2x via `Session.Renderer`, fora da UI thread) -> janela pré-preenchida, com prévia
+    /// best-effort -> `ApplyTextCorrection` fora da UI -> `TryApplyEdit` (undo/atômico). A seleção é
+    /// limpa por `OnSessionApplied` (mesmo ACHADO documentado em `ApplyMarkup` — nenhuma chamada
+    /// explícita a `ClearSelection()` aqui).
+    [RelayCommand(CanExecute = nameof(CanCorrigirTexto))]
+    private Task CorrigirTexto() => CorrigirTextoCoreAsync();
+
+    internal async Task CorrigirTextoCoreAsync()
+    {
+        if (_pageWithSelection is not { } page) return; // defesa: CanExecute já deveria impedir
+        if (!Session.TryBeginEdit()) return;
+        try
+        {
+            // Tudo que vem da SELEÇÃO é capturado AQUI, antes do 1º await: `IsEditInFlight` só desabilita
+            // o comando — o usuário continua podendo mudar/limpar a seleção enquanto o probe/render rodam.
+            // Daqui em diante só estes locais são usados (nunca `SelectedText`/`page.*` de novo).
+            var linhas = page.SelectionPointRects.ToList();
+            string? textoSelecionado = page.SelectedText;
+            var textPage = page.TextPageCache;
+            int pageIndex = page.Index;
+            byte[] pdfAntes = Session.Snapshot;
+
+            await EnsureRotationCacheFreshAsync();
+            if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
+            if (linhas.Count == 0) return; // seleção vazia nunca deveria habilitar o comando
+            if (linhas.Count != 1) { _notifyError("Selecione um trecho de uma linha só."); return; }
+            var r = linhas[0];
+            // Rodada 4: glifo com caixa do PDFium de largura/altura zero ("l", "-", "|" — Docnet arredonda para
+            // inteiro) daria uma área degenerada ("Área de correção inválida"): alarga 0,5 pt de cada lado.
+            var area = AreaSelecao.SemDegenerar(new PdfQuad(r.X, r.Y, r.X + r.Width, r.Y + r.Height));
+            var size = Session.PageSizes[pageIndex];
+
+            // Camada OCR (texto invisível): a seleção é encaixada nos tokens OCR inteiros (pontuação colada
+            // inclusa) e o texto atual da janela passa a ser o do token — ver PrepararCorrecao.
+            TextStyleProbe? probe;
+            try
+            {
+                var areaSel = area; var textoSel = textoSelecionado;
+                (probe, area, textoSelecionado) = await Task.Run(() => PrepararCorrecao.Sondar(_editor, pdfAntes, pageIndex, areaSel, textoSel));
+            }
+            catch (PdfEditingException ex) { _notifyError(ex.Message); return; }
+            catch (ArgumentException ex) { _notifyError(ex.Message); return; }
+            if (probe is null) { _notifyError("Não foi encontrado texto nesse trecho."); return; }
+
+            // Render 2x (best-effort) -> fundo (mediana da moldura) e, se o texto é a camada OCR invisível,
+            // a área cresce até a TINTA real da palavra escaneada e tamanho/base/x saem da tinta (revisão
+            // final C1 — ver PlanejarCorrecao). Texto digital: área = seleção, estilo do probe (inalterado).
+            // Qualquer falha do render cai no BRANCO + seleção + probe (o probe já decidiu que há texto).
+            var estilo = probe; // não-nulo daqui em diante (capturado pela prévia)
+            PlanoCorrecao plano;
+            try
+            {
+                const double escala = 2.0;
+                // Renderer CORRENTE (o pino de edição impede um Apply trocá-lo no meio); as chamadas ao
+                // PDFium são serializadas internamente (PdfRenderLock).
+                var renderer = Session.Renderer;
+                var render = await Task.Run(() => renderer.RenderPage(pageIndex, escala));
+                plano = PlanejarCorrecao.Calcular(estilo, area, render, size.HeightPt, escala);
+            }
+            catch (Exception) { plano = PlanejarCorrecao.Calcular(estilo, area, null, size.HeightPt, 2.0); }
+            area = plano.AreaPt;
+
+            var pedido = new CorrigirTextoPedido(textoSelecionado ?? estilo.Text, estilo.Family, estilo.Bold, estilo.Italic,
+                plano.TamanhoPt, estilo.Invisible ? 0xFF000000u : estilo.ColorArgb);
+            TextCorrection Montar(CorrigirTextoResultado res) => new(pageIndex, area, res.TextoNovo, res.Familia,
+                res.Negrito, res.Italico, res.TamanhoPt, res.CorArgb, plano.BaselineYPt, plano.LeftXPt, plano.FundoArgb,
+                plano.MinOverlapRatio, plano.AreasPt);
+
+            // Chamada pela janela FORA da UI thread: não toca WPF nem `Session.Renderer` — renderiza a
+            // cópia corrigida num renderer PRÓPRIO (descartado). Best-effort: nunca lança.
+            CorrigirTextoPrevia Previa(CorrigirTextoResultado res)
+            {
+                string? aviso = null;
+                try
+                {
+                    double largura = _editor.MeasureTextWidth(res.Familia, res.Negrito, res.Italico, res.TamanhoPt, res.TextoNovo);
+                    double novoRight = plano.LeftXPt + largura;
+                    aviso = textPage is null ? null : AvisoSobreposicao.Calcular(textPage, area, novoRight, size.WidthPt);
+                    byte[] depois = _editor.ApplyTextCorrection(pdfAntes, Montar(res));
+                    using var rr = new PdfDocumentRenderer(depois);
+                    const double s = 2.0;
+                    var full = rr.RenderPage(pageIndex, s);
+                    double x0 = Math.Max(0, area.LeftPt - 20), x1 = Math.Min(size.WidthPt, Math.Max(area.RightPt, novoRight) + 20);
+                    double yTop = size.HeightPt - (area.TopPt + 10), yBot = size.HeightPt - (area.BottomPt - 10);
+                    return new CorrigirTextoPrevia(Recorte.De(full, (int)(x0 * s), (int)(yTop * s), (int)((x1 - x0) * s), (int)((yBot - yTop) * s)), aviso);
+                }
+                catch (Exception) { return new CorrigirTextoPrevia(null, aviso); } // prévia é best-effort
+            }
+
+            _corrigirTextoDialog ??= UiPrompts.CreateCorrigirTextoDialog();
+            var resultado = _corrigirTextoDialog.Pedir(pedido, Previa);
+            if (resultado is null || resultado == ResultadoDe(pedido)) return; // cancelou ou não mudou nada
+
+            byte[] pdfDepois;
+            try { pdfDepois = await Task.Run(() => _editor.ApplyTextCorrection(pdfAntes, Montar(resultado))); }
+            catch (PdfSignedDocumentException)
+            {
+                _notifyError("Este documento está assinado — a edição foi bloqueada para preservar a assinatura. Use \"Editar uma cópia\".");
+                return;
+            }
+            catch (PdfEditingException ex) { _notifyError(ex.Message); return; }
+            catch (ArgumentException ex) { _notifyError(ex.Message); return; } // área inválida (pt-BR do editor)
+
+            // Session.Applied -> OnSessionApplied limpa a seleção (ver ACHADO em ApplyMarkup).
+            TryApplyEdit(pdfDepois);
+        }
+        finally { Session.EndEdit(); }
+    }
+
+    private static CorrigirTextoResultado ResultadoDe(CorrigirTextoPedido p) =>
+        new(p.TextoAtual, p.Familia, p.Negrito, p.Italico, p.TamanhoPt, p.CorArgb);
+
     // ---- Task 4 (Plano 15): Reconhecer texto (OCR) --------------------------------------------------
 
     /// Mesmo gate dos outros comandos MUTADORES (`CanEdit && !Session.IsEditInFlight`): documento
@@ -4639,6 +4802,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         // ObservableCollection sem ninguém observando — inofensivo, mas desnecessário e ruidoso).
         Session.Applied -= OnSessionApplied;
         Session.DirtyChanged -= OnSessionDirtyChanged;
+        Session.NeedsEnvelopeFixChanged -= OnSessionNeedsEnvelopeFixChanged;
         Session.FilePathChanged -= OnSessionFilePathChanged;
         Session.CanUndoRedoChanged -= OnSessionCanUndoRedoChanged;
         Session.UndoHistoryLimitReached -= OnSessionUndoHistoryLimitReached;

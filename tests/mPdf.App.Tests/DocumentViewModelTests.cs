@@ -58,6 +58,25 @@ internal sealed class FakePdfEditor : IPdfEditor
         return Fixtures.ThirtyPages();
     }
 
+    // Corrigir texto: o fake devolve o que o teste configurar e registra a chamada.
+    public TextStyleProbe? ProbeResult { get; set; }
+    public TextCorrection? LastCorrection { get; private set; }
+    public int ApplyTextCorrectionCallCount { get; private set; }
+    public Exception? ThrowOnApplyTextCorrection { get; set; }
+    public double MeasureResult { get; set; } = 10;
+    /// Gancho opcional rodado DENTRO de ProbeTextStyle (thread do pool) — simula o usuário mexendo na
+    /// seleção enquanto o probe roda.
+    public Action? OnProbeTextStyle { get; set; }
+    public TextStyleProbe? ProbeTextStyle(byte[] pdf, int pageIndex, PdfQuad areaPt) { OnProbeTextStyle?.Invoke(); return ProbeResult; }
+    public byte[] ApplyTextCorrection(byte[] pdf, TextCorrection correction)
+    {
+        ApplyTextCorrectionCallCount++;
+        LastCorrection = correction;
+        if (ThrowOnApplyTextCorrection is { } ex) throw ex;
+        return Fixtures.ThirtyPages();
+    }
+    public double MeasureTextWidth(TextFontFamily family, bool bold, bool italic, double sizePt, string text) => MeasureResult;
+
     /// Resultado fixo devolvido por `ReadAnnotations` — populado pelos testes que precisam de um cache
     /// `AnnotationsByPage` sintético (hit-test/seleção). `null` (default) preserva o comportamento
     /// anterior (`NotSupportedException`) para os testes que nunca chamam `ReadAnnotations` de verdade.

@@ -115,6 +115,21 @@
                     <Border.Effect>
                         <DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.4"/>
                     </Border.Effect>
+                    <!-- Corrigir texto (2026-10-09): menu de contexto da página. Fica FORA da árvore visual
+                         (HwndSource próprio), então habilitar/agir é feito nos handlers do code-behind
+                         (PageContextMenu_Opened etc.), não por binding. O clique direito NÃO limpa a seleção
+                         (só Page_MouseLeftButtonDown chama ClearSelection) — é isso que permite agir nela.
+                         Cores explícitas: o MenuItem global usa Cor.TextoPrimario, que no tema escuro
+                         sumiria sobre o fundo claro padrão do ContextMenu do Windows. -->
+                    <Border.ContextMenu>
+                        <ContextMenu Opened="PageContextMenu_Opened"
+                                     Background="{DynamicResource Cor.Superficie}"
+                                     BorderBrush="{DynamicResource Cor.Borda}"
+                                     Foreground="{DynamicResource Cor.TextoPrimario}">
+                            <MenuItem x:Name="CorrigirTextoMenuItem" Header="Corrigir texto" Click="CorrigirTexto_Click"/>
+                            <MenuItem x:Name="CopiarTextoMenuItem" Header="Copiar" Click="CopiarTexto_Click"/>
+                        </ContextMenu>
+                    </Border.ContextMenu>
                     <!-- Grid: mesmo espaço do Image (que preenche o Border via Stretch="Fill") também
                          hospeda o overlay de seleção, sobreposto por cima -->
                     <Grid>

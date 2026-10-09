@@ -832,7 +832,7 @@ internal sealed class PdfEditor : IPdfEditor
     /// (revisão pós-M11, rodada 2 — item 1): `PdfSignedDocumentException`, não mais a
     /// `InvalidOperationException` genérica — a Task 5 precisa capturar ESTE caso especificamente
     /// (para oferecer "Editar uma cópia") sem confundir com outras causas de InvalidOperationException.
-    private static void GuardAgainstSignedDocument(PdfDocument doc)
+    internal static void GuardAgainstSignedDocument(PdfDocument doc)
     {
         if (CountSignatures(doc) > 0)
             throw new PdfSignedDocumentException(
@@ -905,7 +905,7 @@ internal sealed class PdfEditor : IPdfEditor
     /// anotação (só depois de abrir o doc, que é o mínimo necessário para saber quantas páginas ele
     /// tem; ver task-2-report.md, seção do fix, para a justificativa dessa leitura de "antes de tocar
     /// o iText").
-    private static void ValidatePageIndex(PdfDocument doc, int pageIndex)
+    internal static void ValidatePageIndex(PdfDocument doc, int pageIndex)
     {
         int pageCount = doc.GetNumberOfPages();
         if (pageIndex < 0 || pageIndex >= pageCount)
@@ -925,7 +925,7 @@ internal sealed class PdfEditor : IPdfEditor
                 $"Índice de inserção {atIndex} fora do intervalo válido (0 a {pageCount}).");
     }
 
-    private static PdfPasswordRequiredException WrapPassword(BadPasswordException ex) =>
+    internal static PdfPasswordRequiredException WrapPassword(BadPasswordException ex) =>
         new("PDF protegido por senha — não é possível editar sem a senha correta.", ex);
 
     /// HIPÓTESE original do rider (I4): "outro PdfException -> PdfEditingException". Reconciliado
@@ -939,7 +939,7 @@ internal sealed class PdfEditor : IPdfEditor
     /// — nem toda `ITextException` significa arquivo corrompido (podia ser um limite de memória, uma
     /// referência cruzada cíclica, etc.); "Não foi possível processar o PDF." é honesta sobre o que
     /// de fato sabemos, e a causa real sobrevive em `InnerException` para quem precisar dela.
-    private static PdfEditingException WrapGeneric(ITextException ex) =>
+    internal static PdfEditingException WrapGeneric(ITextException ex) =>
         new("Não foi possível processar o PDF.", ex);
 
     /// Task 8 (Plano 3a): Ink/Rectangle/Line entraram no mapeamento (Square -> Rectangle, mesma
@@ -1170,7 +1170,7 @@ internal sealed class PdfEditor : IPdfEditor
 
     /// Nome da fonte-base padrão-14 (`StandardFonts.*`) para a appearance stream `/AP` do FreeText,
     /// escolhido por família + negrito + itálico. O PDFium renderiza as 14 nativas sem embutir.
-    private static string StandardFontNameFor(string? family, bool bold, bool italic) =>
+    internal static string StandardFontNameFor(string? family, bool bold, bool italic) =>
         NormalizeFamily(family) switch
         {
             FontFamilyKind.Times => (bold, italic) switch
@@ -1926,6 +1926,11 @@ internal sealed class PdfEditor : IPdfEditor
         catch (ITextException ex) { throw WrapGeneric(ex); }
         return output.ToArray();
     }
+
+    // Corrigir texto (2026-10-09): implementação em TextCorrectionEngine (pdfSweep isolado lá).
+    public TextStyleProbe? ProbeTextStyle(byte[] pdf, int pageIndex, PdfQuad areaPt) => TextCorrectionEngine.Probe(pdf, pageIndex, areaPt);
+    public byte[] ApplyTextCorrection(byte[] pdf, TextCorrection correction) => TextCorrectionEngine.Apply(pdf, correction);
+    public double MeasureTextWidth(TextFontFamily family, bool bold, bool italic, double sizePt, string text) => TextCorrectionEngine.Measure(family, bold, italic, sizePt, text);
 
     /// Task 3/4 (SDD "Salvar como PDF/A"): compõe uma imagem por página num PDF/A-1b/2b/3b válido
     /// (OutputIntent sRGB embutido, título/autor sincronizados no XMP pelo próprio `PdfADocument`).

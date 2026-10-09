@@ -229,6 +229,38 @@ public sealed class DocumentSession : IDisposable
         EditInFlightChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    // PDF Base64 desembrulhado (2026-10-09): ver PdfEnvelope. Os bytes ORIGINAIS decodificados ficam
+    // guardados pro "Consertar arquivo" regravar no disco sem levar edições não salvas.
+    private byte[]? _envelopePdf;
+
+    /// true quando o arquivo aberto era um PDF codificado em Base64 e ainda não foi consertado/salvo.
+    public bool NeedsEnvelopeFix { get; private set; }
+    public event EventHandler? NeedsEnvelopeFixChanged;
+
+    /// Regrava no FilePath os bytes PDF decodificados ORIGINAIS (não as edições não salvas). Escrita
+    /// atômica, sem .bak (o original era o mesmo conteúdo, só codificado).
+    public void FixEnvelopeOnDisk()
+    {
+        if (!NeedsEnvelopeFix || _envelopePdf is null) return;
+        AtomicWrite(FilePath, _envelopePdf, null);
+        ClearEnvelopeFix();
+    }
+
+    private void ClearEnvelopeFix()
+    {
+        if (!NeedsEnvelopeFix) return;
+        NeedsEnvelopeFix = false; _envelopePdf = null;
+        NeedsEnvelopeFixChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static DocumentSession Create(string path, byte[] bytes, long maxRamBytes, long maxSpillBytes)
+    {
+        byte[]? envelope = PdfEnvelope.TryUnwrap(bytes, out var unwrapped) ? unwrapped : null;
+        var session = new DocumentSession(path, envelope ?? bytes, maxRamBytes, maxSpillBytes);
+        if (envelope is not null) { session._envelopePdf = envelope; session.NeedsEnvelopeFix = true; }
+        return session;
+    }
+
     private DocumentSession(string path, byte[] snapshot, long maxRamBytes, long maxSpillBytes)
     {
         FilePath = path;
@@ -272,7 +304,7 @@ public sealed class DocumentSession : IDisposable
     {
         if (!File.Exists(path)) throw new FileNotFoundException("Arquivo não encontrado.", path);
         // ReadAllBytes não deixa handle aberto
-        return new DocumentSession(path, File.ReadAllBytes(path), maxRamBytes, maxSpillBytes);
+        return Create(path, File.ReadAllBytes(path), maxRamBytes, maxSpillBytes);
     }
 
     /// Caminho usado pelo app (Task 7): leitura assíncrona do arquivo + construção do renderer (parse
@@ -290,7 +322,7 @@ public sealed class DocumentSession : IDisposable
     {
         if (!File.Exists(path)) throw new FileNotFoundException("Arquivo não encontrado.", path);
         var bytes = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
-        return await Task.Run(() => new DocumentSession(path, bytes, maxRamBytes, maxSpillBytes), ct).ConfigureAwait(false);
+        return await Task.Run(() => Create(path, bytes, maxRamBytes, maxSpillBytes), ct).ConfigureAwait(false);
     }
 
     /// CROSS-REF (rider, revisão pós-Task 4): edições de USUÁRIO devem usar `ApplyEdit` (logo abaixo),
@@ -421,6 +453,7 @@ public sealed class DocumentSession : IDisposable
         AtomicWrite(FilePath, Snapshot, createBackup ? FilePath + ".bak" : null);
         _hasSavedOnce = true;
         MarkSaved();
+        ClearEnvelopeFix();
     }
 
     /// Grava o snapshot ATUAL em `path` (destino NOVO ou existente) — escrita atômica SIMPLES, sem
@@ -435,6 +468,7 @@ public sealed class DocumentSession : IDisposable
         FilePath = path;
         FilePathChanged?.Invoke(this, EventArgs.Empty);
         MarkSaved();
+        ClearEnvelopeFix();
     }
 
     /// Comita uma assinatura recém-produzida (Task 3, Plano 4) — o ÚNICO caminho pelo qual um documento
@@ -493,6 +527,7 @@ public sealed class DocumentSession : IDisposable
             newRenderer.Dispose();
             throw;
         }
+        ClearEnvelopeFix(); // o arquivo em disco agora é o PDF assinado — "Consertar" não pode sobrescrevê-lo
 
         var oldRenderer = Renderer;
         Snapshot = signedBytes;

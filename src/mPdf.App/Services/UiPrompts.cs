@@ -62,6 +62,10 @@ public static class UiPrompts
     public static Func<IAnnotationTextDialogService> CreateAnnotationDialog { get; set; } =
         () => new AnnotationTextDialogService();
 
+    /// Corrigir texto (2026-10-09): janela de correção (<see cref="CorrigirTextoDialogService"/>).
+    public static Func<ICorrigirTextoDialogService> CreateCorrigirTextoDialog { get; set; }
+        = () => new CorrigirTextoDialogService();
+
     /// <summary>Janela "Juntar documentos" (<see cref="MergeDialogService"/>).</summary>
     public static Func<IMergeDialogService> CreateMergeDialog { get; set; } = () => new MergeDialogService();
 

@@ -136,6 +136,8 @@ public class UiPromptsGuardTests
         AssertActionSwapped(UiPrompts.DocumentNotifyError, nameof(UiPrompts.DocumentNotifyError));
         AssertFactorySwapped<ThrowingFileDialogService>(() => UiPrompts.CreateFileDialog(), nameof(UiPrompts.CreateFileDialog));
         AssertFactorySwapped<ThrowingAnnotationTextDialogService>(() => UiPrompts.CreateAnnotationDialog(), nameof(UiPrompts.CreateAnnotationDialog));
+        // Corrigir texto (2026-10-09):
+        AssertFactorySwapped<ThrowingCorrigirTextoDialogService>(() => UiPrompts.CreateCorrigirTextoDialog(), nameof(UiPrompts.CreateCorrigirTextoDialog));
         AssertFactorySwapped<ThrowingMergeDialogService>(() => UiPrompts.CreateMergeDialog(), nameof(UiPrompts.CreateMergeDialog));
         AssertFactorySwapped<ThrowingSplitDialogService>(() => UiPrompts.CreateSplitDialog(), nameof(UiPrompts.CreateSplitDialog));
         AssertFactorySwapped<ThrowingConfirmCloseService>(() => UiPrompts.CreateConfirmClose(), nameof(UiPrompts.CreateConfirmClose));

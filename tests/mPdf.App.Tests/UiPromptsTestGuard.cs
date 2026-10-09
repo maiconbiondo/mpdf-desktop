@@ -53,6 +53,8 @@ internal static class UiPromptsTestGuard
         UiPrompts.DocumentNotifyError = _ => throw Guard(nameof(UiPrompts.DocumentNotifyError), "um Action<string> fake");
         UiPrompts.CreateFileDialog = () => new ThrowingFileDialogService();
         UiPrompts.CreateAnnotationDialog = () => new ThrowingAnnotationTextDialogService();
+        // Corrigir texto (2026-10-09):
+        UiPrompts.CreateCorrigirTextoDialog = () => new ThrowingCorrigirTextoDialogService();
         UiPrompts.CreateMergeDialog = () => new ThrowingMergeDialogService();
         UiPrompts.CreateSplitDialog = () => new ThrowingSplitDialogService();
         UiPrompts.CreateConfirmClose = () => new ThrowingConfirmCloseService();
@@ -114,6 +116,12 @@ internal sealed class ThrowingAnnotationTextDialogService : IAnnotationTextDialo
 
     public AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null) =>
         throw UiPromptsTestGuard.Guard(nameof(UiPrompts.CreateAnnotationDialog), "um IAnnotationTextDialogService fake");
+}
+
+internal sealed class ThrowingCorrigirTextoDialogService : ICorrigirTextoDialogService
+{
+    public CorrigirTextoResultado? Pedir(CorrigirTextoPedido pedido, Func<CorrigirTextoResultado, CorrigirTextoPrevia> previa) =>
+        throw UiPromptsTestGuard.Guard(nameof(UiPrompts.CreateCorrigirTextoDialog), "um ICorrigirTextoDialogService fake");
 }
 
 internal sealed class ThrowingMergeDialogService : IMergeDialogService
