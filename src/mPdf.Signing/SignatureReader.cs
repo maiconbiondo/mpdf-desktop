@@ -124,7 +124,10 @@ internal static class SignatureReader
         // PdfEditor.BuildFormFieldData) -> sem página pra rolar, trata como "sem carimbo" por inteiro.
         if (pageIndex is null) return (null, null);
 
-        return (pageIndex, new PdfQuad(rect.GetLeft(), rect.GetBottom(), rect.GetRight(), rect.GetTop()));
+        // Frame EXIBIDO (fix/markup-cropbox): relativo à origem da CropBox ∩ MediaBox, o frame em que o App
+        // desenha o destaque — mesmo `PageFrame` da escrita (ApplyVisibleStamp) e de AnnotationData.
+        var (ox, oy) = PageFrame.DisplayedOrigin(page!);
+        return (pageIndex, new PdfQuad(rect.GetLeft() - ox, rect.GetBottom() - oy, rect.GetRight() - ox, rect.GetTop() - oy));
     }
 
     /// P=2 (`FormsAndSignatures`) é o único nível que este motor grava (`PadesSigningEngine.Sign`) —

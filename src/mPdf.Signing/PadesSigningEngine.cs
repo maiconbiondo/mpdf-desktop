@@ -16,6 +16,7 @@ using iText.Layout.Element;
 using iText.Layout.Properties;
 using iText.Layout.Renderer;
 using iText.Signatures;
+using mPdf.Editing;
 
 namespace mPdf.Signing;
 
@@ -122,7 +123,8 @@ internal sealed class PadesSigningEngine : ISigningEngine
 
             if (request.Stamp is { } stamp)
                 ApplyVisibleStamp(props, stamp, request.Certificate, request.Reason, request.Location,
-                    inspection.StampPageRotation, inspection.StampPageMediaW, inspection.StampPageMediaH);
+                    inspection.StampPageRotation, inspection.StampPageMediaW, inspection.StampPageMediaH,
+                    inspection.StampPageOriginX, inspection.StampPageOriginY);
 
             padesSigner.SignWithBaselineBProfile(props, chain, signature);
             return output.ToArray();
@@ -170,7 +172,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
     /// hipóteses ficam truncados com "..." (nunca um comportamento pior que uma linha cortada).
     private static void ApplyVisibleStamp(
         SignerProperties props, VisibleStampSpec stamp, X509Certificate2 certificate, string? reason,
-        string? location, int rotation, double mediaW, double mediaH)
+        string? location, int rotation, double mediaW, double mediaH, double originX, double originY)
     {
         var r = stamp.Rect;
         // Dimensões EXIBIDAS (o que o usuário desenhou/vê) — a camada de aparência (texto/selo/rubrica)
@@ -180,8 +182,11 @@ internal sealed class PadesSigningEngine : ISigningEngine
 
         // Costura de rotação: o `/Rect` do campo vai em coordenadas do MEDIABOX (o que o iText espera),
         // convertidas do retângulo EXIBIDO. Em rot 0 é identidade (`mbRect` == retângulo exibido).
+        // `mediaW`/`mediaH`/`origin*` descrevem a caixa EXIBIDA não-rotacionada (CropBox ∩ MediaBox, ver
+        // InspectDocument): a rotação inversa dá coordenadas relativas a ela; somar a origem leva ao
+        // espaço do usuário que o iText grava no /Rect.
         var mb = StampRotation.DisplayedToMediaBox(r, rotation, mediaW, mediaH);
-        var mbRect = new Rectangle((float)mb.LeftPt, (float)mb.BottomPt,
+        var mbRect = new Rectangle((float)(mb.LeftPt + originX), (float)(mb.BottomPt + originY),
             (float)(mb.RightPt - mb.LeftPt), (float)(mb.TopPt - mb.BottomPt));
 
         // Plano 21: rubrica — a aparência vira SÓ a imagem (aspect-fit centralizada), sem moldura/selo/
@@ -567,7 +572,8 @@ internal sealed class PadesSigningEngine : ISigningEngine
     private readonly record struct DocumentInspection(
         int ExistingSignatures, int PageCount, string FieldName,
         DocMdpCertificationProbe.Result CertificationProbe, int CertificationP,
-        int StampPageRotation, double StampPageMediaW, double StampPageMediaH);
+        int StampPageRotation, double StampPageMediaW, double StampPageMediaH,
+        double StampPageOriginX, double StampPageOriginY);
 
     private static DocumentInspection InspectDocument(byte[] pdf, int? stampPageIndex)
     {
@@ -582,16 +588,23 @@ internal sealed class PadesSigningEngine : ISigningEngine
         // iText espera. Só lido quando há carimbo numa página válida; caso contrário fica em 0 (rot 0 =
         // identidade, o caminho comum não muda em nada).
         int rotation = 0;
-        double mediaW = 0, mediaH = 0;
+        double mediaW = 0, mediaH = 0, originX = 0, originY = 0;
         if (stampPageIndex is { } idx && idx >= 0 && idx < pageCount)
         {
             var page = doc.GetPage(idx + 1);
             rotation = page.GetRotation();
-            var box = page.GetPageSize(); // MediaBox, NÃO-rotacionado (iText nunca aplica /Rotate aqui)
+            // fix/markup-cropbox: o frame EXIBIDO é a CropBox recortada pela MediaBox (o que o PDFium
+            // mostra), NÃO a MediaBox — em página recortada (origem != 0,0 ou CropBox menor) usar a
+            // MediaBox deslocava o carimbo. `PageFrame` (mPdf.Editing) é a fonte única dessa caixa.
+            // Sem /CropBox (caso comum) é a própria MediaBox — comportamento intocado.
+            var box = PageFrame.DisplayedBox(page); // NÃO-rotacionado (iText nunca aplica /Rotate aqui)
             mediaW = box.GetWidth();
             mediaH = box.GetHeight();
+            originX = box.GetLeft();
+            originY = box.GetBottom();
         }
-        return new DocumentInspection(existing, pageCount, fieldName, certProbe, certP, rotation, mediaW, mediaH);
+        return new DocumentInspection(existing, pageCount, fieldName, certProbe, certP, rotation, mediaW, mediaH,
+            originX, originY);
     }
 
     /// M7 (achado do revisor, escalado a hard gate PRÉ-ROLLOUT): o nome gerado ANTES

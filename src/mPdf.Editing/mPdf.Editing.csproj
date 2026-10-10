@@ -31,6 +31,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="mPdf.Editing.Tests" />
+    <!-- PageFrame (frame exibido = CropBox ∩ MediaBox) é compartilhado com o carimbo da assinatura. -->
+    <InternalsVisibleTo Include="mPdf.Signing" />
   </ItemGroup>
 
   <ItemGroup>

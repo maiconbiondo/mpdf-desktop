@@ -11,6 +11,9 @@
          nível do COMPILADOR — quem referencia ESTE projeto (src/mPdf.App) só recebe o binário de
          runtime, nunca a referência de compilação. `using iText...` em src/mPdf.App falha no
          compilador (CS0246), não só na varredura de texto do AgplGuardTests (2ª camada, complementar). -->
+    <!-- fix/markup-cropbox: `mPdf.Editing.PageFrame` (internal, InternalsVisibleTo Editing->Signing) é
+         chamado daqui com tipos do iText na assinatura (PdfPage/Rectangle) — os DOIS projetos têm de
+         manter a MESMA versão fixada do iText (hoje 9.7.0), senão a chamada quebra em runtime. -->
     <PackageReference Include="itext" Version="9.7.0">
       <PrivateAssets>compile</PrivateAssets>
     </PackageReference>

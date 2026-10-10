@@ -94,11 +94,8 @@ internal static class TextCorrectionEngine
 
     /// Origem (canto inferior-esquerdo) da CropBox no espaço do usuário. Sem /CropBox o iText devolve
     /// a MediaBox — mesmo critério do PDFium para o frame exibido.
-    private static (double X, double Y) CropOrigin(PdfPage page)
-    {
-        var cb = page.GetCropBox();
-        return (cb.GetLeft(), cb.GetBottom());
-    }
+    /// Origem do frame exibido (CropBox ∩ MediaBox) — ver `PageFrame`.
+    private static (double X, double Y) CropOrigin(PdfPage page) => PageFrame.DisplayedOrigin(page);
 
     private static void ValidateArea(PdfQuad a)
     {

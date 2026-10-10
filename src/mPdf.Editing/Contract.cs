@@ -60,6 +60,17 @@ public sealed record OutlineNode(string Title, int? PageIndex, IReadOnlyList<Out
 
 /// Representação neutra de uma anotação de PDF — nenhum tipo do iText (PdfAnnotation, PdfName, etc.)
 /// aparece nesta assinatura pública; é o contrato que src/mPdf.App consome sem nunca referenciar iText.
+///
+/// FRAME DE COORDENADAS (fix/markup-cropbox, 2026-10-09): TODA a geometria (Left/Bottom/Right/TopPt,
+/// `Quads`, `InkStrokes`, `LineStartPt`/`LineEndPt`) está em PONTOS, relativa à origem (canto
+/// inferior-esquerdo) da CropBox recortada pela MediaBox — a página EXIBIDA, o mesmo frame das caixas de
+/// caractere do PDFium/Docnet e dos cliques na página renderizada —, com orientação PDF (y para cima),
+/// no frame NÃO-rotacionado. `AddAnnotation` soma a origem antes de gravar no espaço do usuário;
+/// `ReadAnnotations` subtrai ao ler — o round-trip (e o lift Remove+Add do App) é estável. Sem /CropBox,
+/// vale a MediaBox. Nada muda quando a caixa EXIBIDA (CropBox ∩ MediaBox) começa em (0,0) — o caso
+/// comum; páginas SEM CropBox mas com MediaBox fora da origem também são convertidas. Mesmo frame de
+/// `TextCorrection` (ver abaixo); `VisibleStampSpec.Rect` (mPdf.Signing) tem a mesma origem, mas está
+/// no frame exibido GIRADO (difere deste em página com /Rotate).
 public sealed record AnnotationData
 {
     /// Nome/NM da anotação no PDF. Ao CRIAR: se informado, AddAnnotation o usa como `/NM` do PDF
@@ -152,7 +163,8 @@ public enum FormFieldType { Text, Checkbox, Radio, Combo, ListBox, Other }
 /// `Value`: string devolvida por `PdfFormField.GetValueAsString()` — pra Checkbox/Radio é o nome do
 /// estado ATUALMENTE selecionado ("Off" quando nada está marcado, nunca `null`); pra Combo/ListBox é
 /// o valor selecionado; pra Text é o conteúdo digitado.
-/// `WidgetRect`: retângulo do PRIMEIRO widget do campo (`PdfFormField.GetWidgets()[0]`), no frame
+/// `WidgetRect`: retângulo do PRIMEIRO widget do campo (`PdfFormField.GetWidgets()[0]`), relativo à
+/// origem da CropBox (frame exibido — mesma conversão de `AnnotationData`, fix/markup-cropbox), no frame
 /// NÃO-ROTACIONADO da página — mesma convenção/mesma costura de rotação documentada em
 /// `AnnotationData` (Task 3, Plano 3b: `/Rotate` é atributo de EXIBIÇÃO, o `/Rect` do widget nunca
 /// muda quando a página gira). DECISÃO DE CONTRATO: um campo Radio tem >=1 widget (1 por opção,
@@ -195,7 +207,8 @@ public enum TextFontFamily { Serif, SansSerif, Monospace }
 /// origem (canto inferior-esquerdo) da CropBox da página — a página EXIBIDA, o mesmo frame das caixas
 /// de caractere do PDFium/Docnet que o App usa —, com orientação PDF (y para cima). O motor converte
 /// para o espaço do usuário (somando a origem da CropBox) antes de rodar o pdfSweep/escrever e
-/// converte de volta no resultado do probe. Sem /CropBox, vale a MediaBox.
+/// converte de volta no resultado do probe. Sem /CropBox, vale a MediaBox; a CropBox é recortada pela
+/// MediaBox como no PDFium (ver `PageFrame`).
 ///
 /// Estilo do texto encontrado numa área (frame acima).
 /// `TokenText`/`TokenAreaPt` (rodada 2, só para texto INVISÍVEL — camada OCR; null no texto visível):

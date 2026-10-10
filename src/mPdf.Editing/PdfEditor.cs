@@ -49,6 +49,9 @@ internal sealed class PdfEditor : IPdfEditor
             for (int pageNumber = 1; pageNumber <= doc.GetNumberOfPages(); pageNumber++)
             {
                 var page = doc.GetPage(pageNumber);
+                // Frame EXIBIDO (fix/markup-cropbox): o iText lê no espaço do usuário; o contrato devolve
+                // relativo à origem da CropBox (ver `PageFrame` e o doc de `AnnotationData`).
+                var (ox, oy) = PageFrame.DisplayedOrigin(page);
                 foreach (var annot in page.GetAnnotations())
                 {
                     var subtype = annot.GetSubtype();
@@ -67,7 +70,7 @@ internal sealed class PdfEditor : IPdfEditor
                     var contents = annot.GetContents();
                     var lineEndpoints = ReadLineEndpoints(annot); // Task 8 (Plano 3a) — só não-nulo p/ Line/Arrow
 
-                    result.Add(new AnnotationData
+                    result.Add(PageFrame.Translate(new AnnotationData
                     {
                         Id = name?.ToUnicodeString(),
                         Kind = kind.Value,
@@ -85,7 +88,7 @@ internal sealed class PdfEditor : IPdfEditor
                         InkStrokes = ReadInkStrokes(annot),
                         LineStartPt = lineEndpoints?.Start,
                         LineEndPt = lineEndpoints?.End,
-                    });
+                    }, -ox, -oy));
                 }
             }
             return result;
@@ -143,6 +146,12 @@ internal sealed class PdfEditor : IPdfEditor
                 if (annotation.Id is not null) GuardAgainstDuplicateId(doc, annotation.Id);
 
                 var page = doc.GetPage(annotation.PageIndex + 1); // iText é 1-based; contrato é 0-based
+                // Frame EXIBIDO -> espaço do usuário (fix/markup-cropbox): a geometria chega relativa à
+                // origem da CropBox (caixas do PDFium, cliques na página renderizada); o iText grava
+                // /Rect, /QuadPoints, /InkList e /L no espaço do usuário. ReadAnnotations faz o inverso,
+                // então o lift (Read -> Remove -> Add) do App não deriva. Ver `PageFrame`.
+                var (ox, oy) = PageFrame.DisplayedOrigin(page);
+                annotation = PageFrame.Translate(annotation, ox, oy);
                 var bbox = new Rectangle(
                     (float)annotation.LeftPt, (float)annotation.BottomPt,
                     (float)(annotation.RightPt - annotation.LeftPt),
@@ -154,7 +163,7 @@ internal sealed class PdfEditor : IPdfEditor
                 // /Rect da anotação (BuildAnnotation abaixo) quanto pro /AP (bloco FreeText mais abaixo),
                 // então crescer aqui alinha os dois automaticamente.
                 if (annotation.Kind == AnnotationKind.FreeText)
-                    bbox = GrowFreeTextBoxToFitText(doc, annotation, bbox);
+                    bbox = GrowFreeTextBoxToFitText(doc, annotation, bbox, (float)oy);
 
                 var markup = BuildAnnotation(annotation, bbox);
 
@@ -1200,11 +1209,12 @@ internal sealed class PdfEditor : IPdfEditor
     /// CORTADO, feedback do usuário). Mede a altura ocupada pelo Paragraph (mesmos font/tamanho/padding/
     /// leading do /AP abaixo) na LARGURA da caixa, com altura "infinita" disponível; se exceder a altura
     /// atual, estende PARA BAIXO — mantém o TOPO onde o usuário clicou (o texto é ancorado no topo pelo
-    /// iText.Layout), baixa o `bottom`, clampado ao rodapé da página (>= 0). Idempotente: uma caixa já
+    /// iText.Layout), baixa o `bottom`, clampado ao rodapé da página EXIBIDA (`minBottom` = base da
+    /// CropBox no espaço do usuário; antes era y=0, errado em página recortada). Idempotente: uma caixa já
     /// alta o suficiente não muda (importa porque MOVER re-passa por aqui a cada arrasto). Largura vazia/
     /// conteúdo vazio -> devolve o bbox intacto. A medição usa um PdfFormXObject NÃO referenciado por
     /// nada (só serve de parent de layout) — objeto inalcançável, o escritor do iText não o serializa.
-    private static Rectangle GrowFreeTextBoxToFitText(PdfDocument doc, AnnotationData a, Rectangle bbox)
+    private static Rectangle GrowFreeTextBoxToFitText(PdfDocument doc, AnnotationData a, Rectangle bbox, float minBottom)
     {
         string content = a.Content ?? string.Empty;
         float width = bbox.GetWidth();
@@ -1228,7 +1238,7 @@ internal sealed class PdfEditor : IPdfEditor
 
         if (needed <= bbox.GetHeight()) return bbox;
         float top = bbox.GetTop();
-        float newBottom = Math.Max(0f, top - needed);
+        float newBottom = Math.Max(minBottom, top - needed);
         return new Rectangle(bbox.GetLeft(), newBottom, width, top - newBottom);
     }
 
@@ -1507,9 +1517,13 @@ internal sealed class PdfEditor : IPdfEditor
         {
             var widget = widgets[0];
             var rect = widget.GetRectangle()?.ToRectangle();
-            if (rect is not null)
-                widgetRect = new PdfQuad(rect.GetLeft(), rect.GetBottom(), rect.GetRight(), rect.GetTop());
             var page = widget.GetPage();
+            // Frame EXIBIDO (fix/markup-cropbox): relativo à origem da CropBox ∩ MediaBox (ver `PageFrame`
+            // e AnnotationData) — o App desenha o destaque do campo nesse frame. Sem página resolvida
+            // (residual), fica no espaço do usuário como antes.
+            var (ox, oy) = page is not null ? PageFrame.DisplayedOrigin(page) : (0d, 0d);
+            if (rect is not null)
+                widgetRect = new PdfQuad(rect.GetLeft() - ox, rect.GetBottom() - oy, rect.GetRight() - ox, rect.GetTop() - oy);
             if (page is not null)
             {
                 int pageNumber = doc.GetPageNumber(page);
@@ -1880,7 +1894,10 @@ internal sealed class PdfEditor : IPdfEditor
                     if (layer.SourceWidthPx <= 0 || layer.SourceHeightPx <= 0) continue;
 
                     var page = doc.GetPage(layer.PageIndex + 1); // iText 1-based; contrato 0-based
-                    var mediaBox = page.GetMediaBox();
+                    // fix/markup-cropbox: o bitmap do OCR é a página EXIBIDA — o PDFium rasteriza a
+                    // CropBox recortada pela MediaBox, não a MediaBox. Escala e origem vêm dessa caixa
+                    // (`PageFrame`); sem /CropBox é a própria MediaBox (comportamento intocado).
+                    var mediaBox = PageFrame.DisplayedBox(page);
                     double llx = mediaBox.GetLeft(), lly = mediaBox.GetBottom();
                     double wPt = mediaBox.GetWidth(), hPt = mediaBox.GetHeight();
                     // `/Rotate` normalizado 0/90/180/270 (mesma normalização de GetPageRotations —

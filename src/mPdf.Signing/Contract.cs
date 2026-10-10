@@ -12,9 +12,10 @@ namespace mPdf.Signing;
 /// "só comentários" (P=3) depois de assinado.
 public enum DocMdpLevel { None, FormsAndSignatures }
 
-/// Retângulo de carimbo visível, em pontos PDF, no frame NÃO-rotacionado da página (mesma convenção
-/// de `AnnotationData`/`FormFieldData` em mPdf.Editing — `/Rotate` é atributo de EXIBIÇÃO, nunca muda
-/// o `/Rect` gravado). `PageIndex` 0-based, mesma convenção do resto do contrato do app.
+/// Retângulo de carimbo visível, em pontos PDF, no frame EXIBIDO da página: relativo à origem da CropBox
+/// recortada pela MediaBox (fix/markup-cropbox — mesmo `PageFrame` de `AnnotationData`) e já girado por
+/// `/Rotate`, como o usuário o desenha (o motor converte para o `/Rect` via `StampRotation` + origem —
+/// ver `PadesSigningEngine.ApplyVisibleStamp`). `PageIndex` 0-based, mesma convenção do resto do contrato.
 ///
 /// `ImageBytes` (Plano 21): quando NÃO-null, a APARÊNCIA do carimbo vira SÓ essa imagem (PNG/JPG —
 /// a "rubrica" do usuário), aspect-fit centralizada no retângulo, sem moldura/selo/texto do carimbo
@@ -53,9 +54,10 @@ public sealed record SignRequest(byte[] Pdf, X509Certificate2 Certificate, strin
 /// estiver instalada como confiável nesta máquina — dependência que este módulo não resolve nem tenta
 /// resolver (fora de escopo: instalar/confiar raízes é decisão do gerente de TI, não deste código).
 /// `StampPageIndex`/`StampRect` (Task 4, Plano 4): página (0-based) e retângulo (pontos PDF, frame
-/// NÃO-ROTACIONADO) do PRIMEIRO widget do campo de assinatura — mesma convenção EXATA de
-/// `VisibleStampSpec`/`FormFieldData.WidgetRect` (mPdf.Editing/Contract.cs: `/Rotate` é atributo de
-/// EXIBIÇÃO, nunca muda o `/Rect` gravado). Os DOIS ficam `null` juntos (nunca só um) quando a
+/// NÃO-ROTACIONADO, relativo à origem da CropBox ∩ MediaBox — fix/markup-cropbox) do PRIMEIRO widget
+/// do campo de assinatura — mesma convenção de `FormFieldData.WidgetRect` (mPdf.Editing/Contract.cs:
+/// `/Rotate` é atributo de EXIBIÇÃO, nunca muda o `/Rect` gravado). ATENÇÃO: em página GIRADA difere de
+/// `VisibleStampSpec.Rect`, que está no frame exibido JÁ girado; em rot 0 os dois coincidem. Os DOIS ficam `null` juntos (nunca só um) quando a
 /// assinatura não tem carimbo visível (`SignRequest.Stamp == null` na hora de assinar — o caso mais
 /// comum na prática, "aprovação invisível") ou quando o widget tem um `/Rect` degenerado (largura ou
 /// altura não-positiva — mesmo critério de `PadesSigningEngine.ValidateStamp` do lado da ESCRITA).
