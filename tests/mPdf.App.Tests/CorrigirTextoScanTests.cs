@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using mPdf.App.Services;
 using mPdf.Editing;
+using mPdf.Editing.Tests;
 using mPdf.Rendering;
 
 namespace mPdf.App.Tests;
@@ -16,6 +17,10 @@ namespace mPdf.App.Tests;
 /// tinta. Dados sintéticos: texto desenhado pelo WPF num bitmap 200 dpi (Times New Roman 11 pt).
 /// O pipeline exercitado é o MESMO do `DocumentViewModel.CorrigirTextoCoreAsync`:
 /// `PrepararCorrecao.Sondar` -> `PlanejarCorrecao.Calcular` -> `ApplyTextCorrection`.
+///
+/// feat/ocr-largura: a camada do mPDF passou a ter a largura da caixa (`Tz`). Cada caso roda nas DUAS
+/// camadas (`camada`: "Nova" = `ApplyOcrTextLayer` atual; "Legada" = `LegacyOcrLayer`, a Helvetica sem
+/// ajuste de largura dos PDFs reconhecidos até a v2.14.1 — o comando OCR não refaz páginas com texto).
 public class CorrigirTextoScanTests
 {
     private const int W = 1100, H = 350, Dpi = 200, Topo = 100; // 396 x 126 pt: inteiros (o PDFium/Docnet arredonda o tamanho da página)
@@ -47,7 +52,12 @@ public class CorrigirTextoScanTests
     /// linha; a caixa OCR de cada palavra = contorno da TINTA dentro da faixa horizontal que o GDI mede para ela
     /// (`MeasureCharacterRanges`), medido num bitmap só com a linha dela (inclui acentos e cedilha, como o
     /// Tesseract, sem misturar as linhas vizinhas).
-    private static Scan BuildScanGdi(string[] linhas, double entrelinha, string fonte)
+    /// Fix round 1: a faixa do `MeasureCharacterRanges` DESLIZA em relação ao desenho ao longo de uma linha longa
+    /// — a caixa da última palavra chega a pegar o rabo da anterior (como uma caixa OCR com sujeira ou serifa
+    /// alheia na borda). A caixa fica assim (é o estímulo), mas a MÁSCARA (dono da tinta, usada nas checagens
+    /// de sobra e de dano) vem da segmentação real da linha: as N-1 maiores lacunas entre colunas de tinta são
+    /// os espaços entre as N palavras.
+    private static Scan BuildScanGdi(string[] linhas, double entrelinha, string fonte, bool legada)
     {
         int passo = (int)Math.Round(FontePx * entrelinha);
         var tinta = new Dictionary<string, Int32Rect>();
@@ -90,8 +100,11 @@ public class CorrigirTextoScanTests
             var px = new byte[W * H * 4];
             System.Runtime.InteropServices.Marshal.Copy(dados.Scan0, px, 0, px.Length);
             so.UnlockBits(dados);
+            var donos = DonosDasColunas(px, faixas.Count);
+            int k = 0;
             foreach (var (w, r) in faixas)
             {
+                var (d0, d1) = donos[k++];
                 int x0 = Math.Max(0, (int)r.Left - 1), x1 = Math.Min(W, (int)Math.Ceiling(r.Right) + 1);
                 int l = int.MaxValue, rr = -1, t = int.MaxValue, b = -1;
                 for (int y = 0; y < H; y++) for (int x = x0; x < x1; x++)
@@ -99,21 +112,48 @@ public class CorrigirTextoScanTests
                 Assert.True(rr >= 0, $"sem tinta para '{w}'");
                 Assert.False(tinta.ContainsKey(w), $"token repetido no fixture: {w}");
                 tinta[w] = new Int32Rect(l, t, rr - l + 1, b - t + 1);
-                mascaras[w] = Mascara((x, y) => px[(y * W + x) * 4 + 2] < 200, x0, x1);
+                mascaras[w] = Mascara((x, y) => px[(y * W + x) * 4 + 2] < 200, d0, d1 + 1);
                 bases[w] = Topo + li * passo + ascPx;
                 boxes.Add(new OcrTextBox(w, l, t, rr - l + 1, b - t + 1));
             }
         }
         byte[] png;
         using (var ms = new MemoryStream()) { pagina.Save(ms, System.Drawing.Imaging.ImageFormat.Png); png = ms.ToArray(); }
+        return new Scan(AplicarCamada(png, boxes, legada), tinta, bases, mascaras);
+    }
+
+    private static byte[] AplicarCamada(byte[] png, List<OcrTextBox> boxes, bool legada)
+    {
         var editor = PdfEditorFactory.Create();
-        byte[] pdf = editor.ApplyOcrTextLayer(editor.ImageToPdf(png), new[] { new OcrTextLayer(0, W, H, boxes) });
-        return new Scan(pdf, tinta, bases, mascaras);
+        var imagem = editor.ImageToPdf(png);
+        var layers = new[] { new OcrTextLayer(0, W, H, boxes) };
+        return legada ? LegacyOcrLayer.Apply(imagem, layers) : editor.ApplyOcrTextLayer(imagem, layers);
+    }
+
+    /// Colunas [início, fim] da tinta de cada uma das `n` palavras de uma linha desenhada sozinha (px ARGB): as
+    /// n-1 maiores lacunas entre colunas com tinta (< 200) são os espaços entre palavras.
+    private static List<(int A, int B)> DonosDasColunas(byte[] px, int n)
+    {
+        var segs = new List<(int A, int B)>();
+        int ini = -1;
+        for (int x = 0; x <= W; x++)
+        {
+            bool tem = false;
+            if (x < W) for (int y = 0; y < H && !tem; y++) tem = px[(y * W + x) * 4 + 2] < 200;
+            if (tem && ini < 0) ini = x;
+            else if (!tem && ini >= 0) { segs.Add((ini, x - 1)); ini = -1; }
+        }
+        Assert.True(segs.Count >= n, $"segmentos de tinta ({segs.Count}) < palavras ({n})");
+        var cortes = Enumerable.Range(0, segs.Count - 1).OrderByDescending(i => segs[i + 1].A - segs[i].B).Take(n - 1).OrderBy(i => i).ToList();
+        var grupos = new List<(int A, int B)>();
+        int g0 = 0;
+        foreach (int c in cortes.Append(segs.Count - 1)) { grupos.Add((segs[g0].A, segs[c].B)); g0 = c + 1; }
+        return grupos;
     }
 
     /// `entrelinha` em múltiplos do corpo da fonte (1,0 = linhas coladas: descendentes de uma quase tocam
     /// as ascendentes da outra).
-    private static Scan BuildScan(string[] linhas, double entrelinha, string fonte = "Times New Roman")
+    private static Scan BuildScan(string[] linhas, double entrelinha, string fonte, bool legada)
     {
         int passo = (int)Math.Round(FontePx * entrelinha);
         byte[] png = null!;
@@ -176,9 +216,7 @@ public class CorrigirTextoScanTests
             enc.Frames.Add(BitmapFrame.Create(rtb));
             using var ms = new MemoryStream(); enc.Save(ms); png = ms.ToArray();
         });
-        var editor = PdfEditorFactory.Create();
-        byte[] pdf = editor.ApplyOcrTextLayer(editor.ImageToPdf(png), new[] { new OcrTextLayer(0, W, H, boxes) });
-        return new Scan(pdf, tinta, bases, mascaras);
+        return new Scan(AplicarCamada(png, boxes, legada), tinta, bases, mascaras);
     }
 
     /// Pixels escuros (luminância < 128) do render num retângulo em PIXELS DE RENDER, opcionalmente
@@ -300,7 +338,26 @@ public class CorrigirTextoScanTests
         new object[] { "vizinhas", "Vizinhas", Times, 1.0, "GONÇALVES", "GONÇALVES", "XYZ" },
         new object[] { "vizinhas", "Vizinhas", Times, 1.0, "JOÃO", "JOÃO", "XYZ" },
         new object[] { "vizinhas", "Vizinhas", Times, 1.0, "SÃO", "SÃO", "XYZ" },
+        // Fix round 1 (feat/ocr-largura): ÚLTIMA palavra de uma linha LONGA — no GDI a caixa OCR dela começa sobre
+        // o rabo do "S" de "DOS" (a faixa medida desliza ao longo da linha) e a regra da última palavra parava
+        // nessa lasquinha: limpava ~2 pt e a palavra inteira ficava. Controle: a mesma palavra numa linha curta.
+        new object[] { "ultima-longa", "UltimaLonga", Arial, 1.5, "SANTOS", "SANTOS", "XYZ" },
+        new object[] { "ultima-longa", "UltimaLonga", Times, 1.5, "SANTOS", "SANTOS", "XYZ" },
+        // Outras posições na mesma linha longa (mesmo deslize da caixa): primeira palavra, depois de palavra longa,
+        // penúltima (o rabo dela entra na caixa da última).
+        new object[] { "longa-outras", "UltimaLonga", Arial, 1.5, "GONÇALVES", "GONÇALVES", "XYZ" },
+        new object[] { "longa-outras", "UltimaLonga", Times, 1.5, "GONÇALVES", "GONÇALVES", "XYZ" },
+        new object[] { "longa-outras", "UltimaLonga", Arial, 1.5, "MARIA", "MARIA", "XYZ" },
+        new object[] { "longa-outras", "UltimaLonga", Times, 1.5, "MARIA", "MARIA", "XYZ" },
+        new object[] { "longa-outras", "UltimaLonga", Arial, 1.5, "DOS", "DOS", "XYZ" },
+        new object[] { "longa-outras", "UltimaLonga", Times, 1.5, "DOS", "DOS", "XYZ" },
+        new object[] { "ultima-curta", "UltimaCurta", Arial, 1.5, "SANTOS", "SANTOS", "XYZ" },
+        new object[] { "ultima-curta", "UltimaCurta", Times, 1.5, "SANTOS", "SANTOS", "XYZ" },
     };
+
+    /// Cada caso de `Casos` nas duas camadas OCR (parâmetro final `camada`).
+    public static IEnumerable<object[]> CasosNasDuasCamadas() =>
+        from c in Casos() from camada in new[] { "Nova", "Legada" } select c.Append(camada).ToArray();
 
     private const string Times = "Times New Roman", Arial = "Arial", Narrow = "Arial Narrow";
     private static readonly string[] Caps = { "MUNICIPIO PONTA GROSSA", "TAXA FEITO PAGO" };
@@ -309,33 +366,37 @@ public class CorrigirTextoScanTests
     private static readonly string[] FimLinha = { "A ANTONIO", "B PEREIRA", "C NOVEMBRO", "D PAGAMENTO", "E uma" };
     private static readonly string[] Conceicao = { "CONCEIÇÃO gqpy AÇÃO" };
     private static readonly string[] Nomes = { "Maria Aparecida Ribeiro" };
+    private static readonly string[] UltimaLonga = { "GONÇALVES PAGAMENTO MARIA APARECIDA DOS SANTOS" };
+    private static readonly string[] UltimaCurta = { "DOS SANTOS" };
     private static readonly string[] Vizinhas = { "GONÇALVES MOURA", "JOÃO SÃO PEDRO" };
     private static readonly string[] Misto = { "Rua das Flores", "Conceição Ávila Música", "Bairro Centro Oeste" };
     private static readonly string[] Acentos = { "RUA DAS FLORES NORTE", "JOÃO SÃO MÚSICA ÁVILA", "CONCEIÇÃO AÇÃO GONÇALVES", "BAIRRO CENTRO OESTE" };
 
     [SkippableTheory]
-    [MemberData(nameof(Casos))]
+    [MemberData(nameof(CasosNasDuasCamadas))]
     public void Escaneado_TrocaPalavra_ApagaSoOTokenEPreservaVizinhos(string caso, string conjunto, string fonte, double entrelinha,
-        string selecionado, string tokenEsperado, string novo)
-        => Executar(caso, conjunto, fonte, entrelinha, selecionado, tokenEsperado, novo, gdi: false);
+        string selecionado, string tokenEsperado, string novo, string camada)
+        => Executar(caso, conjunto, fonte, entrelinha, selecionado, tokenEsperado, novo, gdi: false, camada);
 
     /// Rodada 5: os MESMOS casos com o "scan" desenhado pelo GDI (System.Drawing), como o harness do revisor —
     /// o GDI do Arial abre lacunas maiores entre maiúsculas (E|I, M|E, B|R) que o WPF.
     [SkippableTheory]
-    [MemberData(nameof(Casos))]
+    [MemberData(nameof(CasosNasDuasCamadas))]
     public void EscaneadoGdi_TrocaPalavra_ApagaSoOTokenEPreservaVizinhos(string caso, string conjunto, string fonte, double entrelinha,
-        string selecionado, string tokenEsperado, string novo)
-        => Executar(caso, conjunto, fonte, entrelinha, selecionado, tokenEsperado, novo, gdi: true);
+        string selecionado, string tokenEsperado, string novo, string camada)
+        => Executar(caso, conjunto, fonte, entrelinha, selecionado, tokenEsperado, novo, gdi: true, camada);
 
     private static void Executar(string caso, string conjunto, string fonte, double entrelinha,
-        string selecionado, string tokenEsperado, string novo, bool gdi)
+        string selecionado, string tokenEsperado, string novo, bool gdi, string camada)
     {
+        Assert.Contains(camada, new[] { "Nova", "Legada" });
+        bool legada = camada == "Legada";
         _ = caso;
         // Arial Narrow vem com o Office, não com o Windows: sem ela o WPF trocaria a fonte em silêncio.
         Skip.If(fonte == Narrow && !File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "ARIALN.TTF")),
             "Arial Narrow não instalada");
-        var linhas = conjunto switch { "Coladas" => Coladas, "Virgula" => Virgula, "Caps" => Caps, "Estreita" => Estreita, "Acentos" => Acentos, "Misto" => Misto, "MeioLinha" => MeioLinha, "FimLinha" => FimLinha, "Vizinhas" => Vizinhas, "Nomes" => Nomes, "Conceicao" => Conceicao, _ => Normal };
-        var scan = gdi ? BuildScanGdi(linhas, entrelinha, fonte) : BuildScan(linhas, entrelinha, fonte);
+        var linhas = conjunto switch { "Coladas" => Coladas, "Virgula" => Virgula, "Caps" => Caps, "Estreita" => Estreita, "Acentos" => Acentos, "Misto" => Misto, "MeioLinha" => MeioLinha, "FimLinha" => FimLinha, "Vizinhas" => Vizinhas, "Nomes" => Nomes, "Conceicao" => Conceicao, "UltimaLonga" => UltimaLonga, "UltimaCurta" => UltimaCurta, _ => Normal };
+        var scan = gdi ? BuildScanGdi(linhas, entrelinha, fonte, legada) : BuildScan(linhas, entrelinha, fonte, legada);
         var editor = PdfEditorFactory.Create();
         using var r0 = new PdfDocumentRenderer(scan.Pdf);
         var size = r0.GetPageSize(0);
@@ -406,15 +467,54 @@ public class CorrigirTextoScanTests
             int a = mv.Count(k => !propria.Contains(k) && !NoNovo(k) && Escuro(a200, k));
             int perdidos = mv.Count(k => !propria.Contains(k) && !NoNovo(k) && Escuro(a200, k) && !Escuro(d200, k));
             Assert.True(perdidos <= Math.Max(3, a * 0.02), $"[{plano}] tinta do vizinho '{w}' perdeu {perdidos} de {a} px escuros; areas: {string.Join(" | ", plano.AreasPt ?? new List<PdfQuad>())}; viz: {string.Join(" | ", estilo.NeighbourBoxesPt ?? new List<PdfQuad>())}; perdidos em: {string.Join(" ", mv.Where(k => !propria.Contains(k) && !NoNovo(k) && Escuro(a200, k) && !Escuro(d200, k)).Take(8).Select(k => $"({k % W},{k / W})"))}");
-            // LIMITAÇÃO conhecida (rodada 3, fonte estreita): se a Helvetica invisível do vizinho (tamanho =
-            // altura da caixa, sem ajuste de largura) passa por cima da tinta da palavra corrigida, os glifos
-            // dele que ficam DENTRO da área limpa saem junto (ex.: "pagamento" -> "pagament"); a tinta do
-            // vizinho fica intacta (checada acima). Só esse caso é dispensado da checagem do texto OCR.
+            // LIMITAÇÃO conhecida da camada LEGADA (rodada 3, fonte estreita): se a Helvetica invisível do
+            // vizinho (tamanho = altura da caixa, sem ajuste de largura) passa por cima da tinta da palavra
+            // corrigida, os glifos dele que ficam DENTRO da área limpa saem junto (ex.: "pagamento" ->
+            // "pagament"); a tinta do vizinho fica intacta (checada acima). Só esse caso, e só na camada
+            // legada, é dispensado da checagem do texto OCR. Na camada NOVA a palavra invisível tem a
+            // largura da caixa (tinta) do OCR: o vizinho TEM de continuar pesquisável sempre.
             double vizL = tv.X * pxToPt, vizR = vizL + editor.MeasureTextWidth(TextFontFamily.SansSerif, false, false, tv.Height * pxToPt, w);
-            bool helveticaInvadeArea = vizL < plano.AreaPt.LeftPt && vizR > plano.AreaPt.LeftPt + 1;
+            bool helveticaInvadeArea = legada && vizL < plano.AreaPt.LeftPt && vizR > plano.AreaPt.LeftPt + 1;
             if (!helveticaInvadeArea)
                 Assert.True(tp1.Text.Contains(w, StringComparison.Ordinal), $"texto OCR do vizinho '{w}' sumiu: {tp1.Text}");
         }
+    }
+
+    /// Fix round 2 (revisão de feat/ocr-largura): ESTICAR a palavra invisível (Tz > 100%) juntava palavras na
+    /// extração — o limiar de espaço do PDFium cresce com a escala ("MARIAAPARECIDA", "RUAXV", "2023 -CENTRO",
+    /// quebras de linha falsas). Na camada NOVA, cada linha de todos os fixtures de scan sai INTEIRA e com os
+    /// espaços certos, no PDFium (busca/seleção) e no iText (copiar/exportar texto). A camada legada (Helvetica sem
+    /// ajuste) já juntava palavras em fonte estreita — é o documento antigo, não é asserido aqui.
+    public static IEnumerable<object[]> FontesEMotores() =>
+        from f in new[] { Times, Arial, Narrow } from g in new[] { false, true } select new object[] { f, g };
+
+    [SkippableTheory]
+    [MemberData(nameof(FontesEMotores))]
+    public void CamadaNova_CadaLinhaExtraiComOsEspacosCertos(string fonte, bool gdi)
+    {
+        Skip.If(fonte == Narrow && !File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "ARIALN.TTF")),
+            "Arial Narrow não instalada");
+        var conjuntos = new[] { Normal, Coladas, Virgula, Caps, Estreita, MeioLinha, FimLinha, Conceicao, Nomes, UltimaLonga, UltimaCurta,
+            Vizinhas, Misto, Acentos, new[] { "o valor de uma nota e a soma", "em casa com meu amor ou nas suas mesas" } };
+        var falhas = new List<string>();
+        foreach (var linhas in conjuntos)
+        {
+            var scan = gdi ? BuildScanGdi(linhas, 1.5, fonte, legada: false) : BuildScan(linhas, 1.5, fonte, legada: false);
+            using var r = new PdfDocumentRenderer(scan.Pdf);
+            var pdfium = r.GetTextPage(0).Text.Replace("\r", "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
+            string[] itext;
+            using (var doc = new iText.Kernel.Pdf.PdfDocument(new iText.Kernel.Pdf.PdfReader(new MemoryStream(scan.Pdf))))
+                itext = iText.Kernel.Pdf.Canvas.Parser.PdfTextExtractor.GetTextFromPage(doc.GetPage(1))
+                    .Replace("\r", "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
+            if (!pdfium.SequenceEqual(linhas)) falhas.Add($"PDFium [{string.Join(" / ", linhas)}] -> [{string.Join(" / ", pdfium)}]");
+            // iText (copiar/exportar): a ORDEM das linhas dele depende da base de cada caixa OCR (palavra com acento ou
+            // descendente tem outra base -> outra "linha" para o LocationTextExtractionStrategy), nas duas camadas e
+            // desde a v2.7; aqui só se exige que nenhuma palavra se junte a outra (mesmo multiconjunto de palavras).
+            var palavrasIText = itext.SelectMany(l => l.Split(' ', StringSplitOptions.RemoveEmptyEntries)).OrderBy(w => w, StringComparer.Ordinal);
+            var palavrasFixture = linhas.SelectMany(l => l.Split(' ', StringSplitOptions.RemoveEmptyEntries)).OrderBy(w => w, StringComparer.Ordinal);
+            if (!palavrasIText.SequenceEqual(palavrasFixture)) falhas.Add($"iText  [{string.Join(" / ", linhas)}] -> [{string.Join(" / ", itext)}]");
+        }
+        Assert.True(falhas.Count == 0, string.Join("\n", falhas));
     }
 
     private static void RunOnSta(Action scenario)

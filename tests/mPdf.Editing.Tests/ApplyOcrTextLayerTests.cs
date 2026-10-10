@@ -168,6 +168,150 @@ public class ApplyOcrTextLayerTests
             () => Editor.ApplyOcrTextLayer(Fixtures.Carimbo(), new[] { layer }));
     }
 
+    // --- Largura certa (feat/ocr-largura: Tz na camada invisível) ---------
+    // Oráculo: as caixas de caractere do PDFium (motor INDEPENDENTE do iText que escreveu), no frame
+    // EXIBIDO — o mesmo que o App usa pra busca/seleção. Largura da palavra = min Left → max Right.
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(90)]
+    [InlineData(180)]
+    [InlineData(270)]
+    public void ApplyOcrTextLayer_WordWidthMatchesOcrBox(int rotation)
+    {
+        byte[] pdf = Fixtures.NoText();
+        if (rotation != 0) pdf = Editor.RotatePages(pdf, new[] { 0 }, rotation);
+        bool swap = rotation is 90 or 270;
+        double dispWpt = swap ? A4HeightPt : A4WidthPt, dispHpt = swap ? A4WidthPt : A4HeightPt;
+        const double Scale = 2.0; // bitmap a 144 dpi: fator px->pt = 0,5 (prova que a largura usa fatorX)
+        // Helvetica natural a 14 pt: "Joaquim" ≈ 52,9 pt numa caixa bem ESTREITA (35 pt, 66%) e "Avenida" ≈ 50,6 pt
+        // numa um pouco estreita (42 pt, 83%): as duas são COMPRIMIDAS até a caixa. O Tz escala o AVANÇO; o PDFium
+        // mede a caixa do GLIFO, então os recuos laterais da 1ª/última letra (escalados) ficam dentro da caixa.
+        // "Gomes" ≈ 41,2 pt numa caixa LARGA (90 pt): NUNCA estica (fix round 2 — esticar juntava palavras na
+        // extração), fica na largura natural, começando na borda esquerda da caixa e dentro dela.
+        var layer = new OcrTextLayer(0, (int)Math.Round(dispWpt * Scale), (int)Math.Round(dispHpt * Scale), new[]
+        {
+            new OcrTextBox("Joaquim", 60 * Scale, 100 * Scale, 35 * Scale, 14 * Scale),
+            new OcrTextBox("Avenida", 60 * Scale, 200 * Scale, 42 * Scale, 14 * Scale),
+            new OcrTextBox("Gomes", 60 * Scale, 300 * Scale, 90 * Scale, 14 * Scale),
+        });
+
+        byte[] result = Editor.ApplyOcrTextLayer(pdf, new[] { layer });
+
+        foreach (var (word, caixa) in new[] { ("Joaquim", 35.0), ("Avenida", 42.0) })
+        {
+            var w = WordExtentDisplayed(result, word);
+            Assert.True(Math.Abs(w.Left - 60) <= 2, $"'{word}': esquerda {w.Left:F2} (esperado 60)");
+            Assert.True(Math.Abs(w.Width - caixa) <= 2, $"'{word}': largura {w.Width:F2} (esperado {caixa})");
+        }
+        var larga = WordExtentDisplayed(result, "Gomes");
+        double natural = Editor.MeasureTextWidth(TextFontFamily.SansSerif, false, false, 14, "Gomes");
+        Assert.True(Math.Abs(larga.Left - 60) <= 2, $"esquerda larga {larga.Left:F2} (esperado 60)");
+        Assert.True(Math.Abs(larga.Width - natural) <= 2 && larga.Width < 90, $"largura larga {larga.Width:F2} (natural {natural:F2}, caixa 90)");
+    }
+
+    [Fact] // "Joaquim" "Pereira" com caixas estreitas: a Helvetica natural da 1ª passaria por cima da 2ª
+    public void ApplyOcrTextLayer_AdjacentWordsExtractSeparately()
+    {
+        // Helvetica natural a 14 pt: "Joaquim" ≈ 52,9 pt, mas a caixa tem 38 pt e a próxima começa 4 pt depois.
+        var layer = new OcrTextLayer(0, 595, 842, new[]
+        {
+            new OcrTextBox("Joaquim", 100, 100, 38, 14),
+            new OcrTextBox("Pereira", 142, 100, 36, 14),
+        });
+
+        byte[] result = Editor.ApplyOcrTextLayer(Fixtures.NoText(), new[] { layer });
+
+        using var r = new PdfDocumentRenderer(result);
+        string text = r.GetTextPage(0).Text;
+        Assert.Contains("Joaquim Pereira", text);
+        Assert.DoesNotContain("JoaquimPereira", text);
+        var a = WordExtentDisplayed(result, "Joaquim");
+        var b = WordExtentDisplayed(result, "Pereira");
+        Assert.True(a.Left + a.Width < b.Left, $"as palavras se sobrepõem: Joaquim até {a.Left + a.Width:F2}, Pereira de {b.Left:F2}");
+    }
+
+    [Theory] // CropBox deslocada (MediaBox maior): largura E posição no frame exibido batem com a caixa
+    [InlineData(30f, 50f, 0)]
+    [InlineData(30f, 50f, 90)]
+    [InlineData(30f, 50f, 180)]
+    [InlineData(30f, 50f, 270)]
+    public void ApplyOcrTextLayer_CroppedPage_WidthMatchesBox(float ox, float oy, int rotation)
+    {
+        byte[] pdf;
+        using (var output = new MemoryStream())
+        {
+            using (var doc = new PdfDocument(new PdfWriter(output)))
+            {
+                var page = doc.AddNewPage(new PageSize(595 + 2 * ox + 40, 842 + 2 * oy + 25));
+                page.SetCropBox(new Rectangle(ox, oy, 595, 842));
+                page.SetRotation(rotation);
+            }
+            pdf = output.ToArray();
+        }
+        bool swap = rotation is 90 or 270;
+        double dispW = swap ? 842 : 595, dispH = swap ? 595 : 842;
+        const double Scale = 2.0;
+        var layer = new OcrTextLayer(0, (int)(dispW * Scale), (int)(dispH * Scale), new[]
+        {
+            new OcrTextBox("PALAVRA", 100 * Scale, 200 * Scale, 38 * Scale, 12 * Scale), // natural ≈ 51 pt -> comprime
+        });
+
+        byte[] result = Editor.ApplyOcrTextLayer(pdf, new[] { layer });
+
+        var w = WordExtentDisplayed(result, "PALAVRA");
+        Assert.True(Math.Abs(w.Left - 100) <= 2, $"esquerda {w.Left:F2} (esperado 100)");
+        Assert.True(Math.Abs(w.Width - 38) <= 2, $"largura {w.Width:F2} (esperado 38)");
+    }
+
+    [Fact] // caixa sem largura (WidthPx <= 0) -> comportamento antigo: Helvetica natural, sem Tz. Vem DEPOIS de
+    // uma caixa escalada: prova também que o Tz da anterior não vaza para ela.
+    public void ApplyOcrTextLayer_ZeroWidthBox_FallsBackToNaturalWidth()
+    {
+        var layer = new OcrTextLayer(0, 595, 842, new[]
+        {
+            new OcrTextBox("Joaquim", 100, 100, 30, 14), // comprimida (natural ≈ 52,9 pt)
+            new OcrTextBox("Pereira", 100, 200, 0, 14),   // sem largura
+            new OcrTextBox("Gomes", 100, 300, -5, 14),    // largura negativa (defesa)
+        });
+
+        byte[] result = Editor.ApplyOcrTextLayer(Fixtures.NoText(), new[] { layer });
+
+        Assert.True(WordExtentDisplayed(result, "Joaquim").Width < 33); // sanity: a 1ª foi mesmo comprimida
+        foreach (var word in new[] { "Pereira", "Gomes" })
+        {
+            double natural = Editor.MeasureTextWidth(TextFontFamily.SansSerif, false, false, 14, word);
+            var w = WordExtentDisplayed(result, word);
+            Assert.True(Math.Abs(w.Width - natural) <= 2, $"'{word}': largura {w.Width:F2}, natural {natural:F2}");
+            Assert.True(Math.Abs(w.Left - 100) <= 2, $"'{word}': esquerda {w.Left:F2} (esperado 100)");
+        }
+    }
+
+    [Fact] // controle do gerador de teste da camada LEGADA (usado pelo Corrigir texto nas duas camadas): ele
+    // tem de continuar SEM ajuste de largura — se "consertarem" o helper, a cobertura de PDFs antigos some calada.
+    public void LegacyOcrLayer_KeepsNaturalHelveticaWidth()
+    {
+        var layer = new OcrTextLayer(0, 595, 842, new[] { new OcrTextBox("Joaquim", 100, 100, 35, 14) });
+        byte[] legacy = LegacyOcrLayer.Apply(Fixtures.NoText(), new[] { layer });
+        byte[] nova = Editor.ApplyOcrTextLayer(Fixtures.NoText(), new[] { layer });
+        double natural = Editor.MeasureTextWidth(TextFontFamily.SansSerif, false, false, 14, "Joaquim");
+        Assert.True(Math.Abs(WordExtentDisplayed(legacy, "Joaquim").Width - natural) <= 2);
+        Assert.True(Math.Abs(WordExtentDisplayed(nova, "Joaquim").Width - 35) <= 2);
+    }
+
+    /// Extensão horizontal EXIBIDA da palavra pelas caixas de caractere do PDFium. Em página girada o Docnet
+    /// transforma os 2 cantos separadamente (Left/Right podem vir trocados) — min/max dá a caixa exibida.
+    private static (double Left, double Width) WordExtentDisplayed(byte[] pdf, string word)
+    {
+        using var r = new PdfDocumentRenderer(pdf);
+        var tp = r.GetTextPage(0);
+        int i = tp.Text.IndexOf(word, StringComparison.Ordinal);
+        Assert.True(i >= 0, $"'{word}' não extraído pelo PDFium: '{tp.Text}'");
+        var cs = tp.Characters.Skip(i).Take(word.Length).ToList();
+        double l = cs.Min(c => Math.Min(c.LeftPt, c.RightPt)), rr = cs.Max(c => Math.Max(c.LeftPt, c.RightPt));
+        return (l, rr - l);
+    }
+
     // --- helpers ----------------------------------------------------------
 
     private static string ExtractText(byte[] pdf, int page1Based)

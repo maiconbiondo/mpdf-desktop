@@ -392,16 +392,22 @@ public class TextCorrectionFrameTests
 
     /// "CONCEIÇÃO gqpy AÇÃO" como num scan Arial Narrow: a caixa OCR de CONCEIÇÃO é alta (acentos + cedilha)
     /// e estreita, então a Helvetica invisível dela (tamanho = altura da caixa) passa por cima de gqpy.
-    private static (byte[] Pdf, double Sx, double Sy, PdfFont Helv) OcrConceicao() =>
-        (Editor.ApplyOcrTextLayer(Fixtures.NoText(), new[]
+    /// feat/ocr-largura: esse vazamento só existe na camada LEGADA (sem Tz) — PDFs reconhecidos até a
+    /// v2.14.1 — e é nela que estes 3 testes rodam agora (`LegacyOcrLayer`). A camada nova: ver
+    /// `ProbeTextStyle_OcrNewLayer_TallNarrowBox_EachWordAlone`.
+    private static readonly OcrTextLayer[] ConceicaoBoxes =
+    {
+        new OcrTextLayer(0, 800, 1131, new[]
         {
-            new OcrTextLayer(0, 800, 1131, new[]
-            {
-                new OcrTextBox("CONCEIÇÃO", LeftPx: 100, TopPx: 100, WidthPx: 170, HeightPx: 46),
-                new OcrTextBox("gqpy", LeftPx: 280, TopPx: 112, WidthPx: 70, HeightPx: 34),
-                new OcrTextBox("AÇÃO", LeftPx: 360, TopPx: 100, WidthPx: 90, HeightPx: 46),
-            }),
-        }), 595.0 / 800, 842.0 / 1131, PdfFontFactory.CreateFont(StandardFonts.HELVETICA));
+            new OcrTextBox("CONCEIÇÃO", LeftPx: 100, TopPx: 100, WidthPx: 170, HeightPx: 46),
+            new OcrTextBox("gqpy", LeftPx: 280, TopPx: 112, WidthPx: 70, HeightPx: 34),
+            new OcrTextBox("AÇÃO", LeftPx: 360, TopPx: 100, WidthPx: 90, HeightPx: 46),
+        }),
+    };
+
+    private static (byte[] Pdf, double Sx, double Sy, PdfFont Helv) OcrConceicao() =>
+        (LegacyOcrLayer.Apply(Fixtures.NoText(), ConceicaoBoxes),
+         595.0 / 800, 842.0 / 1131, PdfFontFactory.CreateFont(StandardFonts.HELVETICA));
 
     /// Área como o App a monta: caixas de glifo do PDFium da Helvetica invisível do token (largura da
     /// Helvetica a partir do início da caixa OCR), na altura da linha.
@@ -440,5 +446,26 @@ public class TextCorrectionFrameTests
         var a2 = AreaHelvetica(280, 112, 34, "gqpy", sx, sy, helv);
         var p = Editor.ProbeTextStyle(pdf, 0, new PdfQuad(a1.LeftPt, Math.Min(a1.BottomPt, a2.BottomPt), Math.Max(a1.RightPt, a2.RightPt) + 4, a1.TopPt));
         Assert.Equal("CONCEIÇÃO gqpy", p!.TokenText);
+    }
+
+    [Fact] // camada NOVA (Tz): a palavra invisível tem a largura da caixa OCR — selecionar cada palavra pelas
+    // caixas de glifo do PDFium (como o App faz) traz só ela, e as caixas não se sobrepõem.
+    public void ProbeTextStyle_OcrNewLayer_TallNarrowBox_EachWordAlone()
+    {
+        byte[] pdf = Editor.ApplyOcrTextLayer(Fixtures.NoText(), ConceicaoBoxes);
+        using var r = new PdfDocumentRenderer(pdf);
+        var tp = r.GetTextPage(0);
+        PdfQuad Area(string w)
+        {
+            int i = tp.Text.IndexOf(w, StringComparison.Ordinal);
+            Assert.True(i >= 0, $"'{w}' ausente: {tp.Text}");
+            var cs = tp.Characters.Skip(i).Take(w.Length).ToList();
+            return new PdfQuad(cs.Min(c => c.LeftPt), cs.Min(c => c.BottomPt), cs.Max(c => c.RightPt), cs.Max(c => c.TopPt));
+        }
+        var conceicao = Area("CONCEIÇÃO");
+        var gqpy = Area("gqpy");
+        Assert.True(conceicao.RightPt < gqpy.LeftPt, $"CONCEIÇÃO até {conceicao.RightPt}, gqpy de {gqpy.LeftPt}");
+        Assert.Equal("CONCEIÇÃO", Editor.ProbeTextStyle(pdf, 0, conceicao)!.TokenText);
+        Assert.Equal("gqpy", Editor.ProbeTextStyle(pdf, 0, gqpy)!.TokenText);
     }
 }

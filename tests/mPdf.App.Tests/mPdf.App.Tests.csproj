@@ -18,6 +18,16 @@
          precedente já usado em tests/mPdf.Signing.Tests/mPdf.Signing.Tests.csproj. Só neste projeto de
          teste, nunca em src/**. -->
     <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
+    <!-- feat/ocr-largura: PackageReference DIRETA ao iText só pra compilar o gerador da camada OCR LEGADA
+         (LegacyOcrLayer, linkado abaixo de mPdf.Editing.Tests) — o "Corrigir texto" tem de seguir
+         funcionando em PDFs reconhecidos até a v2.14.1. Mesmo precedente de
+         tests/mPdf.Editing.Tests/mPdf.Editing.Tests.csproj: AgplGuardTests só varre src/**, e nada de
+         src/mPdf.App ganha acesso ao iText (a ProjectReference continua com PrivateAssets=compile). -->
+    <PackageReference Include="itext" Version="9.7.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\mPdf.Editing.Tests\LegacyOcrLayer.cs" Link="LegacyOcrLayer.cs" />
   </ItemGroup>
 
   <ItemGroup>

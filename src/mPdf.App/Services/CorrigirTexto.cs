@@ -506,7 +506,7 @@ public static class AreaDeTinta
             return sobre >= 0.5 * (p.B - p.A + 1);
         }).ToList();
         int xa, xb;
-        int? limiteDireitoPx = null;
+        int? limiteDireitoPx = null, inicioAlheioPx = null, inicioProprioPx = null;
         if (limitesOcr is { } lo)
         {
             // Rodada 5 (X-1), ESTRUTURAL: a palavra vai do início da caixa OCR dela até o início da caixa do
@@ -514,18 +514,72 @@ public static class AreaDeTinta
             // maiúsculas do Arial — E|I, M|E, B|R — passavam do limiar de "palavra" da tinta). Última palavra
             // da linha: a tinta segue enquanto as lacunas forem menores que 0,25 em (em ~ corpo / 0,72).
             xa = Math.Clamp((int)Math.Floor(lo.LeftPt * scale), 0, wp - 1);
+            // Fix round 1/2 (feat/ocr-largura): as bordas da caixa OCR podem cair sobre a tinta da palavra VIZINHA
+            // (sujeira, serifa saliente, caixa do OCR um pouco larga — no scan GDI de linha longa a faixa medida
+            // desliza e o rabo do "S" de "DOS" entrava 6 px na caixa de "SANTOS"). Decide-se pela CORRIDA de colunas
+            // de tinta CONSECUTIVAS (sem coluna em branco) que atravessa a borda — não pela "palavra de tinta" do
+            // perfil, que junta palavras com lacuna <= 0,18 x altura (itálico, tinta borrada, justificação apertada)
+            // e mandava a palavra inteira para o lado errado (revisão, fix round 2). Dono da corrida = o lado cuja
+            // tinta está CLARAMENTE mais perto dela (uma lacuna de letra de um lado, de palavra do outro: a maior
+            // >= 2x a menor + 1 e >= 3 px); senão (borda no meio de uma palavra de tinta contínua) nada muda.
+            // Borda numa coluna em branco -> nada atravessa, nada muda.
+            // Deslocamento <= 0,5 em (senão a borda fica onde o OCR disse).
+            // - borda esquerda: corrida da esquerda -> rabo da anterior: a palavra começa depois dela e a área não a
+            //   limpa; da direita -> começo DESTA palavra: começa no início da corrida;
+            // - corte direito (antes do próximo token): da esquerda -> rabo DESTA palavra: o limite vai até o fim
+            //   dela; da direita -> começo do PRÓXIMO: o limite recua para antes dela.
+            int meioEm = Math.Max(2, (int)Math.Round(0.5 * alt / 0.72));
+            bool ColunaComTinta(int x) { if (x < 0 || x >= wp) return false; for (int y = top; y <= bot; y++) if (Tinta(x, y)) return true; return false; }
+            (int A, int B)? Corrida(int borda)
+            {
+                if (!ColunaComTinta(borda - 1) || !ColunaComTinta(borda)) return null;
+                int a = borda - 1, b = borda;
+                while (a - 1 >= 0 && borda - a <= meioEm && ColunaComTinta(a - 1)) a--;
+                while (b + 1 < wp && b - borda < meioEm && ColunaComTinta(b + 1)) b++;
+                return (a, b);
+            }
+            int LacunaAte(int x, int passo)
+            {
+                int n = 0;
+                for (x += passo; x >= 0 && x < wp && n <= 3 * meioEm && !ColunaComTinta(x); x += passo) n++;
+                return n;
+            }
+            // true = a corrida é do lado ESQUERDO da borda; false = do direito; null = indecidível.
+            bool? DaEsquerda((int A, int B) c, int borda)
+            {
+                int gl = LacunaAte(c.A, -1), gr = LacunaAte(c.B, +1);
+                int menor = Math.Min(gl, gr), maior = Math.Max(gl, gr);
+                return maior >= 3 && maior >= 2 * menor + 1 ? gl < gr : null;
+            }
+            if (Corrida(xa) is { } ce && DaEsquerda(ce, xa) is bool ceEsq)
+            {
+                if (ceEsq) { if (ce.B + 1 - xa <= meioEm) { xa = Math.Min(wp - 1, ce.B + 1); inicioAlheioPx = xa; } }
+                else if (xa - ce.A <= meioEm) { xa = ce.A; inicioProprioPx = xa; }
+            }
             xb = xa;
             if (lo.NextLeftPt is double prox)
             {
-                limiteDireitoPx = Math.Clamp((int)Math.Floor((prox - meioPt) * scale), xa + 1, wp);
+                int lim = Math.Clamp((int)Math.Floor((prox - meioPt) * scale), xa + 1, wp);
+                if (Corrida(lim) is { } cd && DaEsquerda(cd, lim) is bool cdEsq)
+                {
+                    int pad1 = Math.Max(1, (int)Math.Round(scale / 2));
+                    if (cdEsq) { if (cd.B + 1 + pad1 - lim <= meioEm) lim = Math.Min(wp, cd.B + 1 + pad1); }
+                    else if (lim - cd.A <= meioEm) lim = Math.Max(xa + 1, cd.A);
+                }
+                limiteDireitoPx = lim;
                 for (int x = xa; x < limiteDireitoPx; x++)
                     for (int y = top; y <= bot; y++) if (Tinta(x, y)) { xb = x; break; }
             }
             else
             {
+                // A regra das lacunas (< 0,25 em) só vale DEPOIS da tinta desta palavra (as palavras de tinta com
+                // >= 50% dentro da seleção): antes, uma lasca de tinta na borda esquerda da caixa seguida de uma
+                // lacuna maior que 0,25 em encerrava a busca na lasca — a área ficava com ~2 pt e a palavra inteira
+                // sobrava (a regra é da ÚLTIMA palavra da linha, sem próximo token que limite a direita).
+                xb = Math.Max(xa, escolhidas.Where(p => p.B >= xa).Select(p => p.B).DefaultIfEmpty(xa).Max());
                 int gapEm = Math.Max(2, (int)Math.Round(0.25 * alt / 0.72));
                 for (int x = xa; x < wp && x - xb <= gapEm; x++)
-                    for (int y = top; y <= bot; y++) if (Tinta(x, y)) { xb = x; break; }
+                    for (int y = top; y <= bot; y++) if (Tinta(x, y)) { xb = Math.Max(xb, x); break; }
             }
         }
         else if (escolhidas.Count > 0) { xa = escolhidas.Min(p => p.A); xb = escolhidas.Max(p => p.B); }
@@ -596,6 +650,8 @@ public static class AreaDeTinta
         {
             // Limpa TUDO entre o início da caixa e o próximo token (o vão é fundo), ou até a tinta + 1 pt.
             leftPt = Math.Max(0, lo2.LeftPt - meioPt);
+            if (inicioAlheioPx is int ia) leftPt = Math.Max(leftPt, ia / scale); // não limpa o rabo da palavra anterior
+            else if (inicioProprioPx is int ip) leftPt = Math.Max(0, Math.Min(leftPt, (ip - pad) / scale)); // começo desta antes da caixa
             rightPt = limiteDireitoPx is int lim ? lim / scale : Math.Min(wp, xb + 1 + pad) / scale;
         }
         if (faixaPt is null)
