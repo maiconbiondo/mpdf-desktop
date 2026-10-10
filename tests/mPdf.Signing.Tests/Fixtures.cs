@@ -86,14 +86,34 @@ public static class Fixtures
     // Fixture PDF/A REAL gerada pelo próprio motor de Editing (`CriarPdfADeImagens` produz PDF/A válido
     // por construção — RECUSA gerar bytes fora das regras). A regra "toda fonte embutida" é IDÊNTICA em
     // A1/A2/A3 e em B/A, então um A2B reproduz exatamente a mesma falha do A3A do usuário.
-    public static byte[] PdfA()
+    public static byte[] PdfA() => PdfA(mPdf.Editing.PdfANivel.A2B);
+
+    // Bug do carimbo em PDF/A-1b (o nível PADRÃO do "Salvar como PDF/A", PdfADialog): PDF/A-1 proíbe
+    // transparência (CA/ca < 1, SMask) — regra que NÃO existe em A2/A3, por isso o A2B acima não pegava.
+    public static byte[] PdfA(mPdf.Editing.PdfANivel nivel)
     {
         var editor = mPdf.Editing.PdfEditorFactory.Create();
         var img = File.ReadAllBytes(Path.Combine(Root, "pagina-solida.jpg"));
         var pagina = new mPdf.Editing.PdfAPaginaImagem(img, 612, 792, 850, 1100, null);
         return editor.CriarPdfADeImagens(
-            new[] { pagina }, mPdf.Editing.PdfANivel.A2B, new mPdf.Editing.PdfAMetadados("Doc", "mPDF"), null);
+            new[] { pagina }, nivel, new mPdf.Editing.PdfAMetadados("Doc", "mPDF"), null);
     }
+
+    // PDF/A de uma "página escaneada" de cor sólida (papel cinza, ex. (222,220,212)) — o caso REAL do
+    // mPDF: o PDF/A do app é sempre páginas de imagem (scan), nunca fundo branco garantido.
+#pragma warning disable CA1416 // System.Drawing (GDI+): testes rodam só em Windows, como o app
+    public static byte[] PdfAScan(mPdf.Editing.PdfANivel nivel, int r, int g, int b)
+    {
+        using var bmp = new System.Drawing.Bitmap(850, 1100);
+        using (var gr = System.Drawing.Graphics.FromImage(bmp))
+            gr.Clear(System.Drawing.Color.FromArgb(r, g, b));
+        using var jpg = new MemoryStream();
+        bmp.Save(jpg, System.Drawing.Imaging.ImageFormat.Jpeg);
+        var pagina = new mPdf.Editing.PdfAPaginaImagem(jpg.ToArray(), 612, 792, 850, 1100, null);
+        return mPdf.Editing.PdfEditorFactory.Create().CriarPdfADeImagens(
+            new[] { pagina }, nivel, new mPdf.Editing.PdfAMetadados("Doc", "mPDF"), null);
+    }
+#pragma warning restore CA1416
 
     public static byte[] FullCompression()
     {

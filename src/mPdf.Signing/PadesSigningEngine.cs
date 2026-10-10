@@ -124,7 +124,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
             if (request.Stamp is { } stamp)
                 ApplyVisibleStamp(props, stamp, request.Certificate, request.Reason, request.Location,
                     inspection.StampPageRotation, inspection.StampPageMediaW, inspection.StampPageMediaH,
-                    inspection.StampPageOriginX, inspection.StampPageOriginY);
+                    inspection.StampPageOriginX, inspection.StampPageOriginY, inspection.IsPdfA1);
 
             padesSigner.SignWithBaselineBProfile(props, chain, signature);
             return output.ToArray();
@@ -172,7 +172,8 @@ internal sealed class PadesSigningEngine : ISigningEngine
     /// hipóteses ficam truncados com "..." (nunca um comportamento pior que uma linha cortada).
     private static void ApplyVisibleStamp(
         SignerProperties props, VisibleStampSpec stamp, X509Certificate2 certificate, string? reason,
-        string? location, int rotation, double mediaW, double mediaH, double originX, double originY)
+        string? location, int rotation, double mediaW, double mediaH, double originX, double originY,
+        bool opaqueForPdfA1)
     {
         var r = stamp.Rect;
         // Dimensões EXIBIDAS (o que o usuário desenhou/vê) — a camada de aparência (texto/selo/rubrica)
@@ -195,7 +196,12 @@ internal sealed class PadesSigningEngine : ISigningEngine
         // doc XML abaixo. A imagem já foi decodificada/validada em `ValidateStamp` (`ImageDataFactory`).
         if (stamp.ImageBytes is { } rubricaBytes)
         {
-            var imageData = iText.IO.Image.ImageDataFactory.Create(rubricaBytes);
+            // PDF/A-1 proíbe /SMask (ISO 19005-1 §6.4): o alfa da rubrica vira máscara stencil de 1 bit
+            // (o papel do scan continua visível) — ver PdfA1Opaque.StencilFromAlpha. A2/A3/não-PDF/A:
+            // bytes intocados.
+            var imageData = opaqueForPdfA1
+                ? PdfA1Opaque.StencilFromAlpha(rubricaBytes)
+                : iText.IO.Image.ImageDataFactory.Create(rubricaBytes);
             var rubricaDiv = new Div().SetWidth(widthPt).SetHeight(heightPt);
             rubricaDiv.SetNextRenderer(new RubricaAppearanceRenderer(rubricaDiv, imageData));
 
@@ -217,7 +223,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
         var fontBold = LoadEmbeddedStampFont("Inter-700.ttf");
 
         var div = new Div().SetWidth(widthPt).SetHeight(heightPt);
-        div.SetNextRenderer(new StampAppearanceRenderer(div, certificate, reason, location, font, fontBold));
+        div.SetNextRenderer(new StampAppearanceRenderer(div, certificate, reason, location, font, fontBold, opaqueForPdfA1));
 
         var appearance = new SignatureFieldAppearance(SignerProperties.IGNORED_ID).SetContent(div);
         // Revisão final do coordenador — achado real, verificado ao vivo com um render/scan pixel-a-
@@ -263,7 +269,8 @@ internal sealed class PadesSigningEngine : ISigningEngine
     /// NOVO precisa de uma instância NOVA deste renderer a cada `GetNextRenderer` (mesmo contrato de
     /// `IRenderer`/`DivRenderer` — o iText pode reusar o modelo pra relayout).
     private sealed class StampAppearanceRenderer(
-        Div modelDiv, X509Certificate2 certificate, string? reason, string? location, PdfFont font, PdfFont fontBold)
+        Div modelDiv, X509Certificate2 certificate, string? reason, string? location, PdfFont font, PdfFont fontBold,
+        bool opaqueForPdfA1)
         : DivRenderer(modelDiv)
     {
         // Fina o bastante pra caber em conjunto com nome+data até no tamanho MÍNIMO da caixa
@@ -272,9 +279,15 @@ internal sealed class PadesSigningEngine : ISigningEngine
         private const float BorderPt = 0.75f, PaddingPt = 1.5f;
         private static readonly DeviceRgb NavyColor = new(0x1D, 0x4E, 0x89); // Assets/logo.svg: página
         private static readonly DeviceRgb TealColor = new(0x3E, 0xC1, 0xA7); // Assets/logo.svg: rubrica
+        private const float SealFillAlpha = 0.10f, SealStrokeAlpha = 0.12f;
+        // PDF/A-1: tons opacos do selo SÓ-TRAÇO (ver DrawWatermarkSeal) — o alfa do modo translúcido
+        // composto sobre o papel de scan de referência (PdfA1Opaque.ScanPaper).
+        private static readonly DeviceRgb OpaqueSealOutline = PdfA1Opaque.OverScanPaper(0x1D, 0x4E, 0x89, SealStrokeAlpha);
+        private static readonly DeviceRgb OpaqueSealStroke = PdfA1Opaque.OverScanPaper(0x3E, 0xC1, 0xA7, SealStrokeAlpha);
+        private static readonly DeviceRgb OpaqueSealDot = PdfA1Opaque.OverScanPaper(0x3E, 0xC1, 0xA7, SealFillAlpha);
 
         public override IRenderer GetNextRenderer() =>
-            new StampAppearanceRenderer((Div)GetModelElement(), certificate, reason, location, font, fontBold);
+            new StampAppearanceRenderer((Div)GetModelElement(), certificate, reason, location, font, fontBold, opaqueForPdfA1);
 
         public override void Draw(DrawContext drawContext)
         {
@@ -283,7 +296,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
             var canvas = drawContext.GetCanvas();
 
             DrawFrame(canvas, bbox);
-            DrawWatermarkSeal(canvas, bbox);
+            DrawWatermarkSeal(canvas, bbox, opaqueForPdfA1);
             DrawText(canvas, bbox);
         }
 
@@ -314,24 +327,46 @@ internal sealed class PadesSigningEngine : ISigningEngine
         /// — preservando sempre a proporção e o centro. Nos 2 tamanhos "de catálogo" (sempre mais
         /// largos que altos) o orçamento de altura continua vencendo — comportamento IDÊNTICO ao de
         /// antes, sem regressão (ver `Sign_WithVisibleStamp_{Default,Min}Box_ShowsTranslucentWatermark...`).
-        private static void DrawWatermarkSeal(PdfCanvas canvas, Rectangle bbox)
+        ///
+        /// PDF/A-1 (`opaque`): a ISO 19005-1 §6.4 proíbe QUALQUER transparência (CA/ca precisam ser 1) — o
+        /// `PdfPadesSigner` recusava a revisão (`Transparency is not allowed. CA shall be equal to 1`) e o
+        /// usuário via "Não foi possível assinar". Nesse caso o selo vai SEM ExtGState e SEM preenchimento:
+        /// o PDF/A do mPDF é página escaneada (papel cinza), e uma página navy PREENCHIDA opaca viraria um
+        /// bloco claro escondendo o scan (achado da revisão). Fica só o CONTORNO da página do selo + a
+        /// rubrica teal + o ponto, em tons opacos discretos (`PdfA1Opaque.OverScanPaper`: o alfa sobre papel de scan).
+        /// Mesma geometria; fora do PDF/A-1 nada muda (pinado por
+        /// `PdfA1StampTests.Sign_NonPdfA1_DefaultStamp_...`).
+        private static void DrawWatermarkSeal(PdfCanvas canvas, Rectangle bbox, bool opaque)
         {
             const float SealAspect = 0.62f; // largura/altura do selo -- mesma proporção de antes
             float cx = bbox.GetLeft() + bbox.GetWidth() / 2f;
             float cy = bbox.GetBottom() + bbox.GetHeight() / 2f;
 
             canvas.SaveState();
-            canvas.SetExtGState(new PdfExtGState().SetFillOpacity(0.10f).SetStrokeOpacity(0.12f));
+            if (!opaque)
+                canvas.SetExtGState(new PdfExtGState().SetFillOpacity(SealFillAlpha).SetStrokeOpacity(SealStrokeAlpha));
 
             float heightBudget = bbox.GetHeight() * 0.82f;
             float widthBudgetAsHeight = (bbox.GetWidth() * 0.82f) / SealAspect;
             float pageHeight = Math.Min(heightBudget, widthBudgetAsHeight);
             float pageWidth = pageHeight * SealAspect;
-            canvas.SetFillColor(NavyColor);
-            canvas.RoundRectangle(cx - pageWidth / 2, cy - pageHeight / 2, pageWidth, pageHeight, pageHeight * 0.10);
-            canvas.Fill();
+            if (opaque)
+            {
+                float outline = Math.Max(0.5f, pageHeight * 0.02f);
+                canvas.SetStrokeColor(OpaqueSealOutline);
+                canvas.SetLineWidth(outline);
+                canvas.RoundRectangle(cx - pageWidth / 2 + outline / 2, cy - pageHeight / 2 + outline / 2,
+                    pageWidth - outline, pageHeight - outline, pageHeight * 0.10);
+                canvas.Stroke();
+            }
+            else
+            {
+                canvas.SetFillColor(NavyColor);
+                canvas.RoundRectangle(cx - pageWidth / 2, cy - pageHeight / 2, pageWidth, pageHeight, pageHeight * 0.10);
+                canvas.Fill();
+            }
 
-            canvas.SetStrokeColor(TealColor);
+            canvas.SetStrokeColor(opaque ? OpaqueSealStroke : TealColor);
             canvas.SetLineWidth(Math.Max(1.0f, pageHeight * 0.05f));
             canvas.SetLineCapStyle(PdfCanvasConstants.LineCapStyle.ROUND);
             float sx = cx - pageWidth * 0.32f, sy = cy - pageHeight * 0.12f;
@@ -345,7 +380,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
                 sx + pageWidth * 0.62f, sy + pageHeight * 0.06f,
                 sx + pageWidth * 0.72f, sy - pageHeight * 0.04f);
             canvas.Stroke();
-            canvas.SetFillColor(TealColor);
+            canvas.SetFillColor(opaque ? OpaqueSealDot : TealColor);
             canvas.Circle(sx + pageWidth * 0.76f, sy - pageHeight * 0.05f, pageHeight * 0.03f);
             canvas.Fill();
 
@@ -573,7 +608,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
         int ExistingSignatures, int PageCount, string FieldName,
         DocMdpCertificationProbe.Result CertificationProbe, int CertificationP,
         int StampPageRotation, double StampPageMediaW, double StampPageMediaH,
-        double StampPageOriginX, double StampPageOriginY);
+        double StampPageOriginX, double StampPageOriginY, bool IsPdfA1);
 
     private static DocumentInspection InspectDocument(byte[] pdf, int? stampPageIndex)
     {
@@ -603,8 +638,12 @@ internal sealed class PadesSigningEngine : ISigningEngine
             originX = box.GetLeft();
             originY = box.GetBottom();
         }
+        // PDF/A-1 (a/b): identificação lida do XMP pelo próprio iText (`pdfaid:part`) — o MESMO dado que
+        // faz o `PdfPadesSigner` abrir a entrada como PDF/A e aplicar as regras da parte 1 (sem
+        // transparência). A2/A3 permitem transparência e seguem o desenho de sempre.
+        bool isPdfA1 = doc.GetConformance()?.GetAConformance()?.GetPart() == "1";
         return new DocumentInspection(existing, pageCount, fieldName, certProbe, certP, rotation, mediaW, mediaH,
-            originX, originY);
+            originX, originY, isPdfA1);
     }
 
     /// M7 (achado do revisor, escalado a hard gate PRÉ-ROLLOUT): o nome gerado ANTES

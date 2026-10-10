@@ -1929,38 +1929,8 @@ internal sealed class PdfEditor : IPdfEditor
                         if (fontSize <= 0) continue;
 
                         var m = ComputeOcrTextMatrix(rotation, wPt, hPt, xbDisp, ybDisp, llx, lly);
-
-                        // feat/ocr-largura: a palavra invisível é COMPRIMIDA (escala horizontal `Tz` < 100%) até a largura
-                        // da caixa do OCR quando a Helvetica natural passaria dela — em fonte estreita ela invadia a vizinha
-                        // (busca/seleção engoliam o vizinho; o Corrigir texto apagava glifos dele). `Tz` age no espaço do
-                        // texto, ANTES de `Tm`: como `Tm` aqui é só rotação+translação, a escala cai ao longo da baseline
-                        // EXIBIDA nas 4 rotações. Explícito em toda caixa porque `Tz` persiste entre BT..ET.
-                        //
-                        // NUNCA estica (teto 100%; revisão, fix round 2): caixa mais larga que a Helvetica natural é comum
-                        // (palavra só de maiúsculas ou de letras baixas: a caixa é mais baixa que o corpo, então a fonte sai
-                        // pequena) e esticar 140–190% (o hífen batia no teto antigo de 1000%) faz o limiar de espaço do
-                        // PDFium crescer junto — "MARIAAPARECIDA", "RUAXV", "2023 -CENTRO" e quebras de linha falsas na
-                        // extração. Mais estreita que a tinta, a palavra continua pesquisável e não invade nada.
-                        // Caixa sem largura -> 100 (largura natural, comportamento antigo). Piso 10% contra caixa degenerada.
-                        //
-                        // Escala-se o AVANÇO (o que o iText/`ProbeTextStyle` enxergam = a caixa do OCR, quando comprime;
-                        // a baseline começa na borda esquerda da caixa). O PDFium mede a caixa do GLIFO: os recuos laterais
-                        // da 1ª/última letra, escalados, ficam dentro da caixa — aceito, ver ApplyOcrTextLayerTests.
-                        double escala = 100;
-                        double larguraNatural = font.GetWidth(box.Text, (float)fontSize);
-                        double alvo = box.WidthPx * fatorX;
-                        if (larguraNatural > 0 && alvo > 0)
-                            escala = Math.Clamp(alvo / larguraNatural * 100, 10, 100);
-
-                        canvas.BeginText();
-                        canvas.SetFontAndSize(font, (float)fontSize);
-                        // Render mode 3 (INVISIBLE) — o glifo NÃO pinta tinta nenhuma (prova de pixel
-                        // ~zero no render), mas a string continua extraível/pesquisável/copiável.
-                        canvas.SetTextRenderingMode(PdfCanvasConstants.TextRenderingMode.INVISIBLE);
-                        canvas.SetHorizontalScaling((float)escala);
-                        canvas.SetTextMatrix((float)m.A, (float)m.B, (float)m.C, (float)m.D, (float)m.E, (float)m.F);
-                        canvas.ShowText(box.Text);
-                        canvas.EndText();
+                        // Largura-alvo = a da caixa do OCR no frame EXIBIDO (fatorX) — ver EscreverPalavraOcrInvisivel.
+                        EscreverPalavraOcrInvisivel(canvas, font, box.Text, fontSize, box.WidthPx * fatorX, m);
                     }
                     canvas.RestoreState();
                 }
@@ -1980,7 +1950,8 @@ internal sealed class PdfEditor : IPdfEditor
     /// (OutputIntent sRGB embutido, título/autor sincronizados no XMP pelo próprio `PdfADocument`).
     /// Se `pag.Texto` tiver caixas, desenha por cima uma camada de texto INVISÍVEL (render mode 3)
     /// com a fonte embutida `fonteInvisivelTtf` — reusa a MESMA matemática px→pt de
-    /// `ComputeOcrTextMatrix` (rotação 0, já que estas páginas são recém-criadas, nunca giradas).
+    /// `ComputeOcrTextMatrix` (rotação 0, já que estas páginas são recém-criadas, nunca giradas) e a MESMA
+    /// escrita por palavra `EscreverPalavraOcrInvisivel` (largura da caixa do OCR via `Tz`, só comprime).
     /// `PdfADocument` RECUSA gerar bytes fora das regras do PDF/A (lança em vez de devolver um
     /// documento inválido) — se este método retorna, o documento é válido por construção.
     public byte[] CriarPdfADeImagens(
@@ -2027,6 +1998,12 @@ internal sealed class PdfEditor : IPdfEditor
                     ? PdfFontFactory.CreateFont(fonteInvisivelTtf!, PdfEncodings.IDENTITY_H,
                           PdfFontFactory.EmbeddingStrategy.FORCE_EMBEDDED)
                     : null;
+                // feat/pdfa-ocr-largura: marca o glifo do ESPAÇO como usado no subset (efeito colateral de
+                // `ConvertToBytes`, que registra o glifo no /W e no /ToUnicode; nada é desenhado). Sem isso o
+                // espaço não entra no /W e o leitor do iText (copiar/exportar texto) cai no /DW 1000 — um
+                // "espaço" de 1 em, cuja metade é o limiar dele de separação de palavras: "JoaquimPereira".
+                // A Helvetica de ApplyOcrTextLayer não precisa (fonte-base: larguras completas e conhecidas).
+                fonteInv?.ConvertToBytes(" ");
 
                 foreach (var pag in paginas)
                 {
@@ -2045,9 +2022,10 @@ internal sealed class PdfEditor : IPdfEditor
                         double fatorX = pag.LarguraPt / pag.FonteLarguraPx;
                         double fatorY = pag.AlturaPt / pag.FonteAlturaPx;
 
-                        canvas.BeginText();
-                        canvas.SetFontAndSize(fonteInv, 1f);
-                        canvas.SetTextRenderingMode(PdfCanvasConstants.TextRenderingMode.INVISIBLE);
+                        // feat/pdfa-ocr-largura: MESMA escrita por palavra da camada OCR (largura da caixa via `Tz`,
+                        // só comprime) — a Inter natural invadia a vizinha e a extração juntava palavras. q..Q isola
+                        // `Tz`/`Tr`/`Tf` (estado gráfico) do resto da página, como em ApplyOcrTextLayer.
+                        canvas.SaveState();
                         foreach (var box in pag.Texto)
                         {
                             if (string.IsNullOrWhiteSpace(box.Text)) continue; // texto vazio -> nada a gravar
@@ -2058,17 +2036,56 @@ internal sealed class PdfEditor : IPdfEditor
                             if (fontSize <= 0) continue;
 
                             var m = ComputeOcrTextMatrix(0, pag.LarguraPt, pag.AlturaPt, xbDisp, ybDisp, 0, 0);
-                            canvas.SetFontAndSize(fonteInv, (float)fontSize);
-                            canvas.SetTextMatrix((float)m.A, (float)m.B, (float)m.C, (float)m.D, (float)m.E, (float)m.F);
-                            canvas.ShowText(box.Text);
+                            EscreverPalavraOcrInvisivel(canvas, fonteInv, box.Text, fontSize, box.WidthPx * fatorX, m);
                         }
-                        canvas.EndText();
+                        canvas.RestoreState();
                     }
                 }
             }
         }
         catch (ITextException ex) { throw WrapGeneric(ex); }
         return ms.ToArray();
+    }
+
+    /// Escrita ÚNICA de uma palavra da camada OCR invisível — usada por `ApplyOcrTextLayer` (Helvetica) e por
+    /// `CriarPdfADeImagens` (fonte TTF embutida): BT, fonte/tamanho, render mode 3, `Tz`, `Tm`, texto, ET.
+    /// O chamador abre/fecha o q..Q em volta da camada inteira (`Tz`/`Tr`/`Tf` são estado GRÁFICO — sobrevivem
+    /// ao ET e vazariam para qualquer conteúdo acrescentado depois na página).
+    ///
+    /// feat/ocr-largura: a palavra invisível é COMPRIMIDA (escala horizontal `Tz` < 100%) até a largura da caixa
+    /// do OCR (`larguraAlvoPt`) quando a largura natural NA FONTE USADA passaria dela — em fonte estreita ela
+    /// invadia a vizinha (busca/seleção engoliam o vizinho; o Corrigir texto apagava glifos dele). `Tz` age no
+    /// espaço do texto, ANTES de `Tm`: como `Tm` aqui é só rotação+translação, a escala cai ao longo da baseline
+    /// EXIBIDA nas 4 rotações. Explícito em TODA palavra porque `Tz` persiste entre BT..ET.
+    ///
+    /// NUNCA estica (teto 100%; revisão, fix round 2): caixa mais larga que a fonte natural é comum (palavra só
+    /// de maiúsculas ou de letras baixas: a caixa é mais baixa que o corpo, então a fonte sai pequena) e esticar
+    /// 140–190% faz o limiar de espaço do PDFium crescer junto — "MARIAAPARECIDA", "RUAXV", "2023 -CENTRO" e
+    /// quebras de linha falsas na extração. Mais estreita que a tinta, a palavra continua pesquisável e não
+    /// invade nada. Caixa sem largura (ou largura natural nula) -> 100 (largura natural). Piso 10% contra caixa
+    /// degenerada.
+    ///
+    /// Escala-se o AVANÇO (o que o iText/`ProbeTextStyle` enxergam = a caixa do OCR, quando comprime; a baseline
+    /// começa na borda esquerda da caixa). O PDFium mede a caixa do GLIFO: os recuos laterais da 1ª/última letra,
+    /// escalados, ficam dentro da caixa — aceito, ver ApplyOcrTextLayerTests/PdfAEditorTests. `Tz` é operador
+    /// padrão do PDF 1.x (permitido em PDF/A-1/2/3).
+    private static void EscreverPalavraOcrInvisivel(PdfCanvas canvas, PdfFont font, string texto, double fontSize,
+        double larguraAlvoPt, (double A, double B, double C, double D, double E, double F) m)
+    {
+        double escala = 100;
+        double larguraNatural = font.GetWidth(texto, (float)fontSize);
+        if (larguraNatural > 0 && larguraAlvoPt > 0)
+            escala = Math.Clamp(larguraAlvoPt / larguraNatural * 100, 10, 100);
+
+        canvas.BeginText();
+        canvas.SetFontAndSize(font, (float)fontSize);
+        // Render mode 3 (INVISIBLE) — o glifo NÃO pinta tinta nenhuma (prova de pixel ~zero no render), mas a
+        // string continua extraível/pesquisável/copiável.
+        canvas.SetTextRenderingMode(PdfCanvasConstants.TextRenderingMode.INVISIBLE);
+        canvas.SetHorizontalScaling((float)escala);
+        canvas.SetTextMatrix((float)m.A, (float)m.B, (float)m.C, (float)m.D, (float)m.E, (float)m.F);
+        canvas.ShowText(texto);
+        canvas.EndText();
     }
 
     // Nome lógico do recurso ICC (namespace-raiz + caminho pontuado). Resolve por sufixo pra não

@@ -57,7 +57,7 @@ public class CorrigirTextoScanTests
     /// alheia na borda). A caixa fica assim (é o estímulo), mas a MÁSCARA (dono da tinta, usada nas checagens
     /// de sobra e de dano) vem da segmentação real da linha: as N-1 maiores lacunas entre colunas de tinta são
     /// os espaços entre as N palavras.
-    private static Scan BuildScanGdi(string[] linhas, double entrelinha, string fonte, bool legada)
+    private static Scan BuildScanGdi(string[] linhas, double entrelinha, string fonte, bool legada, bool pdfA = false)
     {
         int passo = (int)Math.Round(FontePx * entrelinha);
         var tinta = new Dictionary<string, Int32Rect>();
@@ -119,12 +119,23 @@ public class CorrigirTextoScanTests
         }
         byte[] png;
         using (var ms = new MemoryStream()) { pagina.Save(ms, System.Drawing.Imaging.ImageFormat.Png); png = ms.ToArray(); }
-        return new Scan(AplicarCamada(png, boxes, legada), tinta, bases, mascaras);
+        return new Scan(AplicarCamada(png, boxes, legada, pdfA), tinta, bases, mascaras);
     }
 
-    private static byte[] AplicarCamada(byte[] png, List<OcrTextBox> boxes, bool legada)
+    /// `pdfA` (feat/pdfa-ocr-largura): em vez da camada sobre a imagem, compõe o PDF/A do "Salvar como PDF/A"
+    /// (`CriarPdfADeImagens`, imagem JPEG RGB + texto invisível na fonte embutida Inter — a mesma do App).
+    private static byte[] AplicarCamada(byte[] png, List<OcrTextBox> boxes, bool legada, bool pdfA = false)
     {
         var editor = PdfEditorFactory.Create();
+        if (pdfA)
+        {
+            byte[] jpeg;
+            using (var src = new MemoryStream(png))
+            using (var img = System.Drawing.Image.FromStream(src))
+            using (var ms = new MemoryStream()) { img.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg); jpeg = ms.ToArray(); }
+            var pagina = new PdfAPaginaImagem(jpeg, W * 72.0 / Dpi, H * 72.0 / Dpi, W, H, boxes);
+            return editor.CriarPdfADeImagens(new[] { pagina }, PdfANivel.A2B, new PdfAMetadados("Scan", null), File.ReadAllBytes(Path.Combine(Fixtures.Root, "Inter-400.ttf"))); // cópia da fonte do App (Assets/Fonts)
+        }
         var imagem = editor.ImageToPdf(png);
         var layers = new[] { new OcrTextLayer(0, W, H, boxes) };
         return legada ? LegacyOcrLayer.Apply(imagem, layers) : editor.ApplyOcrTextLayer(imagem, layers);
@@ -153,7 +164,7 @@ public class CorrigirTextoScanTests
 
     /// `entrelinha` em múltiplos do corpo da fonte (1,0 = linhas coladas: descendentes de uma quase tocam
     /// as ascendentes da outra).
-    private static Scan BuildScan(string[] linhas, double entrelinha, string fonte, bool legada)
+    private static Scan BuildScan(string[] linhas, double entrelinha, string fonte, bool legada, bool pdfA = false)
     {
         int passo = (int)Math.Round(FontePx * entrelinha);
         byte[] png = null!;
@@ -216,7 +227,7 @@ public class CorrigirTextoScanTests
             enc.Frames.Add(BitmapFrame.Create(rtb));
             using var ms = new MemoryStream(); enc.Save(ms); png = ms.ToArray();
         });
-        return new Scan(AplicarCamada(png, boxes, legada), tinta, bases, mascaras);
+        return new Scan(AplicarCamada(png, boxes, legada, pdfA), tinta, bases, mascaras);
     }
 
     /// Pixels escuros (luminância < 128) do render num retângulo em PIXELS DE RENDER, opcionalmente
@@ -494,12 +505,31 @@ public class CorrigirTextoScanTests
     {
         Skip.If(fonte == Narrow && !File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "ARIALN.TTF")),
             "Arial Narrow não instalada");
+        var falhas = FalhasDeExtracaoPorLinha(fonte, gdi, pdfA: false);
+        Assert.True(falhas.Count == 0, string.Join("\n", falhas));
+    }
+
+    /// feat/pdfa-ocr-largura: o MESMO critério pelo "Salvar como PDF/A" (`CriarPdfADeImagens`, fonte Inter embutida).
+    /// Antes, o PDF/A gravava a Inter na largura NATURAL (sem `Tz`) — a palavra invadia a vizinha e a extração
+    /// juntava palavras. Agora o PDF/A usa o mesmo ajuste de largura da camada OCR (helper único no PdfEditor).
+    [SkippableTheory]
+    [MemberData(nameof(FontesEMotores))]
+    public void PdfA_CadaLinhaExtraiComOsEspacosCertos(string fonte, bool gdi)
+    {
+        Skip.If(fonte == Narrow && !File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "ARIALN.TTF")),
+            "Arial Narrow não instalada");
+        var falhas = FalhasDeExtracaoPorLinha(fonte, gdi, pdfA: true);
+        Assert.True(falhas.Count == 0, string.Join("\n", falhas));
+    }
+
+    private static List<string> FalhasDeExtracaoPorLinha(string fonte, bool gdi, bool pdfA)
+    {
         var conjuntos = new[] { Normal, Coladas, Virgula, Caps, Estreita, MeioLinha, FimLinha, Conceicao, Nomes, UltimaLonga, UltimaCurta,
             Vizinhas, Misto, Acentos, new[] { "o valor de uma nota e a soma", "em casa com meu amor ou nas suas mesas" } };
         var falhas = new List<string>();
         foreach (var linhas in conjuntos)
         {
-            var scan = gdi ? BuildScanGdi(linhas, 1.5, fonte, legada: false) : BuildScan(linhas, 1.5, fonte, legada: false);
+            var scan = gdi ? BuildScanGdi(linhas, 1.5, fonte, legada: false, pdfA) : BuildScan(linhas, 1.5, fonte, legada: false, pdfA);
             using var r = new PdfDocumentRenderer(scan.Pdf);
             var pdfium = r.GetTextPage(0).Text.Replace("\r", "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
             string[] itext;
@@ -514,7 +544,7 @@ public class CorrigirTextoScanTests
             var palavrasFixture = linhas.SelectMany(l => l.Split(' ', StringSplitOptions.RemoveEmptyEntries)).OrderBy(w => w, StringComparer.Ordinal);
             if (!palavrasIText.SequenceEqual(palavrasFixture)) falhas.Add($"iText  [{string.Join(" / ", linhas)}] -> [{string.Join(" / ", itext)}]");
         }
-        Assert.True(falhas.Count == 0, string.Join("\n", falhas));
+        return falhas;
     }
 
     private static void RunOnSta(Action scenario)
