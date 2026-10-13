@@ -54,7 +54,6 @@
     <SolidColorBrush x:Key="Cor.MarcadorAtivo" Color="#FF1D4E89"/>
     <SolidColorBrush x:Key="Cor.AssinarBorda" Color="#FF1D4E89"/>
     <SolidColorBrush x:Key="Cor.AssinarTexto" Color="#FFFFFFFF"/>
-    <SolidColorBrush x:Key="Cor.FecharHover" Color="#FFB00020"/>
     <SolidColorBrush x:Key="Cor.PrimariaTextoSobre" Color="#FFFFFFFF"/>
 
     <!-- ===== DIÁLOGOS (Plano 14 T4): equivalentes CLAROS (mesmos x:Key do Escuro). ===== -->
@@ -65,10 +64,6 @@
         <GradientStop Color="#FF1D4E89" Offset="1"/>
     </LinearGradientBrush>
 
-    <LinearGradientBrush x:Key="Cor.FundoTituloGrad" StartPoint="0,0" EndPoint="0,1">
-        <GradientStop Color="#FFF6F0E0" Offset="0"/>
-        <GradientStop Color="#FFEFE7D4" Offset="1"/>
-    </LinearGradientBrush>
     <LinearGradientBrush x:Key="Cor.AssinarFundo" StartPoint="0,0" EndPoint="0,1">
         <GradientStop Color="#FF2A5D96" Offset="0"/>
         <GradientStop Color="#FF1D4E89" Offset="1"/>

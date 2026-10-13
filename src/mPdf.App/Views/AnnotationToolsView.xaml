@@ -296,10 +296,10 @@
              cobre essa semântica sem ambiguidade: "stack" já é usado noutros lugares do app (BatchSignDialog,
              WelcomeView, painel de miniaturas) pra "múltiplos documentos/lote", o que confundiria aqui;
              não há "copy"/"cards"/"copy-simple" no mapa. Por isso, DESENHADO em vetor (mesmo padrão do
-             "RestoreGlyph" em MainWindow.xaml): duas "páginas" (retângulos) sobrepostas + uma seta pra
+             antigo "RestoreGlyph" da title bar custom, hoje nativa): duas "páginas" (retângulos) sobrepostas + uma seta pra
              baixo = "replicar na página seguinte". Cores via Foreground do próprio Button (herda de
              mPdf.Anota.Ferramenta -> Cor.TextoSecundario/Cor.TextoPrimario no hover, mesmo padrão do
-             RestoreGlyph) — nenhum hex fixo. -->
+             antigo RestoreGlyph) — nenhum hex fixo. -->
         <Button Command="{Binding SelectedDocument.ReplicarProximaPaginaCommand}" ToolTip="Replicar na próxima página" Style="{DynamicResource mPdf.Anota.Ferramenta}">
             <Grid Width="18" Height="20">
                 <Border Width="9" Height="10" HorizontalAlignment="Left" VerticalAlignment="Top"

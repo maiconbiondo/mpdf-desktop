@@ -490,9 +490,9 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     public DocumentSession Session { get; }
     // "•" quando suja (Task 3, Plano 3a) + "(não salvo)" quando NeedsSaveAs (Task 2, Plano 7, rider da
     // revisão — pista visível de que este documento está temp-backed) — um único binding
-    // ({Binding Title}) já cobre tab header E, por encadeamento de PropertyPath do WPF
-    // (SelectedDocument.Title), o título da janela também, sem precisar duplicar a lógica em
-    // MainViewModel. OnSessionDirtyChanged/OnSessionFilePathChanged (abaixo) + OnNeedsSaveAsChanged
+    // ({Binding Title}) cobre o cabeçalho da aba. O título da JANELA (barra nativa) NÃO usa este valor:
+    // vem de MainViewModel.TituloJanela, na convenção do Windows ("*arquivo.pdf - mPDF {versão}"),
+    // montado de Session.FileName + IsDirty + NeedsSaveAs. OnSessionDirtyChanged/OnSessionFilePathChanged (abaixo) + OnNeedsSaveAsChanged
     // (junto da declaração de NeedsSaveAs) mantêm isto vivo.
     public string Title
     {

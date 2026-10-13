@@ -19,7 +19,7 @@ using Xunit;
 
 namespace mPdf.App.Tests;
 
-/// Plano 14 (Task 2) — shell escuro: title bar custom (WindowChrome), command bar, activity rail e
+/// Plano 14 (Task 2) — shell escuro: barra de título (hoje NATIVA do Windows), command bar, activity rail e
 /// status bar. Foco de RISCO: gestão de janela (min/max/restaurar) não pode quebrar pros 38 usuários.
 /// Todas as sondas constroem a `MainWindow` de PRODUÇÃO numa thread STA (mesmo padrão de
 /// ThemeWiringTests/ViewerIntegrationTests) e mesclam o tema LOCALMENTE (Application.Current == null no
@@ -80,10 +80,13 @@ public class ShellTests
     private static RadioButton? RadioPorTooltip(DependencyObject root, string tip) =>
         Descendentes<RadioButton>(root).FirstOrDefault(b => (b.ToolTip as string) == tip);
 
-    // ───────────────────────── Gestão de janela (WindowChrome) ─────────────────────────
+    // ───────────────────────── Gestão de janela (barra de título NATIVA) ─────────────────────────
+    // A title bar custom (WindowChrome + botões próprios) foi substituída pela barra NATIVA do Windows
+    // (min/max/fechar, título, ícone, Snap Layouts); a cor dela segue o tema do Windows (ver
+    // TemaBarraTituloNativaTests). Min/max/restaurar agora são do próprio SO — nada nosso a testar.
 
     [Fact]
-    public void Window_UsaWindowChrome_ComCaption44_SemMolduraNativa()
+    public void Window_UsaMolduraNativa_SemWindowChrome()
     {
         RunSta(() =>
         {
@@ -94,19 +97,19 @@ public class ShellTests
                 w.Show();
                 w.UpdateLayout();
 
-                var chrome = WindowChrome.GetWindowChrome(w);
-                Assert.NotNull(chrome);
-                Assert.Equal(44, chrome!.CaptionHeight);
-                Assert.False(chrome.UseAeroCaptionButtons);
-                Assert.Equal(WindowStyle.None, w.WindowStyle);
-                Assert.Equal(ResizeMode.CanResize, w.ResizeMode); // 8 bordas/cantos redimensionáveis
+                Assert.Equal(WindowStyle.SingleBorderWindow, w.WindowStyle);
+                Assert.Null(WindowChrome.GetWindowChrome(w));
+                Assert.Equal(ResizeMode.CanResize, w.ResizeMode);
+                // Os botões/glifos da barra antiga não existem mais.
+                foreach (var nome in new[] { "MinimizeButton", "MaximizeButton", "CloseButton", "MaximizeGlyph", "RestoreGlyph", "RootBorder" })
+                    Assert.Null(w.FindName(nome));
             }
             finally { Fechar(w); }
         });
     }
 
-    [Fact]
-    public void TitleBar_Maximizar_AlternaEstadoEIconeRestaurar()
+    [Fact] // Window.Title = MainViewModel.TituloJanela ("{documento} - mPDF {versão}" / "mPDF {versão}")
+    public void Window_Titulo_RefleteTituloJanela()
     {
         RunSta(() =>
         {
@@ -115,39 +118,36 @@ public class ShellTests
             {
                 w = new mPdf.App.MainWindow();
                 w.Show();
-                // Plano 18 (Task 1): a MainWindow agora abre Maximized por padrão (ver
-                // MainWindow_AbreMaximizadaPorPadrao) — este teste cobre o CICLO de alternância do botão
-                // (Normal <-> Maximized), não o estado inicial; restaura pra Normal primeiro pra isolar o
-                // que este teste realmente afirma.
-                w.WindowState = WindowState.Normal;
-                w.UpdateLayout();
+                Assert.Equal($"mPDF {w.ViewModel.VersaoApp}", w.Title);
 
-                var maxBtn = (Button)w.FindName("MaximizeButton")!;
-                var maxGlyph = (TextBlock)w.FindName("MaximizeGlyph")!;
-                var restoreGlyph = (Grid)w.FindName("RestoreGlyph")!;
-                Assert.Equal(WindowState.Normal, w.WindowState);
-                Assert.Equal(Visibility.Visible, maxGlyph.Visibility);
-                Assert.Equal(Visibility.Collapsed, restoreGlyph.Visibility);
+                var doc = new DocumentViewModel(DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")));
+                w.ViewModel.Documents.Add(doc);
+                w.ViewModel.SelectedDocument = doc;
+                Assert.Equal(w.ViewModel.TituloJanela, w.Title);
+                Assert.Equal($"fixture-a4.pdf - mPDF {w.ViewModel.VersaoApp}", w.Title);
+            }
+            finally { Fechar(w); } // OnClosed descarta os documentos abertos
+        });
+    }
 
-                Clicar(maxBtn);
-                w.UpdateLayout();
-                Assert.Equal(WindowState.Maximized, w.WindowState);
-                Assert.Equal(Visibility.Collapsed, maxGlyph.Visibility); // vira ícone de restaurar
-                Assert.Equal(Visibility.Visible, restoreGlyph.Visibility);
-
-                Clicar(maxBtn);
-                w.UpdateLayout();
-                Assert.Equal(WindowState.Normal, w.WindowState);
-                Assert.Equal(Visibility.Visible, maxGlyph.Visibility);
+    [Fact] // ícone da barra nativa/taskbar = ícone do app (Assets/mpdf.ico)
+    public void Window_Icone_EhOIconeDoApp()
+    {
+        RunSta(() =>
+        {
+            mPdf.App.MainWindow? w = null;
+            try
+            {
+                w = new mPdf.App.MainWindow();
+                Assert.NotNull(w.Icon);
+                Assert.EndsWith("Assets/mpdf.ico", w.Icon!.ToString(), StringComparison.OrdinalIgnoreCase);
             }
             finally { Fechar(w); }
         });
     }
 
     // Plano 18 (Task 1): abrir maximizado por padrão. O estado inicial (ANTES de qualquer interação do
-    // usuário) tem que ser Maximized — mas min/max/restore/hit-test (os testes acima e abaixo) continuam
-    // funcionando normalmente (o hook WM_GETMINMAXINFO de OnSourceInitialized já roda independente do
-    // WindowState inicial, ver comentário em MainWindow.xaml.cs).
+    // usuário) tem que ser Maximized.
     [Fact]
     public void MainWindow_AbreMaximizadaPorPadrao()
     {
@@ -163,53 +163,6 @@ public class ShellTests
                 w.Show();
                 w.UpdateLayout();
                 Assert.Equal(WindowState.Maximized, w.WindowState);
-                // O ícone da title bar já reflete "maximizado" (RestoreGlyph, não MaximizeGlyph) desde o
-                // primeiro layout -- AtualizarChromeMaximizado() roda no Loaded (ver construtor).
-                var maxGlyph = (TextBlock)w.FindName("MaximizeGlyph")!;
-                var restoreGlyph = (Grid)w.FindName("RestoreGlyph")!;
-                Assert.Equal(Visibility.Collapsed, maxGlyph.Visibility);
-                Assert.Equal(Visibility.Visible, restoreGlyph.Visibility);
-            }
-            finally { Fechar(w); }
-        });
-    }
-
-    [Fact]
-    public void TitleBar_Minimizar_DefineMinimized()
-    {
-        RunSta(() =>
-        {
-            mPdf.App.MainWindow? w = null;
-            try
-            {
-                w = new mPdf.App.MainWindow();
-                w.Show();
-                var minBtn = (Button)w.FindName("MinimizeButton")!;
-                Clicar(minBtn);
-                Assert.Equal(WindowState.Minimized, w.WindowState);
-                w.WindowState = WindowState.Normal; // restaura pra fechar limpo
-            }
-            finally { Fechar(w); }
-        });
-    }
-
-    [Fact]
-    public void TitleBar_Botoes_SaoHitTestVisibleNoChrome()
-    {
-        RunSta(() =>
-        {
-            mPdf.App.MainWindow? w = null;
-            try
-            {
-                w = new mPdf.App.MainWindow();
-                w.Show();
-                w.UpdateLayout();
-                // Sem IsHitTestVisibleInChrome os cliques seriam engolidos pela área de arrastar do caption.
-                foreach (var nome in new[] { "MinimizeButton", "MaximizeButton", "CloseButton" })
-                {
-                    var b = (Button)w.FindName(nome)!;
-                    Assert.True(WindowChrome.GetIsHitTestVisibleInChrome(b), $"{nome} não é hit-test-visible no chrome");
-                }
             }
             finally { Fechar(w); }
         });

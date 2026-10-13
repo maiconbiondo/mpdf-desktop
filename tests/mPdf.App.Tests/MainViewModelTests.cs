@@ -1588,4 +1588,80 @@ public class MainViewModelTests : IDisposable
 
         Assert.Empty(infos);
     }
+
+    // ───── Barra de título NATIVA: TituloJanela ("{documento} - mPDF {versão}", convenção do Windows) ─────
+
+    [Fact] // sem documento: só "mPDF {versão}"
+    public void TituloJanela_SemDocumento_SoNomeEVersao()
+    {
+        var vm = VmFull();
+        Assert.Equal($"mPDF {vm.VersaoApp}", vm.TituloJanela);
+    }
+
+    [Fact] // com documento: documento PRIMEIRO, depois " - mPDF {versão}"
+    public void TituloJanela_ComDocumento_DocumentoPrimeiro()
+    {
+        var vm = VmFull();
+        using var doc = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")), notifyError: _ => { });
+        vm.Documents.Add(doc);
+        vm.SelectedDocument = doc;
+        Assert.Equal($"fixture-a4.pdf - mPDF {vm.VersaoApp}", vm.TituloJanela);
+
+        vm.SelectedDocument = null;
+        Assert.Equal($"mPDF {vm.VersaoApp}", vm.TituloJanela);
+    }
+
+    [Fact] // "*" (não salvo, convenção do Windows) + "(não salvo)" do temporário que precisa de Salvar como;
+    // nunca o "•" do cabeçalho da aba.
+    public void TituloJanela_Sujo_UsaAsteriscoNaFrente_ENaoSalvoDoTemporario()
+    {
+        var vm = VmFull();
+        using var doc = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")), notifyError: _ => { });
+        vm.Documents.Add(doc);
+        vm.SelectedDocument = doc;
+
+        doc.Session.Apply(Fixtures.ThirtyPages());
+        Assert.Equal($"*fixture-a4.pdf - mPDF {vm.VersaoApp}", vm.TituloJanela);
+        Assert.DoesNotContain("•", vm.TituloJanela);
+
+        doc.NeedsSaveAs = true;
+        Assert.Equal($"*fixture-a4.pdf (não salvo) - mPDF {vm.VersaoApp}", vm.TituloJanela);
+
+        using var limpo = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")), notifyError: _ => { });
+        limpo.NeedsSaveAs = true;
+        vm.Documents.Add(limpo);
+        vm.SelectedDocument = limpo;
+        Assert.Equal($"fixture-a4.pdf (não salvo) - mPDF {vm.VersaoApp}", vm.TituloJanela);
+    }
+
+    [Fact] // PropertyChanged(TituloJanela) na troca de aba E quando o Title da aba ATIVA muda (sujo "•");
+    // a aba ANTIGA deixa de notificar depois que sai de seleção.
+    public void TituloJanela_NotificaNaTrocaDeAbaENaMudancaDoTituloDaAbaAtiva()
+    {
+        var vm = VmFull();
+        using var doc1 = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")), notifyError: _ => { });
+        using var doc2 = new DocumentViewModel(
+            DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")), notifyError: _ => { });
+        vm.Documents.Add(doc1);
+        vm.Documents.Add(doc2);
+        var vistos = new List<string>();
+        vm.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(MainViewModel.TituloJanela)) vistos.Add(vm.TituloJanela); };
+
+        vm.SelectedDocument = doc1;
+        Assert.Equal([$"fixture-a4.pdf - mPDF {vm.VersaoApp}"], vistos);
+
+        doc1.Session.Apply(Fixtures.ThirtyPages()); // fica suja -> convenção do Windows: "*" na frente
+        Assert.Equal($"*fixture-a4.pdf - mPDF {vm.VersaoApp}", vistos[^1]);
+        Assert.Equal(2, vistos.Count);
+
+        vm.SelectedDocument = doc2;
+        int antes = vistos.Count;
+        doc1.NeedsSaveAs = true; // muda o Title da aba ANTIGA: não pode mais notificar o título da janela
+        Assert.Equal(antes, vistos.Count);
+        Assert.Equal($"fixture-a4.pdf - mPDF {vm.VersaoApp}", vm.TituloJanela); // doc2 (limpa)
+    }
 }

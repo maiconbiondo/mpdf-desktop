@@ -1,6 +1,5 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-                    xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
                     xmlns:icons="clr-namespace:mPdf.App.Icons"
                     xmlns:conv="clr-namespace:mPdf.App.Converters">
     <!--
@@ -339,14 +338,13 @@
     </Style>
 
     <!-- ═══════════════════════ SHELL escuro (Plano 14 T2) ═══════════════════════
-         Estilos de chrome do novo shell: title bar, command bar, activity rail, status bar. Todos
+         Estilos de chrome do novo shell: command bar, activity rail, status bar. Todos
          KEYED (opt-in) — nenhum vaza pro caminho de render/overlay (Views/PdfViewerControl.xaml, que
          não referencia nenhum destes). Hover/pressed = troca de Background sólido/véu (barato), fiel
          ao padrão do resto do tema. Gradiente/sombra é PERMITIDO aqui (chrome), proibido só no
          caminho de render por página (ver ThemeStructuralTests). -->
 
     <!-- CornerRadius auxiliares do shell (geometria, StaticResource). -->
-    <CornerRadius x:Key="Raio.TitleBtn">6</CornerRadius>
     <CornerRadius x:Key="Raio.Assinar">9</CornerRadius>
     <CornerRadius x:Key="Raio.Rail">10</CornerRadius>
 
@@ -394,36 +392,6 @@
         </Setter>
     </Style>
 
-    <!-- ───── Title bar: botão min/max (34×28, raio 6, hover .07) ───── -->
-    <Style x:Key="mPdf.Button.TitleBar" TargetType="Button">
-        <Setter Property="Background" Value="Transparent"/>
-        <Setter Property="Foreground" Value="{DynamicResource Cor.TextoSecundario}"/>
-        <Setter Property="BorderThickness" Value="0"/>
-        <Setter Property="Width" Value="34"/>
-        <Setter Property="Height" Value="28"/>
-        <Setter Property="Cursor" Value="Hand"/>
-        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-        <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True"/>
-        <Setter Property="Template">
-            <Setter.Value>
-                <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
-                            CornerRadius="{StaticResource Raio.TitleBtn}" SnapsToDevicePixels="True">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Border>
-                    <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficieHover}"/>
-                        </Trigger>
-                        <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.SuperficiePressionada}"/>
-                        </Trigger>
-                    </ControlTemplate.Triggers>
-                </ControlTemplate>
-            </Setter.Value>
-        </Setter>
-    </Style>
-
     <!-- Command bar: variante TOGGLE (mesmo visual, + estado ATIVO) — usada pelo botão "Organizar
          páginas" (grid-nine), ligado por IsChecked TwoWay a SelectedDocument.IsOrganizerOpen. -->
     <Style x:Key="mPdf.Toggle.Command" TargetType="ToggleButton">
@@ -458,25 +426,6 @@
         </Setter>
     </Style>
 
-    <!-- Fechar: mesma base, hover VERMELHO perigo (#B00020) com texto branco. -->
-    <Style x:Key="mPdf.Button.TitleBarClose" TargetType="Button" BasedOn="{StaticResource mPdf.Button.TitleBar}">
-        <Setter Property="Template">
-            <Setter.Value>
-                <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
-                            CornerRadius="{StaticResource Raio.TitleBtn}" SnapsToDevicePixels="True">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Border>
-                    <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Cor.FecharHover}"/>
-                            <Setter Property="Foreground" Value="White"/>
-                        </Trigger>
-                    </ControlTemplate.Triggers>
-                </ControlTemplate>
-            </Setter.Value>
-        </Setter>
-    </Style>
 
     <!-- ───── Botão "Assinar" destacado (gradiente + borda azul + sombra sutil de chrome) ───── -->
     <Style x:Key="mPdf.Button.Assinar" TargetType="Button">

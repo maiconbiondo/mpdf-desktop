@@ -1,9 +1,7 @@
 using System.ComponentModel;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using CommunityToolkit.Mvvm.Input;
 using mPdf.App.Services;
 using mPdf.App.ViewModels;
@@ -18,10 +16,10 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        // Plano 14 (Task 2): sincroniza o ícone do botão maximizar/restaurar (e o padding do estado
-        // maximizado) com o WindowState real — inclui o estado INICIAL (WindowStartupLocation).
-        StateChanged += (_, _) => AtualizarChromeMaximizado();
-        Loaded += (_, _) => AtualizarChromeMaximizado();
+        // Barra de título NATIVA: a cor do caption (claro/escuro) segue o modo de app do WINDOWS —
+        // aplicada no SourceInitialized (antes da 1ª pintura) e reaplicada ao vivo na troca de tema do
+        // SO. Melhor-esforço: qualquer falha nativa é ignorada (ver TemaBarraTituloNativa).
+        TemaBarraTituloNativa.Conectar(this);
         // Rider (revisão pós-Task 4, Plano 3a): varredura best-effort de pastas ÓRFÃS de undo/redo
         // (%TEMP%\mPDF\undo-*, mais de 24h) deixadas por sessões que crasharam/perderam energia antes
         // do Dispose rodar — ver doc XML de DocumentSession.SweepOrphanUndoSpillDirectories. try/catch
@@ -266,41 +264,9 @@ public partial class MainWindow : Window
         PanelTabs.SelectedIndex = 3;
     }
 
-    private void MinimizeButton_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
-
-    private void MaximizeButton_Click(object sender, RoutedEventArgs e) =>
-        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-
-    private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
-
-    /// Troca o ícone maximizar<->restaurar e o padding do RootBorder conforme o WindowState. No estado
-    /// MAXIMIZADO o WindowChrome (WindowStyle=None) desenha a janela ~7px além de cada borda do monitor,
-    /// cortando o conteúdo; o padding compensa isso pra o conteúdo não ficar cortado (o hook
-    /// WM_GETMINMAXINFO já garante que a área maximizada respeita a taskbar/work area).
-    private void AtualizarChromeMaximizado()
-    {
-        bool max = WindowState == WindowState.Maximized;
-        if (MaximizeGlyph is not null) MaximizeGlyph.Visibility = max ? Visibility.Collapsed : Visibility.Visible;
-        if (RestoreGlyph is not null) RestoreGlyph.Visibility = max ? Visibility.Visible : Visibility.Collapsed;
-        if (MaximizeButton is not null) MaximizeButton.ToolTip = max ? "Restaurar" : "Maximizar";
-        if (RootBorder is not null)
-        {
-            // Espessura do frame de redimensionamento do SO (varia por DPI) — só no maximizado.
-            double b = SystemParameters.WindowResizeBorderThickness.Left + SystemParameters.WindowNonClientFrameThickness.Left;
-            RootBorder.Padding = max ? new Thickness(b) : new Thickness(0);
-        }
-    }
-
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        // Hook WM_GETMINMAXINFO: janela sem moldura (WindowStyle=None) + WindowChrome, ao maximizar,
-        // por padrão cobre a tela INTEIRA (inclusive a taskbar). Este hook limita a área maximizada ao
-        // "work area" do monitor onde a janela está — resolvendo o bug clássico do WindowChrome. Falha
-        // aberta: se por algum motivo o HwndSource não existir, a janela ainda maximiza (só sem o ajuste).
-        var origem = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
-        origem?.AddHook(HookJanela);
-
         // Plano 23: em monitores MENORES que o tamanho de projeto (1200x800), o tamanho de RESTAURAÇÃO
         // (Normal) estourava a tela — ao restaurar, a janela ficava mais alta/larga que o monitor e a
         // barra de título (com min/max/fechar) saía POR CIMA, ficando inacessível. Clampa o tamanho Normal
@@ -326,67 +292,5 @@ public partial class MainWindow : Window
         // recentraliza o tamanho Normal na work area (WindowStartupLocation não recentraliza após o resize)
         Left = wa.Left + (wa.Width - Width) / 2;
         Top = wa.Top + (wa.Height - Height) / 2;
-    }
-
-    private static IntPtr HookJanela(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
-    {
-        const int WM_GETMINMAXINFO = 0x0024;
-        if (msg == WM_GETMINMAXINFO)
-        {
-            AjustarMaxInfoParaWorkArea(hwnd, lParam);
-            handled = true;
-        }
-        return IntPtr.Zero;
-    }
-
-    private static void AjustarMaxInfoParaWorkArea(IntPtr hwnd, IntPtr lParam)
-    {
-        const int MONITOR_DEFAULTTONEAREST = 0x00000002;
-        IntPtr monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        if (monitor == IntPtr.Zero) return;
-
-        var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
-        if (!GetMonitorInfo(monitor, ref info)) return;
-
-        var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
-        RECT trabalho = info.rcWork;   // área útil (exclui taskbar)
-        RECT monitorR = info.rcMonitor; // monitor inteiro
-        // Posição/tamanho máximos RELATIVOS ao canto do monitor — respeitando a taskbar.
-        mmi.ptMaxPosition.x = trabalho.left - monitorR.left;
-        mmi.ptMaxPosition.y = trabalho.top - monitorR.top;
-        mmi.ptMaxSize.x = trabalho.right - trabalho.left;
-        mmi.ptMaxSize.y = trabalho.bottom - trabalho.top;
-        Marshal.StructureToPtr(mmi, lParam, true);
-    }
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, int flags);
-
-    [DllImport("user32.dll")]
-    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int x; public int y; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int left; public int top; public int right; public int bottom; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MINMAXINFO
-    {
-        public POINT ptReserved;
-        public POINT ptMaxSize;
-        public POINT ptMaxPosition;
-        public POINT ptMinTrackSize;
-        public POINT ptMaxTrackSize;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MONITORINFO
-    {
-        public int cbSize;
-        public RECT rcMonitor;
-        public RECT rcWork;
-        public int dwFlags;
     }
 }

@@ -95,6 +95,17 @@ public sealed partial class MainViewModel : ObservableObject
     /// derivada do <Version> do csproj via AssemblyVersion).
     public string VersaoApp { get; } = UpdateService.CurrentVersionText();
 
+    /// Título da janela (barra de título NATIVA do Windows + taskbar), na convenção do Windows:
+    /// documento PRIMEIRO e "*" na frente quando há alterações não salvas —
+    /// "*arquivo.pdf - mPDF {versão}"; sem aba ativa, só "mPDF {versão}". Montado de Session.FileName
+    /// + IsDirty + NeedsSaveAs (NÃO do Title decorado da aba, que usa "•"); "(não salvo)" continua
+    /// sinalizando o documento temporário que precisa de "Salvar como". Notificado na troca de aba
+    /// (OnSelectedDocumentChanged) e sempre que o Title da aba ATIVA muda (o Title é notificado em
+    /// toda mudança de IsDirty/FilePath/NeedsSaveAs — ver OnSelectedDocumentPropertyChanged).
+    public string TituloJanela => SelectedDocument is { } doc
+        ? $"{(doc.IsDirty ? "*" : "")}{doc.Session.FileName}{(doc.NeedsSaveAs ? " (não salvo)" : "")} - mPDF {VersaoApp}"
+        : $"mPDF {VersaoApp}";
+
     // Task 8: PrintCommand precisa reavaliar CanExecute (botão/atalho desabilitados sem documento)
     // toda vez que a aba ativa muda — NotifyCanExecuteChangedFor dispensa chamar
     // PrintCommand.NotifyCanExecuteChanged() manualmente a cada setter. Task 3 (Plano 3a): mesma
@@ -145,11 +156,13 @@ public sealed partial class MainViewModel : ObservableObject
         // página em projetos grandes; quem quiser ver as miniaturas clica no ícone do rail). Abrir um
         // documento NÃO revela mais o painel automaticamente — o estado só muda por ação explícita do
         // usuário (clicar no ícone do rail ou no botão de recolher do cabeçalho).
+        OnPropertyChanged(nameof(TituloJanela));
     }
 
     private void OnSelectedDocumentPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(DocumentViewModel.IsDirty)) SaveCommand.NotifyCanExecuteChanged();
+        if (e.PropertyName == nameof(DocumentViewModel.Title)) OnPropertyChanged(nameof(TituloJanela));
         // Task 5 (Plano 3a): IsSignedDocument começa false (checagem em voo, ver doc XML na VM) e vira
         // true um pouco DEPOIS que a aba já está selecionada — sem isto, o botão "Editar uma cópia"
         // (banner) ficaria desabilitado até o usuário trocar de aba e voltar.

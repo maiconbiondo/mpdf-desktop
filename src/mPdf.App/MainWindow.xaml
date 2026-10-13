@@ -6,28 +6,20 @@
         xmlns:icons="clr-namespace:mPdf.App.Icons"
         xmlns:conv="clr-namespace:mPdf.App.Converters"
         xmlns:editing="clr-namespace:mPdf.Editing;assembly=mPdf.Editing"
-        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-        Title="{Binding SelectedDocument.Title, FallbackValue=mPDF, StringFormat='mPDF — {0}'}"
+        Title="{Binding TituloJanela, FallbackValue=mPDF}"
+        Icon="pack://application:,,,/mPdf.App;component/Assets/mpdf.ico"
         Height="800" Width="1200" WindowStartupLocation="CenterScreen"
         WindowState="Maximized"
-        WindowStyle="None" ResizeMode="CanResize"
+        WindowStyle="SingleBorderWindow" ResizeMode="CanResize"
         FontFamily="{DynamicResource Fonte.Inter}" FontSize="12.5"
         Background="{DynamicResource Cor.FundoJanela}"
         Foreground="{DynamicResource Cor.TextoPrimario}"
         UseLayoutRounding="True" TextOptions.TextFormattingMode="Ideal">
 
-    <!-- Plano 14 (Task 2): title bar custom via WindowChrome. CaptionHeight=44 = a barra superior é a
-         área de arrastar/duplo-clique-maximiza do Windows; ResizeBorderThickness mantém as 8 bordas/
-         cantos redimensionáveis; GlassFrameThickness=0 + UseAeroCaptionButtons=False removem a moldura/
-         botões nativos. Os botões min/max/close (e a área de comando) desligam-se do caption via
-         WindowChrome.IsHitTestVisibleInChrome=True (nos estilos mPdf.Button.TitleBar*) — senão o clique
-         seria capturado pela área de arrastar. O clipping de 8px e a cobertura da taskbar no estado
-         MAXIMIZADO são tratados por um hook WM_GETMINMAXINFO no code-behind (ajusta ao work area do
-         monitor). -->
-    <shell:WindowChrome.WindowChrome>
-        <shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="6" CornerRadius="0"
-                            GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
-    </shell:WindowChrome.WindowChrome>
+    <!-- Barra de título NATIVA do Windows (min/max/fechar, título, ícone, Snap Layouts no Win11) — substituiu
+         a title bar custom do Plano 14 (WindowChrome). A cor do caption segue o modo claro/escuro do
+         WINDOWS (não o tema do mPDF): ver Services/TemaBarraTituloNativa.cs, conectado no construtor.
+         O título vem de MainViewModel.TituloJanela ("{documento} - mPDF {versão}"). -->
 
     <Window.Resources>
         <!-- Merge LOCAL do tema (ver comentário histórico do Plano 12): necessário pras ~20 sondas STA
@@ -49,58 +41,8 @@
         </ResourceDictionary>
     </Window.Resources>
 
-    <!-- Root: fundo da janela; RootBorder recebe padding no estado maximizado (code-behind) pra evitar
-         o corte de conteúdo clássico do WindowChrome. -->
-    <Border x:Name="RootBorder" Background="{DynamicResource Cor.FundoJanela}">
+    <Border Background="{DynamicResource Cor.FundoJanela}">
         <DockPanel LastChildFill="True">
-
-            <!-- ░░░░░░░░░░░░░░░░ TITLE BAR (44px) ░░░░░░░░░░░░░░░░ -->
-            <Border DockPanel.Dock="Top" Height="44" Background="{DynamicResource Cor.FundoTituloGrad}"
-                    BorderBrush="{DynamicResource Cor.BordaSutil}" BorderThickness="0,0,0,1">
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
-                        <Image Source="{StaticResource Logo.mPDF}" Width="23" Height="23" Margin="0,0,9,0"/>
-                        <TextBlock Text="mPDF" FontSize="12.5" FontWeight="SemiBold"
-                                   Foreground="{DynamicResource Cor.TextoPrimario}" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding VersaoApp}" FontSize="10.5" Margin="5,1,0,0"
-                                   Foreground="{DynamicResource Cor.TextoSecundario}" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding SelectedDocument.Title, StringFormat='— {0}', FallbackValue='— nenhum documento', TargetNullValue='— nenhum documento'}"
-                                   FontSize="12.5" Margin="6,0,0,0"
-                                   Foreground="{DynamicResource Cor.TextoSecundario}" VerticalAlignment="Center"
-                                   TextTrimming="CharacterEllipsis"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
-                        <Button x:Name="MinimizeButton" Click="MinimizeButton_Click" Style="{StaticResource mPdf.Button.TitleBar}" ToolTip="Minimizar">
-                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon minus}"/>
-                        </Button>
-                        <Button x:Name="MaximizeButton" Click="MaximizeButton_Click" Style="{StaticResource mPdf.Button.TitleBar}" ToolTip="Maximizar">
-                            <Grid Width="12" Height="12">
-                                <!-- Estado NORMAL: um quadrado (maximizar). -->
-                                <TextBlock x:Name="MaximizeGlyph" FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="12"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center" Text="{icons:PhosphorIcon square}"/>
-                                <!-- Estado MAXIMIZADO: dois quadrados sobrepostos (restaurar) — desenhado
-                                     em vetor porque a fonte embarcada (só os 65 ícones do mockup) não traz
-                                     um glifo de "restaurar". Alternado por code-behind no StateChanged. -->
-                                <Grid x:Name="RestoreGlyph" Visibility="Collapsed">
-                                    <Border Width="8" Height="8" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,0,0,0"
-                                            BorderBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" BorderThickness="1.2"/>
-                                    <Border Width="8" Height="8" HorizontalAlignment="Left" VerticalAlignment="Bottom"
-                                            Background="{DynamicResource Cor.FundoTitulo}"
-                                            BorderBrush="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" BorderThickness="1.2"/>
-                                </Grid>
-                            </Grid>
-                        </Button>
-                        <Button x:Name="CloseButton" Click="CloseButton_Click" Style="{StaticResource mPdf.Button.TitleBarClose}" ToolTip="Fechar">
-                            <TextBlock FontFamily="{DynamicResource Fonte.Phosphor}" FontSize="14" Text="{icons:PhosphorIcon x}"/>
-                        </Button>
-                    </StackPanel>
-                </Grid>
-            </Border>
 
             <!-- ░░░░░░░░░░░░░░░░ COMMAND BAR (60px) ░░░░░░░░░░░░░░░░ -->
             <Border DockPanel.Dock="Top" Height="60" Background="{DynamicResource Cor.Superficie}"

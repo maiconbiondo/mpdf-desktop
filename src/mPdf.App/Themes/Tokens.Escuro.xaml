@@ -67,10 +67,9 @@
     <!-- Azul de ícone/marcador do redesenho. -->
     <SolidColorBrush x:Key="Cor.IconeAzul" Color="#FFA9CDF1"/>
     <SolidColorBrush x:Key="Cor.MarcadorAtivo" Color="#FF4D8FD6"/>
-    <!-- Botão "Assinar" destacado (borda/texto) + hover de fechar (perigo). -->
+    <!-- Botão "Assinar" destacado (borda/texto). -->
     <SolidColorBrush x:Key="Cor.AssinarBorda" Color="#FF4D8FD6"/>
     <SolidColorBrush x:Key="Cor.AssinarTexto" Color="#FFB7D5F2"/>
-    <SolidColorBrush x:Key="Cor.FecharHover" Color="#FFB00020"/>
     <!-- Texto sobre botão primário sólido (#4D8FD6): escuro (#0F2033) pra contraste. -->
     <SolidColorBrush x:Key="Cor.PrimariaTextoSobre" Color="#FF0F2033"/>
 
@@ -84,10 +83,6 @@
     </LinearGradientBrush>
 
     <!-- Gradientes de chrome (elevação/gradiente é PERMITIDO fora do caminho de render por página). -->
-    <LinearGradientBrush x:Key="Cor.FundoTituloGrad" StartPoint="0,0" EndPoint="0,1">
-        <GradientStop Color="#FF1C1E2C" Offset="0"/>
-        <GradientStop Color="#FF191B28" Offset="1"/>
-    </LinearGradientBrush>
     <LinearGradientBrush x:Key="Cor.AssinarFundo" StartPoint="0,0" EndPoint="0,1">
         <GradientStop Color="#FF15304F" Offset="0"/>
         <GradientStop Color="#FF0F2135" Offset="1"/>
