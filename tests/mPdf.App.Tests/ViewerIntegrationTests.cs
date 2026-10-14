@@ -1422,7 +1422,7 @@ public class ViewerIntegrationTests
             // `_ = doc.ConfirmSignatureStampAsync()`, exemplar: RunStampBoxRealMouseWiringScenario via
             // clique real no botão): `.GetAwaiter().GetResult()` aqui DEADLOCKARIA -- o `await
             // Task.Run(() => _signingEngine.Sign(...))` dentro de SignCoreAsync sempre cede de verdade
-            // pra uma thread do pool (ao contrário de EnsureRotationCacheFreshAsync, que costuma
+            // pra uma thread do pool (ao contrário de EnsureAnnotationsCacheFreshAsync, que costuma
             // completar síncrono com o cache já fresco), e a continuação só volta via o
             // DispatcherSynchronizationContext armado acima -- bloquear esta MESMA thread (a dona do
             // Dispatcher) impediria essa continuação de rodar pra sempre.

@@ -190,7 +190,7 @@ public sealed class DocumentSession : IDisposable
     /// decidindo, SINCRONAMENTE, "posso começar uma edição agora?" ANTES do 1º `await` de cada
     /// operação (organizador: início de cada comando mutador, logo após qualquer diálogo síncrono e
     /// ANTES de qualquer leitura de arquivo/Task.Run; leitor: início de cada método que produz uma
-    /// anotação/carimbo, ANTES de `EnsureRotationCacheFreshAsync`/diálogo/Task.Run).
+    /// anotação/carimbo, ANTES de qualquer diálogo/Task.Run).
     ///
     /// `false` quando outra edição já está em voo — o chamador deve desistir GRACIOSAMENTE (no-op,
     /// nunca sobrescrever nada; "a anotação simplesmente não é colocada, o usuário tenta de novo" —
@@ -241,10 +241,20 @@ public sealed class DocumentSession : IDisposable
     /// atômica, sem .bak (o original era o mesmo conteúdo, só codificado).
     public void FixEnvelopeOnDisk()
     {
-        if (!NeedsEnvelopeFix || _envelopePdf is null) return;
-        AtomicWrite(FilePath, _envelopePdf, null);
-        ClearEnvelopeFix();
+        if (GravarConsertoEnvelope()) ConcluirConsertoEnvelope();
     }
+
+    /// Fase de DISCO do conserto (qualquer thread, sem eventos) — mesma divisão de `GravarSalvar`: o App grava em
+    /// `Task.Run` e chama `ConcluirConsertoEnvelope` de volta na UI thread. `false` = nada a consertar.
+    public bool GravarConsertoEnvelope()
+    {
+        if (!NeedsEnvelopeFix || _envelopePdf is not { } envelope) return false;
+        AtomicWrite(FilePath, envelope, null);
+        return true;
+    }
+
+    /// Fase de ESTADO do conserto (UI thread): limpa a pendência e dispara `NeedsEnvelopeFixChanged`.
+    public void ConcluirConsertoEnvelope() => ClearEnvelopeFix();
 
     private void ClearEnvelopeFix()
     {
@@ -390,6 +400,34 @@ public sealed class DocumentSession : IDisposable
         RaiseCanUndoRedoChangedIfFlipped();
     }
 
+    /// Revisão F2 (A7): troca o snapshot SEM entrada de desfazer e SEM marcar o documento como modificado — para
+    /// normalizações feitas AO ABRIR que não mudam o que o usuário fez (hoje: dar /AP às Linhas/Setas gravadas até a
+    /// v2.16, `IPdfEditor.RegenerarAparenciasAusentes`, que senão ficariam invisíveis). O estado novo passa a ser a
+    /// referência de "não modificado" (o disco não é tocado; a mudança só vai para o arquivo se o usuário salvar
+    /// alguma edição). Só vale ANTES de qualquer edição: com histórico de desfazer/refazer, documento já modificado
+    /// ou edição em voo lança `InvalidOperationException` sem mexer em nada. Bytes inválidos: o renderer novo lança
+    /// antes de qualquer mutação (mesmo contrato de `Apply`). Dispara `Applied` (os bytes mudaram); não dispara
+    /// `DirtyChanged` nem `CanUndoRedoChanged`. UI-thread-only, como `Apply`.
+    public void ReplaceSnapshotSilently(byte[] novoSnapshot)
+    {
+        ArgumentNullException.ThrowIfNull(novoSnapshot);
+        if (_editInFlight || _undoRedo.CanUndo || _undoRedo.CanRedo || IsDirty)
+            throw new InvalidOperationException(
+                "ReplaceSnapshotSilently só pode ser usado na abertura (sem edição em voo, histórico ou modificações).");
+
+        var newRenderer = new PdfDocumentRenderer(novoSnapshot); // pode lançar; nada mutado ainda
+        var newSizes = BuildPageSizes(newRenderer);
+        var oldRenderer = Renderer;
+
+        Snapshot = novoSnapshot;
+        Renderer = newRenderer;
+        PageSizes = newSizes;
+        PendingDisposals.Enqueue(() => oldRenderer.Dispose());
+
+        _lastSavedHash = ComputeHash(novoSnapshot);
+        Applied?.Invoke(this, EventArgs.Empty);
+    }
+
     /// Desfaz a última edição: aplica o snapshot anterior (via `Apply`, NUNCA `ApplyEdit` — ver doc XML
     /// acima) e empurra o estado atual pra pilha de refazer. Sem nada a desfazer: no-op silencioso
     /// (nenhum evento dispara, `Apply` nunca é chamado) — mesmo espírito de um botão desabilitado que
@@ -446,13 +484,50 @@ public sealed class DocumentSession : IDisposable
     /// conteúdo de ANTES de qualquer edição desta sessão, não o penúltimo save). Um `.bak`
     /// PRÉ-EXISTENTE (de uma sessão de edição anterior sobre o mesmo arquivo) é substituído
     /// normalmente pela 1ª gravação desta sessão — `File.Replace` sobrescreve o backup antigo.
-    public void Save(AppConfig config)
+    public void Save(AppConfig config) => ConcluirGravacao(GravarSalvar(config));
+
+    /// SALVAR EM DUAS FASES (fix "O thread de chamada não pode acessar este objeto", v2.16): o App grava em
+    /// `Task.Run` (snapshot de centenas de MB congelava a UI), mas `MarkSaved`/`FilePathChanged`/`ClearEnvelopeFix`
+    /// disparam eventos que a VM propaga até `SaveCommand.NotifyCanExecuteChanged()` — e o botão "Salvar" (um
+    /// DispatcherObject) reavaliava `CanExecute` na thread do pool e o WPF lançava; o arquivo era gravado, mas o
+    /// erro voltava pelo `catch` do Save. Agora: `GravarSalvar`/`GravarSalvarComo` = só o DISCO (qualquer thread;
+    /// não muta estado observável, não dispara evento; o hash do que foi gravado também sai daqui, fora da UI);
+    /// `ConcluirGravacao` = o ESTADO + eventos, na thread da UI (mesma convenção UI-thread-only de `Apply`/
+    /// `CommitSigned`). O chamador segura o funil `TryBeginEdit` pelas duas fases. `Save`/`SaveAs` = as duas em
+    /// sequência (caminho síncrono: fechar aba suja, testes).
+    public GravacaoEmDisco GravarSalvar(AppConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
         bool createBackup = config.CriarBackup && !_hasSavedOnce;
-        AtomicWrite(FilePath, Snapshot, createBackup ? FilePath + ".bak" : null);
-        _hasSavedOnce = true;
-        MarkSaved();
+        var bytes = Snapshot;
+        AtomicWrite(FilePath, bytes, createBackup ? FilePath + ".bak" : null);
+        return new GravacaoEmDisco(FilePath, bytes, ComputeHash(bytes), salvarComo: false);
+    }
+
+    /// Fase de disco do "Salvar como" — ver `GravarSalvar`. `FilePath` só muda em `ConcluirGravacao`.
+    public GravacaoEmDisco GravarSalvarComo(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var bytes = Snapshot;
+        AtomicWrite(path, bytes, null);
+        return new GravacaoEmDisco(path, bytes, ComputeHash(bytes), salvarComo: true);
+    }
+
+    /// Fase de ESTADO (UI thread) de `GravarSalvar`/`GravarSalvarComo`: marca salvo com o hash do que foi
+    /// gravado, troca `FilePath` (Salvar como) e dispara `FilePathChanged`/`DirtyChanged`/`NeedsEnvelopeFixChanged`.
+    public void ConcluirGravacao(GravacaoEmDisco gravacao)
+    {
+        ArgumentNullException.ThrowIfNull(gravacao);
+        if (gravacao.SalvarComo)
+        {
+            FilePath = gravacao.Caminho;
+            FilePathChanged?.Invoke(this, EventArgs.Empty);
+        }
+        else _hasSavedOnce = true;
+        // Revisão M1: só marca LIMPO se a sessão ainda tem exatamente os bytes gravados; se algo foi aplicado entre as
+        // duas fases, o disco tem o gravado e a sessão outra coisa -> continua suja (comparada com o hash do gravado).
+        if (ReferenceEquals(Snapshot, gravacao.Bytes)) MarkSaved(gravacao.Hash);
+        else { _lastSavedHash = gravacao.Hash; UpdateDirty(ComputeHash(Snapshot)); }
         ClearEnvelopeFix();
     }
 
@@ -461,15 +536,7 @@ public sealed class DocumentSession : IDisposable
     /// conteúdo anterior é perdido, igual a qualquer "Salvar como" convencional). Atualiza `FilePath`
     /// para `path` e limpa o estado sujo (o arquivo em disco agora bate com `Snapshot`). Não mexe em
     /// `_hasSavedOnce` — essa flag é exclusiva da lógica de backup de `Save` e é ortogonal a `SaveAs`.
-    public void SaveAs(string path)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        AtomicWrite(path, Snapshot, null);
-        FilePath = path;
-        FilePathChanged?.Invoke(this, EventArgs.Empty);
-        MarkSaved();
-        ClearEnvelopeFix();
-    }
+    public void SaveAs(string path) => ConcluirGravacao(GravarSalvarComo(path));
 
     /// Comita uma assinatura recém-produzida (Task 3, Plano 4) — o ÚNICO caminho pelo qual um documento
     /// assinado entra na sessão. Assinar NUNCA passa por `ApplyEdit`/`Apply` direto: o motor
@@ -541,9 +608,9 @@ public sealed class DocumentSession : IDisposable
         Applied?.Invoke(this, EventArgs.Empty);
     }
 
-    private void MarkSaved()
+    private void MarkSaved(byte[]? hashGravado = null)
     {
-        _lastSavedHash = ComputeHash(Snapshot);
+        _lastSavedHash = hashGravado ?? ComputeHash(Snapshot);
         if (!IsDirty) return;
         IsDirty = false;
         DirtyChanged?.Invoke(this, EventArgs.Empty);
@@ -777,4 +844,19 @@ public sealed class DocumentSession : IDisposable
         }
         catch { /* melhor esforço — nunca pode impedir o app de abrir */ }
     }
+}
+
+/// Resultado da fase de DISCO de `DocumentSession.GravarSalvar`/`GravarSalvarComo` — entregue a
+/// `DocumentSession.ConcluirGravacao` na thread da UI. Opaco fora do assembly (só a sessão o cria).
+public sealed class GravacaoEmDisco
+{
+    internal GravacaoEmDisco(string caminho, byte[] bytes, byte[] hash, bool salvarComo)
+    { Caminho = caminho; Bytes = bytes; Hash = hash; SalvarComo = salvarComo; }
+
+    /// Arquivo gravado.
+    public string Caminho { get; }
+    internal byte[] Hash { get; }
+    internal bool SalvarComo { get; }
+    /// Os bytes gravados (a MESMA referência do `Snapshot` lido) — revisão M1.
+    internal byte[] Bytes { get; }
 }

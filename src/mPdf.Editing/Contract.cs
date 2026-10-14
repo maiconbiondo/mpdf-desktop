@@ -42,8 +42,8 @@ public readonly record struct ColocacaoFolha(
 
 /// Nó da árvore de sumário/bookmarks de um PDF (Task 5, Plano 3b) — neutro, nenhum tipo iText
 /// (PdfOutline, PdfDestination, etc.) atravessa esta fronteira, mesmo espírito de AnnotationData/
-/// PdfQuad acima. `PageIndex` é 0-based (convenção do resto do contrato — ver AnnotationData.PageIndex/
-/// GetPageRotations) — `null` quando o nó não aponta pra nenhuma página: nó puramente organizacional
+/// PdfQuad acima. `PageIndex` é 0-based (convenção do resto do contrato — ver AnnotationData.PageIndex)
+/// — `null` quando o nó não aponta pra nenhuma página: nó puramente organizacional
 /// (sem `/Dest`/`/A` no PDF) OU um destino presente que não resolveu pra uma página válida do
 /// documento (ver HIPÓTESE em `IPdfEditor.ReadOutline`) — as duas causas colapsam no mesmo `null`,
 /// por design: o consumidor (TreeView do App) só precisa saber "clicável ou não", nunca precisa
@@ -58,6 +58,18 @@ public sealed record OutlineNode(string Title, int? PageIndex, IReadOnlyList<Out
     public bool HasPage => PageIndex is not null;
 }
 
+/// Rotação de CONTEÚDO de uma anotação (`AnnotationData.ConteudoRotacaoGraus`) para quem desenha prévia/caixa fora do
+/// motor (o App): a MESMA normalização do motor (`PageFrame.NormalizeRotation`, regra do PDFium), para o App nunca
+/// fazer aritmética de rotação própria. Os valores do contrato são múltiplos de 90 (onde a regra coincide com `% 360`).
+public static class RotacaoDeConteudo
+{
+    /// Graus horários normalizados a 0/90/180/270 (`null` = 0 = em pé).
+    public static int Normalizada(int? graus) => PageFrame.NormalizeRotation(graus ?? 0);
+
+    /// O conteúdo está deitado na tela (90/270)? Então largura e altura do conteúdo aparecem trocadas.
+    public static bool TrocaEixos(int? graus) => Normalizada(graus) is 90 or 270;
+}
+
 /// Representação neutra de uma anotação de PDF — nenhum tipo do iText (PdfAnnotation, PdfName, etc.)
 /// aparece nesta assinatura pública; é o contrato que src/mPdf.App consome sem nunca referenciar iText.
 ///
@@ -65,12 +77,14 @@ public sealed record OutlineNode(string Title, int? PageIndex, IReadOnlyList<Out
 /// `Quads`, `InkStrokes`, `LineStartPt`/`LineEndPt`) está em PONTOS, relativa à origem (canto
 /// inferior-esquerdo) da CropBox recortada pela MediaBox — a página EXIBIDA, o mesmo frame das caixas de
 /// caractere do PDFium/Docnet e dos cliques na página renderizada —, com orientação PDF (y para cima),
-/// no frame NÃO-rotacionado. `AddAnnotation` soma a origem antes de gravar no espaço do usuário;
-/// `ReadAnnotations` subtrai ao ler — o round-trip (e o lift Remove+Add do App) é estável. Sem /CropBox,
+/// e — PÁGINAS GIRADAS (2026-10-13) — já GIRADO por /Rotate como o PDFium mostra (0/90/180/270). `AddAnnotation`
+/// converte para o espaço do usuário (`DisplayFrame`: origem + rotação; /QuadPoints por vértice; FreeText/
+/// ImageStamp/StickyNote/Underline/Strikeout com /AP em pé via /Matrix); `ReadAnnotations` faz o inverso (também
+/// para anotações de outros programas, sem reescrever o /AP delas) — o round-trip (e o lift Remove+Add do App) é
+/// estável. Rotação 0 = só a translação da origem (bit a bit como antes). Sem /CropBox,
 /// vale a MediaBox. Nada muda quando a caixa EXIBIDA (CropBox ∩ MediaBox) começa em (0,0) — o caso
 /// comum; páginas SEM CropBox mas com MediaBox fora da origem também são convertidas. Mesmo frame de
-/// `TextCorrection` (ver abaixo); `VisibleStampSpec.Rect` (mPdf.Signing) tem a mesma origem, mas está
-/// no frame exibido GIRADO (difere deste em página com /Rotate).
+/// `TextCorrection` (ver abaixo; em página girada: Task 4) e de `VisibleStampSpec.Rect` (mPdf.Signing).
 public sealed record AnnotationData
 {
     /// Nome/NM da anotação no PDF. Ao CRIAR: se informado, AddAnnotation o usa como `/NM` do PDF
@@ -93,11 +107,20 @@ public sealed record AnnotationData
     /// "sem `/C` no PDF" (anotação sem cor definida, ex.: transparente por spec). Ao LER, `null`
     /// reflete a ausência real de `/C` (nunca um palpite de preto opaco). Ao CRIAR com `null`,
     /// AddAnnotation NÃO escreve `/C` na anotação (revisão pós-M7 — "sentinela de cor").
+    /// FreeText: COR DO TEXTO. Ao CRIAR vai para o `rg` do `/DA` e para o /AP (`null` = texto PRETO — o `/DA` sempre
+    /// leva uma cor) e é espelhada em `/C` quando a caixa não tem fundo (`FillArgb` null). Ao LER vem do `/DA`
+    /// (preto = `null`); um `/C` que não é esse espelho é o fundo e vai para `FillArgb` (ver lá).
     public uint? ColorArgb { get; init; }
-    /// Cor de PREENCHIMENTO (interior) ARGB do Retângulo — `/IC` no PDF. `null` = SEM preenchimento
-    /// (não escreve `/IC`; sentinela igual ao `ColorArgb`/`/C` da borda). Só se aplica a
-    /// `Kind == Rectangle` (Line/Arrow/Ink/marcação de texto não têm interior) — ignorado nos demais.
+    /// Cor de PREENCHIMENTO ARGB. Vale para DOIS kinds (ignorado nos demais — Line/Arrow/Ink/marcação de texto não
+    /// têm interior): Rectangle (abaixo) e FreeText (parágrafo seguinte).
+    /// Rectangle: o interior — `/IC` no PDF. `null` = SEM preenchimento (não escreve `/IC`; sentinela igual ao
+    /// `ColorArgb`/`/C` da borda).
     /// Ao LER, reflete a ausência real de `/IC` (null) ou a cor lida. Sólido no v1 (sem opacidade).
+    /// FreeText (revisão F1/E4): FUNDO da caixa de texto. No PDF é o `/C` do FreeText (semântica do Acrobat/PDFBox;
+    /// a cor do texto mora no `/DA`). Ao LER: um `/C` que não é o espelho da cor do texto do `/DA` (o que o mPDF
+    /// grava em caixa sem fundo) vira `FillArgb`; ao CRIAR, `FillArgb` vai para `/C` e é pintado na BBox inteira do
+    /// /AP, sob o texto. `null` = sem fundo (caixas do mPDF: byte a byte como antes). Limite: fundo IGUAL à cor do
+    /// texto é lido como espelho (sem fundo) — caso ilegível de qualquer forma.
     public uint? FillArgb { get; init; }
     /// Espessura da BORDA/contorno em pontos (`/Border [0 0 W]`). `null` = default 2pt (comportamento
     /// legado). Só se aplica às formas com contorno (Ink/Rectangle/Line/Arrow). REGRA "sem borda":
@@ -137,10 +160,55 @@ public sealed record AnnotationData
     /// gera para o texto (sem ela o PDFium não desenha o texto — só o `/DA` não basta). `FontFamily`
     /// aceita "Helvetica"/"Times"/"Courier" (mapeadas para as fontes-base do PDF); valor desconhecido
     /// cai em Helvetica. Só se aplicam a `Kind == FreeText` (ignorados nos demais).
+    /// LEITURA (fix round 2 da revisão das páginas giradas): `ReadAnnotations` devolve a formatação do FreeText —
+    /// família/negrito/itálico da fonte do /AP (senão do /DA), tamanho do /DA — para o lift do App (mover/colar/
+    /// replicar/editar) não voltar a 12 pt Helvetica normal. A cor do texto (`ColorArgb`) vem SEMPRE do /DA (revisão
+    /// F1/E4; o /C é o espelho dela ou o fundo, ver `ColorArgb`/`FillArgb`). `FontFamily`
+    /// lida é "Helvetica"/"Times"/"Courier"; sem /DA legível (outro programa), os defaults (`null`/false).
     public double? FontSizePt { get; init; }
     public bool Bold { get; init; }
     public bool Italic { get; init; }
     public string? FontFamily { get; init; }
+
+    /// ORIENTAÇÃO DO CONTEÚDO na tela (revisão final das páginas giradas): rotação HORÁRIA, em graus (90/180/270),
+    /// do conteúdo orientado da anotação em relação a "em pé" no frame EXIBIDO. `null` (ou 0) = em pé. Só vale para
+    /// os kinds com conteúdo orientado: FreeText (texto), ImageStamp (imagem), StickyNote (ícone) e
+    /// Underline/Strikeout (direção do texto marcado); ignorado nos demais.
+    ///
+    /// Por que existe: "Girar" a página DEPOIS de anotar gira a anotação JUNTO (como no Acrobat). `ReadAnnotations`
+    /// devolve aqui quanto ela girou (lido da /Matrix do /AP — ou do /Rotate da anotação — para FreeText/ImageStamp/
+    /// StickyNote; da ordem dos vértices de /QuadPoints para Underline/Strikeout), e `AddAnnotation` redesenha o /AP
+    /// com essa MESMA orientação. Assim o lift do App (Remove+Add: mover, redimensionar, mudar estilo) só muda
+    /// posição/tamanho, nunca desvira o conteúdo. Anotação nova = `null` = em pé para a rotação atual da página — exceto
+    /// Underline/Strikeout novos sobre texto que NÃO está em pé na tela (a página girou depois de o texto existir): o
+    /// App grava aqui a direção dos glifos sob a seleção (`IPdfEditor.DirecaoDoTexto`, revisão F2/A1), para o traço
+    /// seguir o texto.
+    /// /AP de outro programa com /Matrix que não é rotação pura, ou com a flag NoRotate = `null` (em pé).
+    /// Valores fora de múltiplos de 90 fazem `AddAnnotation` lançar `ArgumentException`.
+    public int? ConteudoRotacaoGraus { get; init; }
+
+    /// FLAGS da anotação (`/F` cru do PDF — bits do spec: 1 Invisible, 2 Hidden, 4 Print, 8 NoZoom, 16 NoRotate,
+    /// 32 NoView, 64 ReadOnly, 128 Locked...). `null` = sem `/F` (o que o mPDF grava nas anotações que cria). Ao LER,
+    /// o valor gravado; ao CRIAR, gravado quando não-nulo — o lift do App (Remove+Add) preserva as flags de outros
+    /// programas (revisão F1/E5: a nota do Acrobat tem /F 28 = Print|NoZoom|NoRotate; perder o NoRotate fazia o
+    /// ícone pular em página girada).
+    /// NoRotate em página GIRADA (FreeText/ImageStamp/StickyNote): o PDFium desenha o /AP em pé girando-o em torno
+    /// do canto sup.-esq. do /Rect (espaço do usuário), então o bbox do contrato é ONDE ELE APARECE (não o /Rect
+    /// girado) — `AddAnnotation` faz a conta inversa para gravar o /Rect. Nos demais kinds a flag só é preservada.
+    public int? Flags { get; init; }
+
+    /// CAIXA DE TEXTO que ALARGA para caber a linha (pedido do usuário: "a caixa de texto está quebrando linha, ela
+    /// deveria me permitir digitar a linha do tamanho da página"). Só um PEDIDO para `AddAnnotation` — nunca gravado
+    /// no PDF, `ReadAnnotations` devolve sempre `false`. Com `true` (FreeText): se a linha mais longa do texto (as
+    /// quebras explícitas valem) não cabe na largura atual, a caixa cresce na LARGURA primeiro — na direção da
+    /// leitura no frame EXIBIDO (para a direita na tela; em conteúdo girado, a direção do texto) — até a borda da
+    /// página exibida menos 18 pt; só o texto que passa disso quebra e cresce a altura (como antes). Nunca estreita.
+    /// DECISÃO (revisão N1): o App liga isto ao CRIAR, e ao EDITAR o texto/formatação SÓ quando a caixa NÃO estava
+    /// quebrando linha antes da edição (a linha mais longa do texto antigo, na formatação antiga —
+    /// `IPdfEditor.LarguraDaLinhaMaisLonga` — + 1 pt cabia na largura atual). Uma coluna que já quebrava (estreitada à
+    /// mão) mantém a largura em qualquer edição (letra a mais, negrito, fonte); mover/colar/replicar relêem a anotação
+    /// (`false`) e também a mantêm. Ignorado nos demais kinds e em FreeText com NoRotate numa página girada.
+    public bool AjustarLarguraAoTexto { get; init; }
 }
 
 /// Tipo de campo de formulário (AcroForm), Task 1 do Plano 3c — neutro, nenhum tipo iText
@@ -163,11 +231,12 @@ public enum FormFieldType { Text, Checkbox, Radio, Combo, ListBox, Other }
 /// `Value`: string devolvida por `PdfFormField.GetValueAsString()` — pra Checkbox/Radio é o nome do
 /// estado ATUALMENTE selecionado ("Off" quando nada está marcado, nunca `null`); pra Combo/ListBox é
 /// o valor selecionado; pra Text é o conteúdo digitado.
-/// `WidgetRect`: retângulo do PRIMEIRO widget do campo (`PdfFormField.GetWidgets()[0]`), relativo à
-/// origem da CropBox (frame exibido — mesma conversão de `AnnotationData`, fix/markup-cropbox), no frame
-/// NÃO-ROTACIONADO da página — mesma convenção/mesma costura de rotação documentada em
-/// `AnnotationData` (Task 3, Plano 3b: `/Rotate` é atributo de EXIBIÇÃO, o `/Rect` do widget nunca
-/// muda quando a página gira). DECISÃO DE CONTRATO: um campo Radio tem >=1 widget (1 por opção,
+/// `WidgetRect`: retângulo do PRIMEIRO widget do campo (`PdfFormField.GetWidgets()[0]`). Fica no frame
+/// EXIBIDO da página: relativo à origem da CropBox e já girado por `/Rotate` (a mesma conversão de
+/// `AnnotationData`, via `DisplayFrame` — plano páginas-giradas, Task 3). O `/Rect` gravado no PDF continua
+/// no espaço do usuário e não muda quando a página gira; é a leitura que o leva ao frame em que o App
+/// desenha o destaque.
+/// DECISÃO DE CONTRATO: um campo Radio tem >=1 widget (1 por opção,
 /// potencialmente em páginas diferentes), mas este contrato expõe só 1 `FormFieldData` por CAMPO
 /// (não por widget) — o retângulo/página do PRIMEIRO widget (ordem de `GetWidgets()`, que reflete a
 /// ordem de `AddKid` na criação) representam o campo como um todo; um consumidor que precise da
@@ -205,10 +274,12 @@ public enum TextFontFamily { Serif, SansSerif, Monospace }
 /// FRAME DE COORDENADAS do "Corrigir texto" (revisão final 2026-10-09): todas as coordenadas de
 /// `TextStyleProbe`, `TextCorrection` e do `areaPt` de `ProbeTextStyle` estão em PONTOS, relativas à
 /// origem (canto inferior-esquerdo) da CropBox da página — a página EXIBIDA, o mesmo frame das caixas
-/// de caractere do PDFium/Docnet que o App usa —, com orientação PDF (y para cima). O motor converte
-/// para o espaço do usuário (somando a origem da CropBox) antes de rodar o pdfSweep/escrever e
-/// converte de volta no resultado do probe. Sem /CropBox, vale a MediaBox; a CropBox é recortada pela
-/// MediaBox como no PDFium (ver `PageFrame`).
+/// de caractere do PDFium/Docnet que o App usa —, com orientação PDF (y para cima). Em página girada
+/// (/Rotate 90/180/270) é o frame EXIBIDO, já girado (o que o usuário vê na tela). O motor converte
+/// para o espaço do usuário antes de rodar o pdfSweep/escrever — rotação + origem da CropBox, pela
+/// conversão única `DisplayFrame` (`PageFrame.Frame`; em rotação 0 é só somar a origem) — e converte de
+/// volta no resultado do probe. Sem /CropBox, vale a MediaBox; a CropBox é recortada pela MediaBox como
+/// no PDFium (ver `PageFrame`).
 ///
 /// Estilo do texto encontrado numa área (frame acima).
 /// `TokenText`/`TokenAreaPt` (rodada 2, só para texto INVISÍVEL — camada OCR; null no texto visível):
@@ -276,6 +347,44 @@ public interface IPdfEditor
     /// um PDF de origem EXTERNA pode chegar com `/NM` duplicado — nesse caso residual, "remover 1 e
     /// parar" é o comportamento previsível (nunca remover todas de uma vez por engano).
     byte[] RemoveAnnotation(byte[] pdf, string annotationId);
+    /// Revisão F1 (E9): dá appearance stream (/AP /N) às Linhas/Setas (`/Line`) que NÃO têm — as gravadas até a v2.16
+    /// (o iText não gera /AP para /Line e o PDFium não sintetiza: ficavam INVISÍVEIS na tela e na impressão do mPDF).
+    /// Mesmo desenho que `AddAnnotation` grava hoje (cor /C, espessura /Border, ponta /OpenArrow na Seta; o /Rect
+    /// ganha a margem da espessura/ponta). `ReadAnnotations` devolve exatamente o mesmo antes e depois (o bbox vem do
+    /// /L). Devolve `null` quando não há nada a fazer — nenhuma /Line sem /AP (idempotente), /L ilegível — ou quando
+    /// o documento tem ASSINATURA (reescrever invalidaria a assinatura; as linhas seguem invisíveis). Feito para o App
+    /// chamar AO ABRIR e trocar os bytes da sessão SEM marcar o documento como modificado (a mudança só vai para o
+    /// disco se o usuário salvar). PDF com senha: `PdfPasswordRequiredException`, como as demais operações.
+    byte[]? RegenerarAparenciasAusentes(byte[] pdf);
+    /// Revisão F2 (A3): leva a geometria de `a` — no frame EXIBIDO da página `a.PageIndex` de `pdfOrigem` — para o
+    /// frame EXIBIDO da MESMA página em `pdfDestino` (outra versão do mesmo documento: a página pode ter sido girada
+    /// ou recortada entre as duas). Passa pelo espaço do usuário (exibido antigo → usuário → exibido novo), o mesmo
+    /// caminho que a anotação já gravada percorre quando a página gira com ela; `ConteudoRotacaoGraus` acompanha a
+    /// diferença de rotação (exceto com a flag NoRotate). Frames iguais, página ausente numa das versões, ou OUTRA
+    /// página no índice `a.PageIndex` (Fix round 1: a página é identificada pelo objeto do PDF — número + geração da
+    /// referência indireta, que as operações do mPDF preservam; mover/excluir/inserir páginas antes dela troca o
+    /// objeto do índice) → devolve `a` intacta. Leitura pura (nenhum PDF é escrito), sem gate de assinatura. Feito para o colar do App:
+    /// o clipboard guarda a anotação no frame da hora da CÓPIA. Senha: `PdfPasswordRequiredException`.
+    AnnotationData MapearParaOutraVersao(byte[] pdfOrigem, byte[] pdfDestino, AnnotationData a);
+    /// Revisão F2 (A9): `true` se o documento tem conteúdo INTERATIVO que `ImporEmFolhas` (CopyAsFormXObject, só o
+    /// conteúdo da página) NÃO leva para o PDF imposto: QUALQUER anotação em /Annots — inclusive widgets (campos de
+    /// formulário, preenchidos ou não, e o carimbo visível da assinatura) e os subtypes que `ReadAnnotations` não
+    /// mapeia (Circle, Squiggly, Polygon, Caret, FileAttachment...) — ou assinatura digital. DECISÃO: `/Link` e
+    /// `/Popup` NÃO contam — o link também se perde, mas é só navegação (o conteúdo visível vai), e o Popup é o
+    /// balão de uma anotação-mãe que já conta sozinha. Leitura pura e barata (só os dicionários de /Annots, sem
+    /// conteúdo de página), sem gate de assinatura. Senha: `PdfPasswordRequiredException`.
+    bool TemConteudoInterativo(byte[] pdf);
+    /// Revisão F2, fix round 1 (A1): DIREÇÃO do texto da página `pageIndex` que cai dentro de `quads` (frame EXIBIDO —
+    /// os retângulos da seleção de texto), como `AnnotationData.ConteudoRotacaoGraus`: 90 = os glifos avançam para
+    /// baixo na tela, 180 = para a esquerda (de ponta-cabeça), 270 = para cima; `null` = em pé, nenhum glifo nos
+    /// quads, ou glifos fora dos eixos. Lida da ORIENTAÇÃO dos glifos (eixo x de TextMatrix × CTM levado ao frame
+    /// exibido), nunca da ordem dos caracteres — texto da direita para a esquerda (hebraico, árabe) em pé dá `null`.
+    /// Maioria dos glifos. Leitura pura, sem gate de assinatura. Senha: `PdfPasswordRequiredException`.
+    int? DirecaoDoTexto(byte[] pdf, int pageIndex, IReadOnlyList<PdfQuad> quads);
+    /// Revisão I3: largura (pt) da linha mais longa do texto de uma caixa de texto (`Content`, quebras explícitas valem,
+    /// espaços no fim da linha não contam), na formatação dela (`FontSizePt`/`Bold`/`Italic`/`FontFamily`) — a mesma
+    /// medida que `AddAnnotation` usa para alargar a caixa (`AjustarLarguraAoTexto`). Texto vazio = 0. Cálculo puro.
+    double LarguraDaLinhaMaisLonga(AnnotationData caixa);
     /// Anotações de USUÁRIO apenas — widgets (campos de formulário/assinatura) são EXCLUÍDOS por
     /// decisão de design: um widget não é uma anotação que o usuário adicionou, é a materialização
     /// visual de um campo (assinatura, texto, etc.). Ver PdfEditor.ReadAnnotations.
@@ -387,30 +496,17 @@ public interface IPdfEditor
     /// `PaginaFonte` fora do documento -> `ArgumentException` pt-BR antes de compor.
     byte[] ImporEmFolhas(byte[] pdf, IReadOnlyList<ColocacaoFolha> colocacoes, double folhaLarguraPt, double folhaAlturaPt);
 
-    // --- Task 3 (Plano 3b): costura de rotação (requisito de 1ª ordem, ledger da revisão da Task 2) ---
+    // --- Rotação de página (/Rotate) ------------------------------------------------------------------
     //
-    // ACHADO (provado por RotatePages_PageWithAnnotation_AnnotationSurvivesAndPageRendersNonBlank, Task
-    // 2): `/Rotate` é um atributo de EXIBIÇÃO — o `/Rect` de uma anotação nunca muda quando a página
-    // gira; é o LEITOR de PDF (PDFium, via PdfDocumentRenderer) que aplica a rotação a TODO o conteúdo
-    // (texto + anotações) na hora de desenhar. Isso significa `Session.PageSizes`/hit-tests/drags no App
-    // (que só conhecem o quadro ROTACIONADO do PDFium) e os retângulos de `AnnotationData` (que o iText
-    // grava/lê no quadro NÃO-ROTACIONADO) deixam de bater assim que uma página tem `/Rotate != 0`.
-    //
-    // DECISÃO (registrada no relatório da Task 3, Plano 3b): v1 restringe — interação de anotação fica
-    // DESLIGADA em página girada (hit-test nulo, ferramentas de colocação viram no-op com aviso pt-BR),
-    // em vez de compor a transformação de rotação nos 2 primitivos de conversão do App
-    // (TextSelection.ScreenToPagePoint/PageViewModel.PointRectToScreenRect) e no clamp — a correção
-    // completa fica registrada como item de backlog nomeado (não implementada nesta task). Este método
-    // é a SUPERFÍCIE DE LEITURA mínima que a v1 precisa: o App (DocumentViewModel) usa isto para saber
-    // QUAL página está girada e recusar a interação — nunca escreve nada, sem gate de assinatura (mesma
-    // classe de "leitura pura" que ReadAnnotations/HasSignatures já são).
-    /// Rotação atual (`/Rotate`) de cada página, normalizada para 0/90/180/270, na ordem do documento.
-    /// Documento sem nenhuma página girada -> lista de zeros. Leitura pura, sem gate de assinatura.
-    IReadOnlyList<int> GetPageRotations(byte[] pdf);
+    // Não há leitura de rotação no contrato: todas as coordenadas (AnnotationData, PdfQuad, WidgetRect, StampRect,
+    // Corrigir texto) estão no frame EXIBIDO (o do PDFium, já girado) e o motor faz a conversão exibido<->usuário
+    // pela regra única `PageFrame`/`DisplayFrame` (rotação normalizada como o PDFium). O antigo `GetPageRotations`
+    // (Plano 3b) existia só para o App recusar interação em página girada; o plano páginas-giradas removeu esse
+    // gate e o método (sem consumidor de produção). Testes que precisam da rotação leem o /Rotate direto.
 
     // --- Task 5 (Plano 3b): sumário (bookmarks) -------------------------------------------------
     //
-    // GATE DE ASSINATURA: SEM gate — mesma política de GetPageRotations/ReadAnnotations/HasSignatures
+    // GATE DE ASSINATURA: SEM gate — mesma política de ReadAnnotations/HasSignatures
     // acima (leitura pura, `pdf` nunca é escrito). A precondição de assinatura (GuardAgainstSignedDocument)
     // só se aplica a operações que MUTAM o `pdf` recebido — ver bloco de decisão de gate no topo desta
     // interface. Confirmado por teste: `ReadOutline` lê `fixture-carimbo.pdf` (documento assinado) sem
@@ -461,7 +557,7 @@ public interface IPdfEditor
     // --- Task 1 (Plano 3c): motor de formulários AcroForm --------------------------------------
     //
     // GATE DE ASSINATURA: `ReadFormFields`/`HasXfa` SEM gate — leitura pura, mesma política uniforme
-    // de `ReadAnnotations`/`HasSignatures`/`GetPageRotations`/`ReadOutline` acima (`pdf` nunca é
+    // de `ReadAnnotations`/`HasSignatures`/`ReadOutline` acima (`pdf` nunca é
     // escrito). `SetFormFields`/`FlattenForm` COM gate (`GuardAgainstSignedDocument`) — mutam o `pdf`
     // recebido como parâmetro alvo, mesmo raciocínio de defesa em profundidade de
     // AddAnnotation/RotatePages/etc.: editar valores ou achatar campos de um documento assinado
@@ -575,12 +671,11 @@ public interface IPdfEditor
     //     aplica a correção via MATRIZ DE TRANSFORMAÇÃO no desenho da imagem (`PdfCanvas.ConcatMatrix`
     //     — ver `PdfEditor.ComputeRotationMatrix`), NUNCA via `PdfPage.SetRotation`. REVISÃO PRÉ-MERGE
     //     (I3, "o /Rotate collision"): a 1ª versão usava `SetRotation`, que fazia CADA foto convertida
-    //     com EXIF != 1 nascer como "página girada" — e o gate de rotação do Plano 3b (ver
-    //     `GetPageRotations` abaixo: "interação de anotação fica DESLIGADA em página girada") passava a
-    //     bloquear anotação/assinatura em qualquer foto de celular convertida, quebrando o fluxo real
-    //     "foto do WhatsApp -> assinar". Fix por construção: a página nasce DIRETO no tamanho CORRIGIDO
-    //     (upright) com `/Rotate` SEMPRE 0 — `GetPageRotations(ImageToPdf(...))[0] == 0` é invariante
-    //     assertado por teste, MESMO com EXIF Orientation=6. Confirmado empiricamente (render via
+    //     com EXIF != 1 nascer como "página girada" — na época isso bloqueava anotação/assinatura (o gate
+    //     de rotação do Plano 3b, REMOVIDO depois pelo plano páginas-giradas). Fix por construção, mantido:
+    //     a página nasce DIRETO no tamanho CORRIGIDO (upright) com `/Rotate` SEMPRE 0 — a foto convertida é
+    //     uma página comum, sem rotação para o usuário "desgirar" no Organizar nem para a imposição/OCR
+    //     compensarem. `/Rotate` 0 no resultado é invariante assertado por teste, MESMO com EXIF Orientation=6. Confirmado empiricamente (render via
     //     PDFium, motor independente do iText que escreveu) que a matriz produz cores de canto
     //     IDÊNTICAS ao render da MESMA foto sem EXIF nenhum — a correção visual continua funcionando,
     //     só o MECANISMO mudou.
@@ -604,9 +699,8 @@ public interface IPdfEditor
     /// (pt = px × 72 / DPI; DPI ausente/zero no metadado → fallback 96, com um PISO mínimo de tamanho
     /// de página — ver `PdfEditor` — pra imagens degeneradas tipo 1x1px). Foto JPEG com EXIF
     /// Orientation != 1 é corrigida via MATRIZ DE TRANSFORMAÇÃO no desenho da imagem (ver bloco acima)
-    /// — abre UPRIGHT, e a página resultante NUNCA gira (`/Rotate` sempre 0 — `GetPageRotations` do
-    /// resultado é sempre `[0]`, mesmo para fotos com EXIF Orientation != 1: o gate de rotação do
-    /// Plano 3b nunca bloqueia anotação/assinatura numa foto convertida). PNG com canal alpha preserva
+    /// — abre UPRIGHT, e a página resultante NUNCA gira (`/Rotate` sempre 0, mesmo para fotos com EXIF
+    /// Orientation != 1: a foto vira uma página comum, ver bloco acima). PNG com canal alpha preserva
     /// transparência (SMask). `bytes` que não é JPEG/PNG por magic bytes, corrompido (magic bytes ok
     /// mas iText não decodifica), JPEG CMYK, ou imagem além do teto de pixels suportado (ver
     /// `PdfEditor.MaxImagePixels` — decidido por varredura de HEADER, ANTES de decodificar, pra nunca
@@ -681,7 +775,7 @@ public interface IPdfEditor
     //
     // MAPEAMENTO px→pt + ROTAÇÃO (mesma disciplina de frame do carimbo do Plano 3b/4 —
     // `/Rotate` é atributo de EXIBIÇÃO, o conteúdo é gravado no frame NÃO-rotacionado do MediaBox;
-    // ver `PdfEditor.ApplyOcrTextLayer`/`ComputeOcrTextMatrix`): o bitmap de OCR foi rasterizado NA
+    // ver `PdfEditor.ApplyOcrTextLayer`/`DisplayFrame.TextMatrix`): o bitmap de OCR foi rasterizado NA
     // orientação exibida (o `PdfDocumentRenderer`/PDFium já aplica `/Rotate`), então para uma página
     // com `/Rotate` 90/270 a largura-fonte px corresponde à ALTURA do MediaBox e vice-versa. Cada
     // caixa (px, topo-esquerda) é convertida para um ponto do MediaBox (pt, inferior-esquerda) e o
@@ -705,7 +799,7 @@ public interface IPdfEditor
     /// Cria um PDF/A NOVO (níveis "b") compondo uma imagem por página + OutputIntent sRGB + XMP de
     /// conformidade. Cada página recebe a imagem ocupando a página inteira; se `PdfAPaginaImagem.Texto`
     /// tiver caixas, desenha texto INVISÍVEL (render mode 3) por cima com a fonte embutida
-    /// `fonteInvisivelTtf` (reusa a matemática px->pt de `ComputeOcrTextMatrix`, rotação 0). O
+    /// `fonteInvisivelTtf` (reusa a matemática px->pt de `ApplyOcrTextLayer` — `DisplayFrame.TextMatrix`, rotação 0). O
     /// `PdfADocument` do iText RECUSA gerar fora das regras do PDF/A — se retorna bytes, o documento é
     /// válido por construção. PRECONDIÇÃO: se alguma página traz `Texto` não-vazio, `fonteInvisivelTtf`
     /// (TTF embutível) é obrigatório; caso contrário pode ser null.
@@ -717,7 +811,10 @@ public interface IPdfEditor
 
     /// Estilo do texto encontrado em `areaPt` (pontos, relativos à origem da CropBox — ver o bloco
     /// "FRAME DE COORDENADAS" acima de `TextStyleProbe`) na página `pageIndex` (0-based);
-    /// null se não houver texto na área.
+    /// null se não houver texto na área. LANÇA `PdfEditingException` ("Corrigir texto funciona só em texto na
+    /// horizontal.") quando a área só tem texto fora da horizontal NA TELA (inclinado além de ~30°, vertical,
+    /// de cabeça para baixo) — em qualquer página, girada ou não —, e `PdfEditingException` "Não foi possível
+    /// processar o PDF." para conteúdo malformado. Quem chama tem de tratar as duas saídas (null e exceção).
     TextStyleProbe? ProbeTextStyle(byte[] pdf, int pageIndex, PdfQuad areaPt);
 
     /// Remove DE VERDADE tudo dentro de `correction.AreaPt` (glifos — inclusive invisíveis de OCR — e

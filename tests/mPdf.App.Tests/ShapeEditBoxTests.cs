@@ -15,11 +15,16 @@ namespace mPdf.App.Tests;
 /// `DocumentViewModelTests.cs` (registra Remove/Add) pra provar "exatamente 1 Remove + 1 Add" com
 /// precisão — mesmo padrão dos testes de `SelectFillCommand_WithRectangleSelected_LiftsAndAppliesFillToThatBox`
 /// (mesmo arquivo, seção de preenchimento da Task 2).
-public class ShapeEditBoxTests
+public class ShapeEditBoxTests : IDisposable
 {
-    private static (DocumentViewModel doc, FakePdfEditor fake, List<string> errors) Build(string autor = "Autor de Teste")
+    // Pastas de AppConfig criadas pelos builders desta classe — apagadas no Dispose (uma instância por teste).
+    private readonly PastasDeConfigTemporarias _cfgs = new();
+
+    public void Dispose() => _cfgs.Dispose();
+
+    private (DocumentViewModel doc, FakePdfEditor fake, List<string> errors) Build(string autor = "Autor de Teste")
     {
-        var configDir = Path.Combine(Path.GetTempPath(), $"mpdf-shapeedit-cfg-{Guid.NewGuid():N}");
+        var configDir = _cfgs.Nova("shapeedit");
         var fake = new FakePdfEditor();
         var errors = new List<string>();
         var doc = new DocumentViewModel(
@@ -147,22 +152,6 @@ public class ShapeEditBoxTests
 
         Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase);
         Assert.Empty(errors);
-    }
-
-    [Fact] // página GIRADA -> no-op (avisa "Página girada", mesmo padrão de BeginImageEditBox).
-    public async Task BeginShapeEditBox_RotatedPage_NoOp()
-    {
-        var (doc, fake, errors) = Build();
-        using var d = doc;
-        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 90 };
-        await d.RefreshAnnotationsByPageAsync();
-        var rect = MakeRect();
-
-        d.BeginShapeEditBox(rect);
-
-        Assert.Equal(StampPlacementPhase.None, d.StampPlacementPhase);
-        Assert.Single(errors);
     }
 
     [Fact] // Preserva FillArgb no lift MESMO quando a borda não tem cor (ColorArgb null) — o fill não

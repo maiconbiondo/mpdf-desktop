@@ -43,11 +43,9 @@ internal static class TextCorrectionEngine
                 PdfEditor.GuardAgainstSignedDocument(doc);
                 PdfEditor.ValidatePageIndex(doc, c.PageIndex);
                 // Contrato: coordenadas relativas à origem da CropBox (frame exibido, o mesmo do PDFium);
-                // iText/pdfSweep trabalham no espaço do usuário -> desloca pela origem da CropBox.
+                // iText/pdfSweep trabalham no espaço do usuário -> desloca pela origem da CropBox (rotação 0,
+                // em `NoUsuario` abaixo; o texto novo também usa `ox`/`oy`).
                 var (ox, oy) = CropOrigin(doc.GetPage(c.PageIndex + 1));
-                var a = c.AreaPt;
-                var rect = new Rectangle((float)(a.LeftPt + ox), (float)(a.BottomPt + oy),
-                    (float)(a.RightPt - a.LeftPt), (float)(a.TopPt - a.BottomPt));
                 var bg = ToDeviceRgb(c.BackgroundArgb);
                 // pdfSweep 5.0.7: PdfCleaner.CleanUp(PdfDocument, IList<PdfCleanUpLocation>, CleanUpProperties)
                 // — remove glifos (visíveis ou não) e pixels de imagem da área; a área é pintada com `bg`.
@@ -58,9 +56,20 @@ internal static class TextCorrectionEngine
                 // do pdfSweep (qualquer interseção remove), caminho digital inalterado.
                 var props = new CleanUpProperties().SetProcessAnnotations(false);
                 if (c.MinOverlapRatio is double ratio) props.SetOverlapRatio(ratio);
+                // Páginas giradas (Task 4): as áreas chegam no frame EXIBIDO; o pdfSweep trabalha no espaço do
+                // usuário -> `DisplayFrame.ToUser` (rotações de 90° levam retângulo em retângulo). Rotação 0 segue
+                // pela conta antiga (só a origem), byte a byte.
+                var frame = PageFrame.Frame(doc.GetPage(c.PageIndex + 1));
+                Rectangle NoUsuario(PdfQuad q)
+                {
+                    if (frame.Rotation == 0)
+                        return new Rectangle((float)(q.LeftPt + ox), (float)(q.BottomPt + oy),
+                            (float)(q.RightPt - q.LeftPt), (float)(q.TopPt - q.BottomPt));
+                    var u = frame.ToUser(q);
+                    return new Rectangle((float)u.LeftPt, (float)u.BottomPt, (float)(u.RightPt - u.LeftPt), (float)(u.TopPt - u.BottomPt));
+                }
                 var locais = (c.AreasPt ?? new[] { c.AreaPt })
-                    .Select(q => new PdfCleanUpLocation(c.PageIndex + 1, new Rectangle((float)(q.LeftPt + ox), (float)(q.BottomPt + oy),
-                        (float)(q.RightPt - q.LeftPt), (float)(q.TopPt - q.BottomPt)), bg))
+                    .Select(q => new PdfCleanUpLocation(c.PageIndex + 1, NoUsuario(q), bg))
                     .ToList();
                 PdfCleaner.CleanUp(doc, locais, props);
 
@@ -76,15 +85,26 @@ internal static class TextCorrectionEngine
                           .SetFillColor(ToDeviceRgb(c.ColorArgb))
                           .BeginText().SetFontAndSize(font, (float)c.SizePt)
                           .SetTextRenderingMode(PdfCanvasConstants.TextRenderingMode.FILL)
-                          .SetCharacterSpacing(0).SetWordSpacing(0).SetHorizontalScaling(100).SetTextRise(0)
-                          .MoveText(c.LeftXPt + ox, c.BaselineYPt + oy)
-                          .ShowText(c.NewText)
+                          .SetCharacterSpacing(0).SetWordSpacing(0).SetHorizontalScaling(100).SetTextRise(0);
+                    if (frame.Rotation == 0)
+                        canvas.MoveText(c.LeftXPt + ox, c.BaselineYPt + oy);
+                    else
+                    {
+                        // Página girada: Tm com a parte linear "em pé" (a mesma da camada OCR) e a origem da
+                        // baseline levada do frame exibido ao usuário — o texto novo sai na horizontal na tela.
+                        var (ma, mb, mc, md, me, mf) = frame.TextMatrix(new PdfPoint(c.LeftXPt, c.BaselineYPt));
+                        canvas.SetTextMatrix((float)ma, (float)mb, (float)mc, (float)md, (float)me, (float)mf);
+                    }
+                    canvas.ShowText(c.NewText)
                           .EndText().RestoreState();
                 }
             }
         }
         catch (BadPasswordException ex) { throw PdfEditor.WrapPassword(ex); }
         catch (ITextException ex) { throw PdfEditor.WrapGeneric(ex); }
+        // Revisão F2, fix round 2: NRE/cast/índice crus do parser do iText em conteúdo malformado (/F99 ausente de
+        // /Resources) viram PdfEditingException, que o App já captura. ArgumentException (página fora) segue igual.
+        catch (Exception ex) when (PdfEditor.Malformado(ex) && ex is not ArgumentException) { throw PdfEditor.WrapMalformado(ex); }
         // Caminho de imagem do pdfSweep usa System.Drawing (GDI+): falhas de plataforma não são
         // ITextException — mesma mensagem honesta de WrapGeneric.
         catch (System.Runtime.InteropServices.ExternalException ex) { throw new PdfEditingException("Não foi possível processar o PDF.", ex); }
@@ -166,17 +186,32 @@ internal static class TextCorrectionEngine
             using var doc = new PdfDocument(new PdfReader(input));
             PdfEditor.ValidatePageIndex(doc, pageIndex);
             var page = doc.GetPage(pageIndex + 1);
-            var (ox, oy) = CropOrigin(page);
-            // Área chega no frame da CropBox; o listener compara no espaço do usuário e o resultado
-            // volta para o frame da CropBox (ver Contract.cs).
-            listener = new ProbeListener(new PdfQuad(areaPt.LeftPt + ox, areaPt.BottomPt + oy,
-                areaPt.RightPt + ox, areaPt.TopPt + oy), ox, oy);
+            var frame = PageFrame.Frame(page);
+            if (frame.Rotation == 0)
+            {
+                var (ox, oy) = CropOrigin(page);
+                // Área chega no frame da CropBox; o listener compara no espaço do usuário e o resultado
+                // volta para o frame da CropBox (ver Contract.cs).
+                listener = new ProbeListener(new PdfQuad(areaPt.LeftPt + ox, areaPt.BottomPt + oy,
+                    areaPt.RightPt + ox, areaPt.TopPt + oy), ox, oy, null);
+            }
+            else
+                // Página girada (Task 4): o listener leva cada ponto do iText para o frame EXIBIDO logo na
+                // entrada — a área já chega nele e o resultado sai nele, com o algoritmo (linhas por Y, tokens
+                // por X, vizinhos) intacto. Texto que não fica na horizontal NA TELA é recusado (ver Result).
+                listener = new ProbeListener(areaPt, 0, 0, frame);
             new PdfCanvasProcessor(listener).ProcessPageContent(page);
         }
         catch (BadPasswordException ex) { throw PdfEditor.WrapPassword(ex); }
         catch (ITextException ex) { throw PdfEditor.WrapGeneric(ex); }
+        // Revisão F2, fix round 2: NRE/cast/índice crus do parser do iText em conteúdo malformado (/F99 ausente de
+        // /Resources) viram PdfEditingException, que o App já captura. ArgumentException (página fora) segue igual.
+        catch (Exception ex) when (PdfEditor.Malformado(ex) && ex is not ArgumentException) { throw PdfEditor.WrapMalformado(ex); }
         return listener.Result(); // só valores simples: não toca o documento já fechado
     }
+
+    /// Recusa do probe para texto que não fica na horizontal na tela (texto deitado/de ponta-cabeça).
+    internal const string NaoHorizontal = "Corrigir texto funciona só em texto na horizontal.";
 
     private sealed record Hit(string Text, double X0, double X1, double Y, double Size,
         string FontName, uint Argb, bool Invisible);
@@ -185,9 +220,38 @@ internal static class TextCorrectionEngine
     {
         private readonly PdfQuad _a;
         private readonly double _ox, _oy;
+        private readonly DisplayFrame? _frame;
         private readonly List<Hit> _hits = new();
-        /// `a` no espaço do usuário; (ox, oy) = origem da CropBox, subtraída do resultado.
-        public ProbeListener(PdfQuad a, double ox, double oy) { _a = a; _ox = ox; _oy = oy; }
+        /// Glifos dentro da área que NÃO estão na horizontal na tela (ver `Horizontal`).
+        private int _naoHorizontais;
+        /// Rotação 0 (`frame` null): `a` no espaço do usuário; (ox, oy) = origem da CropBox, subtraída do
+        /// resultado. Página girada: `a` no frame EXIBIDO, (ox, oy) = (0, 0) e cada ponto do iText é levado ao
+        /// frame exibido por `frame` na entrada (`P`).
+        public ProbeListener(PdfQuad a, double ox, double oy, DisplayFrame? frame) { _a = a; _ox = ox; _oy = oy; _frame = frame; }
+
+        /// Ponto do iText (espaço do usuário) no frame de TRABALHO do algoritmo: o próprio usuário em rotação 0
+        /// (exatamente como antes) ou o frame exibido em página girada.
+        private (double X, double Y) P(Vector v)
+        {
+            if (_frame is not { } f) return (v.Get(0), v.Get(1));
+            var d = f.ToDisplayed(new PdfPoint(v.Get(0), v.Get(1)));
+            return (d.XPt, d.YPt);
+        }
+
+        /// O glifo avança para a DIREITA na tela (texto em pé, legível na horizontal)? Direção = eixo x do texto
+        /// (`a`,`b` de TextMatrix x CTM) levada ao frame exibido (só a rotação da página; vetor, sem origem).
+        /// Revisão F1 (E7): recusa só o que claramente NÃO está na horizontal na tela (> 30°: texto deitado, de
+        /// ponta-cabeça, vertical). Antes ~5,7° (|dy| <= 0,1 dx), que valia também na rotação 0 e recusava texto
+        /// levemente inclinado que a v2.16 corrigia (camada OCR de scan torto sem deskew, 6–12°) — inclinação leve
+        /// segue o caminho da v2.16 (TextCorrectionInclinadoTests, valores-ouro da v2.16.0).
+        private static readonly double TanLimite = Math.Tan(Math.PI / 6);
+        private bool Horizontal(TextRenderInfo ch)
+        {
+            var m = ch.GetTextMatrix().Multiply(ch.GetGraphicsState().GetCtm());
+            double vx = m.Get(0), vy = m.Get(1);
+            if (_frame is { } f) (vx, vy) = f.VectorToDisplayed(vx, vy);
+            return vx > 0 && Math.Abs(vy) <= TanLimite * vx;
+        }
 
         public void EventOccurred(IEventData data, EventType type)
         {
@@ -200,13 +264,16 @@ internal static class TextCorrectionEngine
             {
                 var ch = chars[i];
                 var b = ch.GetBaseline();
-                var s = b.GetStartPoint(); var e = b.GetEndPoint();
-                double mx = (s.Get(0) + e.Get(0)) / 2, my = (s.Get(1) + e.Get(1)) / 2;
+                var s = P(b.GetStartPoint()); var e = P(b.GetEndPoint());
+                double mx = (s.X + e.X) / 2, my = (s.Y + e.Y) / 2;
                 if (mx < _a.LeftPt - 1 || mx > _a.RightPt + 1 || my < _a.BottomPt - 1 || my > _a.TopPt + 1) continue;
+                // Texto que não está na horizontal NA TELA (ex.: página retrato comum girada com "Girar", texto
+                // deitado ou de ponta-cabeça) fica fora — o algoritmo abaixo assume baseline horizontal.
+                if (!Horizontal(ch)) { _naoHorizontais++; continue; }
                 // Tamanho efetivo = fonte x comprimento do vetor vertical (c,d) de TextMatrix x CTM.
                 var m = ch.GetTextMatrix().Multiply(ch.GetGraphicsState().GetCtm());
                 double size = ch.GetFontSize() * Math.Sqrt(m.Get(3) * m.Get(3) + m.Get(4) * m.Get(4));
-                _hits.Add(new Hit(ch.GetText(), s.Get(0), e.Get(0), s.Get(1), size,
+                _hits.Add(new Hit(ch.GetText(), s.X, e.X, s.Y, size,
                     ch.GetFont().GetFontProgram().GetFontNames().GetFontName() ?? "",
                     ToArgb(ch.GetFillColor()), ch.GetTextRenderMode() == 3));
                 // Token OCR: só conta glifo com o ponto médio ESTRITAMENTE dentro da área (sem a tolerância de
@@ -214,7 +281,7 @@ internal static class TextCorrectionEngine
                 // (fonte escaneada estreita) não pode puxar o vizinho; na vertical, vale o CENTRO da altura do
                 // glifo (entre as linhas de descida e subida), não a base — com linhas coladas e acento embaixo
                 // (rodada 4) a área sobe até a BASE da linha de cima, mas o miolo dos glifos dela fica fora.
-                double cy = (ch.GetAscentLine().GetStartPoint().Get(1) + ch.GetDescentLine().GetStartPoint().Get(1)) / 2;
+                double cy = (P(ch.GetAscentLine().GetStartPoint()).Y + P(ch.GetDescentLine().GetStartPoint()).Y) / 2;
                 bool estrito = mx > _a.LeftPt && mx < _a.RightPt && cy > _a.BottomPt && cy < _a.TopPt;
                 if (estrito && ch.GetTextRenderMode() == 3 && !string.IsNullOrWhiteSpace(ch.GetText())) dentro.Add(i);
             }
@@ -233,16 +300,16 @@ internal static class TextCorrectionEngine
                 double y0 = double.MaxValue, y1 = double.MinValue;
                 for (int k = a; k <= z; k++)
                 {
-                    y0 = Math.Min(y0, chars[k].GetDescentLine().GetStartPoint().Get(1));
-                    y1 = Math.Max(y1, chars[k].GetAscentLine().GetStartPoint().Get(1));
+                    y0 = Math.Min(y0, P(chars[k].GetDescentLine().GetStartPoint()).Y);
+                    y1 = Math.Max(y1, P(chars[k].GetAscentLine().GetStartPoint()).Y);
                 }
                 int total = 0, tocados = 0;
                 for (int k = a; k <= z; k++) if (!Branco(k)) { total++; if (dentro.Contains(k)) tocados++; }
                 var mt = chars[a].GetTextMatrix().Multiply(chars[a].GetGraphicsState().GetCtm());
                 double tam = chars[a].GetFontSize() * Math.Sqrt(mt.Get(3) * mt.Get(3) + mt.Get(4) * mt.Get(4));
                 _tokens.Add(new Token(string.Concat(chars.Skip(a).Take(z - a + 1).Select(c => c.GetText())),
-                    chars[a].GetBaseline().GetStartPoint().Get(0), chars[z].GetBaseline().GetEndPoint().Get(0),
-                    chars[a].GetBaseline().GetStartPoint().Get(1), y0, y1, tam, tocados, total));
+                    P(chars[a].GetBaseline().GetStartPoint()).X, P(chars[z].GetBaseline().GetEndPoint()).X,
+                    P(chars[a].GetBaseline().GetStartPoint()).Y, y0, y1, tam, tocados, total));
             }
         }
 
@@ -257,13 +324,14 @@ internal static class TextCorrectionEngine
             int a = -1;
             for (int i = 0; i <= chars.Count; i++)
             {
-                bool fim = i == chars.Count || chars[i].GetTextRenderMode() != 3 || string.IsNullOrWhiteSpace(chars[i].GetText());
+                bool fim = i == chars.Count || chars[i].GetTextRenderMode() != 3 || string.IsNullOrWhiteSpace(chars[i].GetText())
+                           || !Horizontal(chars[i]);
                 if (!fim) { if (a < 0) a = i; continue; }
                 if (a < 0) continue;
                 var m = chars[a].GetTextMatrix().Multiply(chars[a].GetGraphicsState().GetCtm());
                 double tam = chars[a].GetFontSize() * Math.Sqrt(m.Get(3) * m.Get(3) + m.Get(4) * m.Get(4));
-                _todos.Add(new Geo(chars[a].GetBaseline().GetStartPoint().Get(0), chars[i - 1].GetBaseline().GetEndPoint().Get(0),
-                    chars[a].GetBaseline().GetStartPoint().Get(1), tam));
+                _todos.Add(new Geo(P(chars[a].GetBaseline().GetStartPoint()).X, P(chars[i - 1].GetBaseline().GetEndPoint()).X,
+                    P(chars[a].GetBaseline().GetStartPoint()).Y, tam));
                 a = -1;
             }
         }
@@ -289,6 +357,8 @@ internal static class TextCorrectionEngine
 
         public TextStyleProbe? Result()
         {
+            // Só texto fora da horizontal na tela tocou a área: recusa amigável (em vez de "não há texto").
+            if (_hits.Count == 0 && _naoHorizontais > 0) throw new PdfEditingException(NaoHorizontal);
             if (_hits.Count == 0) return null;
             var first = _hits.OrderBy(h => h.X0).First();
             // Só a linha do acerto mais à esquerda (várias linhas podem tocar a área).

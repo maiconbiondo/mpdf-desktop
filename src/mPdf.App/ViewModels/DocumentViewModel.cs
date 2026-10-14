@@ -336,7 +336,17 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// de propósito (diferente de `SelectedAnnotation`, que `OnSessionApplied` limpa a cada edição): colar
     /// depois de outra edição qualquer (ex.: mover uma anotação diferente) continua colando o MESMO
     /// conteúdo copiado — mesmo espírito de "clipboard sobrevive a outras ações" de qualquer app real.
+    /// A geometria fica no frame EXIBIDO da página no momento da CÓPIA (`_annotationClipboardSnapshot`) e nunca é
+    /// reescrita; o colar a leva ao frame atual (Revisão F2/A3).
     private AnnotationData? _annotationClipboard;
+
+    /// Revisão F2 (A3): o snapshot (por REFERÊNCIA) em cujo frame EXIBIDO `_annotationClipboard` está. Girar (ou
+    /// recortar) a página entre copiar e colar muda o frame: o colar pede ao motor para levar a geometria do frame
+    /// antigo ao atual (`IPdfEditor.MapearParaOutraVersao`) em vez de aplicar as coordenadas velhas ao frame novo
+    /// (a cópia caía no canto oposto da página). Retém o array do momento da cópia — o mesmo que a pilha de desfazer
+    /// já guarda — até a próxima cópia; cada colar mapeia a partir dele (Fix round 1: assim desfazer o giro ou mover
+    /// a página de volta continua certo). O motor só mapeia quando o índice ainda é a MESMA página da cópia.
+    private byte[]? _annotationClipboardSnapshot;
 
     /// Cache de `ReadAnnotations(Session.Snapshot)`, indexado por página (`AnnotationsByPage[pageIndex]`)
     /// — renovado em BACKGROUND (`Task.Run`, ver `RefreshAnnotationsByPageAsync`) a cada `Session.
@@ -347,7 +357,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
 
     /// Cache de `ReadOutline(Session.Snapshot)` — árvore de sumário/bookmarks (Task 5, Plano 3b),
     /// renovada em BACKGROUND (`Task.Run`, ver `RefreshOutlineAsync`) no construtor e a cada `Session.
-    /// Applied`, mesmo exemplar de `AnnotationsByPage` acima (e de `GetPageRotations`/`_pageRotations`).
+    /// Applied`, mesmo exemplar de `AnnotationsByPage` acima.
     /// DIFERENÇA DE PROPÓSITO (decisão registrada no brief, "read-gated or safely-stale?"): SEM gate de
     /// leitura tipo `_annotationsCacheSnapshot` — um clique num nó do sumário só NAVEGA
     /// (`ScrollToPageRequested` com um índice, ver `NavigateToOutlineNode` abaixo), nunca seleciona/edita
@@ -362,7 +372,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// Sumário vazio (documento sem `/Outlines`, ou o 1º refresh ainda em voo) -> estado vazio pt-BR na
     /// aba Sumário ("Este documento não tem sumário.", ver `OutlineView.xaml`). `false` no intervalo
     /// entre o construtor e o 1º `RefreshOutlineAsync` resolver é aceito (mesmo espírito de
-    /// `IsPageRotated`/`_pageRotations` default vazio) — a UI mostra o estado vazio por uma fração de
+    /// `AnnotationsByPage` default vazio) — a UI mostra o estado vazio por uma fração de
     /// segundo até o cache real chegar, nunca um erro.
     public bool HasOutline => Outline.Count > 0;
 
@@ -380,55 +390,6 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// `Dispatcher` (sem handler em `src/`) -> CRASH do processo, documento sujo perdido. Também fecha
     /// I3 (mover em silêncio pra posição errada): sem seleção não há o que mover.
     private byte[]? _annotationsCacheSnapshot;
-
-    /// COSTURA DE ROTAÇÃO (Task 3, Plano 3b — requisito de 1ª ordem, ledger da revisão da Task 2; ver
-    /// XML doc de `IPdfEditor.GetPageRotations`): PDFium relata o quadro ROTACIONADO (PageSizes,
-    /// hit-tests, drags) enquanto os retângulos de `AnnotationData` do iText estão SEMPRE no quadro
-    /// NÃO-ROTACIONADO (provado empiricamente por `RotatePages_PageWithAnnotation_..." no Task 2 —
-    /// `/Rotate` é um atributo de EXIBIÇÃO, o `/Rect` da anotação nunca muda quando a página gira).
-    /// DECISÃO v1 (registrada no relatório da Task 3): em vez de compor a transformação de rotação nos
-    /// primitivos de conversão (`TextSelection.ScreenToPagePoint`/`PageViewModel.PointRectToScreenRect`)
-    /// e no clamp — a correção completa, de alto risco tão tarde no plano —, a interação de anotação
-    /// fica DESLIGADA em página girada: `IsPageRotated` abaixo gateia hit-test (`HitTestAnnotation`) e
-    /// os 4 pontos de escrita (`PlaceAnnotationAtAsync`/`PlaceStampAtAsync`/`CommitDrawingAsync`/
-    /// `ApplyMarkup`). Renovado JUNTO com `AnnotationsByPage`/`_annotationsCacheSnapshot` (mesmo
-    /// refresh, mesmo gate) — ver `RefreshAnnotationsByPageAsync`. Backlog nomeado para a transformação
-    /// completa: task-3-report.md.
-    private IReadOnlyList<int> _pageRotations = Array.Empty<int>();
-
-    /// pt-BR (brief): mostrado quando o usuário tenta colocar/comitar/aplicar uma anotação numa página
-    /// com `/Rotate != 0` — ver `IsPageRotated` acima e os 4 chamadores.
-    private const string RotatedPageNotice =
-        "Página girada — anotações apenas em páginas sem rotação nesta versão.";
-
-    /// `false` (não girada) é o padrão quando `_pageRotations` está vazio (nenhum refresh terminou
-    /// ainda — só acontece na fração de segundo entre o construtor e o 1º `RefreshAnnotationsByPageAsync`
-    /// resolver). ACHADO (revisão Opus, I1): isto SOZINHO não bastava pros 4 pontos de ESCRITA — ao
-    /// contrário de `HitTestAnnotation` (que já checava `ReferenceEquals(_annotationsCacheSnapshot,
-    /// Session.Snapshot)` antes de consultar este método), os 4 chamadores de escrita liam
-    /// `_pageRotations` DIRETO, sem checar se ainda correspondia ao `Session.Snapshot` CORRENTE.
-    /// Delete/Move RE-INDEXAM páginas (a identidade de cada índice muda) — na janela entre
-    /// `OnSessionApplied` reconstruir `Pages`/`Thumbnails` (síncrono) e o refresh assíncrono do cache de
-    /// rotação ainda não ter chegado, `_pageRotations[novoÍndice]` podia refletir a rotação da página
-    /// ANTIGA que ocupava aquele slot — ex.: excluir a página 0 (não girada) faz a antiga página 1
-    /// (girada) virar a nova página 0; ler o slot 0 do cache VELHO (ainda "não girada") sub-bloqueava a
-    /// escrita -> commit no quadro ERRADO, silencioso, persistido. Fix: os 4 chamadores de escrita
-    /// chamam `EnsureRotationCacheFreshAsync` (abaixo) ANTES deste método — refresca o cache se estiver
-    /// obsoleto, then gateia com dados CORRENTES. `HitTestAnnotation` (leitura) mantém o comportamento
-    /// ANTIGO (devolve `null` sem refrescar) de propósito: bloquear um clique por um instante é barato;
-    /// um `await` no meio de um hit-test síncrono mudaria a assinatura de um método usado em caminhos
-    /// síncronos da View.
-    internal bool IsPageRotated(int pageIndex) =>
-        pageIndex >= 0 && pageIndex < _pageRotations.Count && _pageRotations[pageIndex] != 0;
-
-    /// Garante que `_pageRotations`/`AnnotationsByPage` reflitam o `Session.Snapshot` CORRENTE antes de
-    /// uma escrita confiar em `IsPageRotated` — ver ACHADO (revisão Opus, I1) no doc XML acima. No-op
-    /// (retorna já completo, sem `await` de verdade) quando o cache já está fresco — o caminho COMUM
-    /// (nenhum Apply aconteceu desde o último refresh) não paga custo extra além de uma comparação de
-    /// referência. `RefreshAnnotationsByPageAsync` já busca as DUAS coisas (anotações + rotações) no
-    /// MESMO `Task.Run` — reusado aqui, não duplicado.
-    private Task EnsureRotationCacheFreshAsync() =>
-        ReferenceEquals(_annotationsCacheSnapshot, Session.Snapshot) ? Task.CompletedTask : RefreshAnnotationsByPageAsync();
 
     partial void OnSelectedAnnotationChanged(AnnotationData? oldValue, AnnotationData? newValue)
     {
@@ -465,8 +426,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     {
         if (a is null || a.PageIndex < 0 || a.PageIndex >= Pages.Count) return;
         var page = Pages[a.PageIndex];
-        page.AnnotationSelectionRect = PageViewModel.PointRectToScreenRect(
-            a.LeftPt, a.BottomPt, a.RightPt, a.TopPt, Zoom, page.HeightPt);
+        // Revisão F2 (A4): Linha/Seta reta (bbox de altura/largura 0) ganha um overlay com tamanho mínimo visível.
+        page.AnnotationSelectionRect = PageViewModel.AnnotationOverlayRect(a, Zoom, page.HeightPt);
     }
 
     // Miniaturas (Task 6): SEGUNDO PdfDocumentRenderer sobre o MESMO Session.Snapshot + SEGUNDO
@@ -1127,16 +1088,26 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// Guarda contra duplo clique: `AsyncRelayCommand` com `AllowConcurrentExecutions=false` (padrão do
     /// toolkit) deixa `CanExecute` falso enquanto a gravação roda (teste
     /// ConsertarArquivo_EmAndamento_ComandoDesabilitado); depois de consertado, nova execução é no-op.
-    [RelayCommand]
+    /// Revisão I2: o conserto GRAVA o arquivo — arma o pino de edição (como Salvar) antes do 1º await. Sem isto Salvar
+    /// ficava habilitado e os dois corriam no MESMO arquivo (edição perdida em silêncio ou erro espúrio).
+    [RelayCommand(CanExecute = nameof(CanConsertarArquivo))]
     private async Task ConsertarArquivo()
     {
         if (!Session.NeedsEnvelopeFix) return;
-        try { await Task.Run(Session.FixEnvelopeOnDisk); }
+        if (!Session.TryBeginEdit()) return; // outra operação em voo (Salvar, edição, organizador)
+        try
+        {
+            // Disco no pool; o evento NeedsEnvelopeFixChanged volta na UI thread (mesma divisão de MainViewModel.Save).
+            if (await Task.Run(Session.GravarConsertoEnvelope)) Session.ConcluirConsertoEnvelope();
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         { _notifyError($"Não foi possível consertar o arquivo: {ex.Message}"); return; }
+        finally { Session.EndEdit(); }
         // O conserto grava o PDF ORIGINAL desembrulhado; edições feitas nesta sessão continuam só em memória.
         _notifyInfo(IsDirty ? ArquivoConsertadoNotice + AlteracoesNaoSalvasNotice : ArquivoConsertadoNotice);
     }
+
+    private bool CanConsertarArquivo() => !Session.IsEditInFlight;
 
     /// Texto EXATO do brief (Task 1, Plano 5) — teto de disco do histórico de desfazer/refazer atingido.
     private const string UndoHistoryLimitReachedNotice =
@@ -1183,6 +1154,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         RecognizeTextCommand.NotifyCanExecuteChanged();
         // Corrigir texto (2026-10-09): CanCorrigirTexto também compõe !Session.IsEditInFlight.
         CorrigirTextoCommand.NotifyCanExecuteChanged();
+        // Revisão I2: o conserto do Base64 grava o arquivo — compõe !Session.IsEditInFlight.
+        ConsertarArquivoCommand.NotifyCanExecuteChanged();
     }
 
     // Task 4 (Plano 3a): ↶ Desfazer (Ctrl+Z) / ↷ Refazer (Ctrl+Y) — comandos por DOCUMENTO (cada aba
@@ -1227,7 +1200,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// Funil comum dos 8 comandos `SelectColor*` acima — mesmo formato de `SelectFillAsync` abaixo, só
     /// que o ALLOWLIST de kinds liftáveis é as 4 formas (Rectangle/Line/Arrow/Ink), não só Rectangle
     /// (`FillArgb` é exclusivo de Rectangle; `ColorArgb`/contorno existe nas 4). Mesmo gate silencioso
-    /// (sem `_notifyError`) fora de CanEdit/seleção/rotação — ver doc XML de `SelectFillAsync`.
+    /// (sem `_notifyError`) fora de CanEdit/seleção — ver doc XML de `SelectFillAsync`.
     private async Task SelectColorAsync(uint? colorArgb)
     {
         SelectedMarkupColorArgb = colorArgb;
@@ -1235,7 +1208,6 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (SelectedAnnotation is not
             { Id: not null, Kind: AnnotationKind.Rectangle or AnnotationKind.Line or AnnotationKind.Arrow or AnnotationKind.Ink } sel)
             return;
-        if (IsPageRotated(sel.PageIndex)) return; // mesmo gate silencioso de SelectFillAsync
         await LiftSelectedAnnotationAsync(sel with { ColorArgb = colorArgb });
     }
 
@@ -1255,7 +1227,6 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (SelectedAnnotation is not
             { Id: not null, Kind: AnnotationKind.Rectangle or AnnotationKind.Line or AnnotationKind.Arrow or AnnotationKind.Ink } sel)
             return;
-        if (IsPageRotated(sel.PageIndex)) return; // mesmo gate silencioso de SelectFillAsync/SelectColorAsync
         await LiftSelectedAnnotationAsync(sel with { StrokeWidthPt = strokeWidthPt });
     }
 
@@ -1277,10 +1248,10 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     [RelayCommand] private Task SelectFillAzul() => SelectFillAsync(ColorAzul);
 
     /// Funil comum dos 4 comandos `SelectFill*` acima. `SelectedFillColorArgb` é setado SEMPRE (mesmo
-    /// sem seleção, mesmo se `CanEdit` for falso/página girada — escolher a cor-padrão não é uma edição
+    /// sem seleção, mesmo se `CanEdit` for falso — escolher a cor-padrão não é uma edição
     /// do documento em si, mesmo espírito de `SelectColorAmarelo/Verde/Vermelho`, que também não gateiam
     /// em `CanEdit`). O lift na caixa selecionada é que É uma edição de verdade — gateado exatamente como
-    /// os outros pontos de escrita deste VM (`CanEdit`, `IsPageRotated`, mesmo padrão de
+    /// os outros pontos de escrita deste VM (`CanEdit`, mesmo padrão de
     /// `MoveSelectedAnnotationAsync`): no-op silencioso (sem `_notifyError`) fora desses casos, porque o
     /// comando SEMPRE teve efeito (mudou o padrão) — não é uma falha, só não havia caixa válida pra repintar.
     private async Task SelectFillAsync(uint? fillArgb)
@@ -1288,7 +1259,6 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         SelectedFillColorArgb = fillArgb;
         if (!CanEdit) return;
         if (SelectedAnnotation is not { Id: not null, Kind: AnnotationKind.Rectangle } sel) return;
-        if (IsPageRotated(sel.PageIndex)) return; // mesmo gate silencioso de MoveSelectedAnnotationAsync
         await LiftSelectedAnnotationAsync(sel with { FillArgb = fillArgb });
     }
 
@@ -1342,7 +1312,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     ///
     /// Rodada 2 (revisão pós-branch): `Session.TryBeginEdit()` — pino compartilhado, ver doc XML do
     /// campo em `DocumentSession` — arma SINCRONAMENTE aqui, logo após a defesa de `_pageWithSelection`
-    /// e ANTES do 1º `await` (`EnsureRotationCacheFreshAsync`). `false` (outra edição em voo — do
+    /// e ANTES do 1º `await`. `false` (outra edição em voo — do
     /// organizador OU deste mesmo VM) faz o método retornar sem tocar em NADA: mesmo espírito de
     /// "o marca-texto simplesmente não é aplicado, usuário tenta de novo" das outras 5 operações.
     [RelayCommand(CanExecute = nameof(CanApplyMarkup))]
@@ -1352,15 +1322,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (!Session.TryBeginEdit()) return; // Rodada 2 — ver doc XML acima
         try
         {
-            // COSTURA DE ROTAÇÃO (Task 3, Plano 3b) — ver doc XML de `IsPageRotated`: os retângulos de
-            // `page.SelectionPointRects` vêm do quadro ROTACIONADO do PDFium (mesma TextPage que desenha
-            // a seleção na tela); escrevê-los DIRETO como `Quads`/bbox de uma anotação (quadro
-            // NÃO-ROTACIONADO do iText) posicionaria o marca-texto no lugar errado. No-op com aviso — a
-            // seleção de TEXTO em si (Ctrl+C) continua funcionando normalmente em página girada, só a
-            // ESCRITA de anotação fica bloqueada. I1 (revisão Opus): refresca o cache ANTES de confiar em
-            // IsPageRotated — ver doc XML de `EnsureRotationCacheFreshAsync`.
-            await EnsureRotationCacheFreshAsync();
-            if (IsPageRotated(page.Index)) { _notifyError(RotatedPageNotice); return; }
+            // Páginas giradas (Task 5): `page.SelectionPointRects` vêm do frame EXIBIDO do PDFium — o mesmo
+            // frame do contrato `AnnotationData`/`PdfQuad`; o motor converte para o espaço do usuário.
             var quads = page.SelectionPointRects
                 .Select(r => new PdfQuad(r.X, r.Y, r.X + r.Width, r.Y + r.Height))
                 .ToList();
@@ -1381,6 +1344,18 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
                 ColorArgb = SelectedMarkupColorArgb ?? ColorAmarelo,
                 Author = _config.Autor,
             };
+            // Revisão F2 (A1): texto que GIROU com a página ("Girar" depois de o texto existir) corre na vertical (ou de
+            // cabeça para baixo) na tela — o traço do sublinhado/tachado tem de seguir o texto, não o eixo horizontal
+            // da tela. Fix round 1: a direção vem da ORIENTAÇÃO dos glifos sob a seleção (motor, `DirecaoDoTexto`),
+            // não da ordem dos caracteres (texto hebraico/árabe em pé tem a ordem lógica da direita para a esquerda).
+            // Falha de leitura = em pé, como antes. Realce: sem orientação (é um preenchimento).
+            if (kind is AnnotationKind.Underline or AnnotationKind.Strikeout)
+            {
+                byte[] pdf = Session.Snapshot;
+                int pageIndex = page.Index;
+                try { data = data with { ConteudoRotacaoGraus = await Task.Run(() => _editor.DirecaoDoTexto(pdf, pageIndex, quads)) }; }
+                catch (PdfEditingException) { }
+            }
 
             byte[]? pdfDepois = await TryAddAnnotationAsync(data);
             if (pdfDepois is null) return; // falha tipada, já notificada dentro do helper
@@ -1482,17 +1457,9 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         byte[] snapshot = Session.Snapshot;
         int pageCount = Pages.Count;
         IReadOnlyList<AnnotationData> read;
-        IReadOnlyList<int> rotations;
         try
         {
             read = await Task.Run(() => _editor.ReadAnnotations(snapshot));
-            // Costura de rotação (Task 3, Plano 3b) — MESMO refresh/gate de AnnotationsByPage acima
-            // (ver doc XML de `_pageRotations`): 2ª leitura iText separada (mesma granularidade "cada
-            // método abre seu próprio PdfDocument" já usada por HasSignatures/ReadAnnotations em call
-            // sites distintos deste VM), não uma 2ª fonte de obsolescência — as DUAS leituras
-            // acontecem dentro do MESMO `try`, então uma falha em qualquer uma pula as DUAS (nenhum
-            // estado parcial: ou o par inteiro avança, ou nenhum avança).
-            rotations = await Task.Run(() => _editor.GetPageRotations(snapshot));
         }
         catch (Exception)
         {
@@ -1510,7 +1477,6 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         foreach (var a in read)
             if (a.PageIndex >= 0 && a.PageIndex < pageCount) byPage[a.PageIndex].Add(a);
         AnnotationsByPage = byPage.Select(l => (IReadOnlyList<AnnotationData>)l).ToArray();
-        _pageRotations = rotations;
         _annotationsCacheSnapshot = snapshot; // C1a: só AQUI o gate avança — leitura + agrupamento OK
     }
 
@@ -1555,24 +1521,29 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// seleção de TEXTO (degradação aceita e documentada: melhor perder 1 clique de seleção de
     /// anotação por um instante do que apontar `SelectedAnnotation` pra algo que pode já não existir/ter
     /// mudado de posição no PDF vivo — ver doc XML de `_annotationsCacheSnapshot`).
+    ///
+    /// TOLERÂNCIA DE TRAÇO (páginas giradas, Task 5): desde a Task 2 o bbox de Linha/Seta é o dos 2 pontos
+    /// (sem folga de espessura) — uma linha perfeitamente horizontal/vertical tem altura/largura ZERO e só
+    /// seria selecionada num clique exato. Linha/Seta/Tinta ganham `StrokeHitTolerancePx` px de TELA de folga
+    /// em cada lado (convertida para pt pelo zoom atual: a mesma folga visual em qualquer zoom).
     public AnnotationData? HitTestAnnotation(int pageIndex, double xPt, double yPt)
     {
         if (!ReferenceEquals(_annotationsCacheSnapshot, Session.Snapshot)) return null;
-        // COSTURA DE ROTAÇÃO (Task 3, Plano 3b) — ver doc XML de `IsPageRotated`: hit-test SEMPRE nulo
-        // numa página girada, mesmo que o ponto caia geometricamente dentro do retângulo (o retângulo
-        // está no quadro NÃO-ROTACIONADO do iText; o clique chega em pt do quadro ROTACIONADO do
-        // PDFium — comparar os dois sem transformação erraria o alvo).
-        if (IsPageRotated(pageIndex)) return null;
         if (pageIndex < 0 || pageIndex >= AnnotationsByPage.Count) return null;
         var candidates = AnnotationsByPage[pageIndex];
+        double tolPt = StrokeHitTolerancePx / (Math.Max(Zoom, 0.01) * PageViewModel.PtToPx);
         for (int i = candidates.Count - 1; i >= 0; i--)
         {
             var a = candidates[i];
-            if (xPt >= a.LeftPt && xPt <= a.RightPt && yPt >= a.BottomPt && yPt <= a.TopPt)
+            double t = a.Kind is AnnotationKind.Line or AnnotationKind.Arrow or AnnotationKind.Ink ? tolPt : 0;
+            if (xPt >= a.LeftPt - t && xPt <= a.RightPt + t && yPt >= a.BottomPt - t && yPt <= a.TopPt + t)
                 return a;
         }
         return null;
     }
+
+    /// Folga (px de tela) do hit-test de Linha/Seta/Tinta — ver doc XML de `HitTestAnnotation`.
+    internal const double StrokeHitTolerancePx = 5.0;
 
     /// Chamado pela View num clique SIMPLES sem ferramenta ativa (`ActiveTool == None`) — seleciona a
     /// anotação sob o ponto, ou LIMPA a seleção se o clique caiu fora de qualquer retângulo (mesmo
@@ -1656,20 +1627,12 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (pageIndex < 0 || pageIndex >= Pages.Count) return;
         // Rodada 2 (revisão pós-branch): PONTO DE ENTRADA SEM COMANDO — chamado direto de um
         // mouse-handler da View (`PdfViewerControl`), sem NENHUM `CanExecute` compondo o pino. O funil
-        // de exclusão mútua precisa ser checado AQUI, sincronamente, ANTES do 1º `await`
-        // (`EnsureRotationCacheFreshAsync` logo abaixo) — `false` (organizador ou outra operação deste
+        // de exclusão mútua precisa ser checado AQUI, sincronamente, ANTES do 1º `await` — `false` (organizador ou outra operação deste
         // VM em voo) faz o clique virar NO-OP silencioso: "a anotação simplesmente não é colocada,
         // usuário tenta de novo" (ver doc XML de `DocumentSession.TryBeginEdit`).
         if (!Session.TryBeginEdit()) return;
         try
         {
-            // COSTURA DE ROTAÇÃO (Task 3, Plano 3b) — ver doc XML de `IsPageRotated`. No-op com aviso;
-            // ferramenta continua ativa (mesmo contrato de cancelamento/falha já documentado acima —
-            // usuário pode tentar noutra página sem precisar reclicar o botão da toolbar). I1 (revisão
-            // Opus): refresca o cache ANTES de confiar em IsPageRotated.
-            await EnsureRotationCacheFreshAsync();
-            if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
-
             var kind = ActiveTool == AnnotationTool.StickyNote ? AnnotationKind.StickyNote : AnnotationKind.FreeText;
             string title = kind == AnnotationKind.StickyNote ? "Nova nota adesiva" : "Nova caixa de texto";
 
@@ -1705,6 +1668,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
                 ColorArgb = colorArgb,
                 Author = _config.Autor,
                 FontSizePt = fontSize, Bold = bold, Italic = italic, FontFamily = family,
+                // Caixa de texto nova alarga até caber a linha (até a borda da página − 18 pt) antes de quebrar.
+                AjustarLarguraAoTexto = kind == AnnotationKind.FreeText,
             };
 
             byte[]? pdfDepois = await TryAddAnnotationAsync(data);
@@ -1802,11 +1767,6 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (!Session.TryBeginEdit()) return;
         try
         {
-            // COSTURA DE ROTAÇÃO (Task 3, Plano 3b) — ver doc XML de `IsPageRotated`. I1 (revisão Opus):
-            // refresca o cache ANTES de confiar em IsPageRotated.
-            await EnsureRotationCacheFreshAsync();
-            if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
-
             double widthPt, heightPt;
             try { (widthPt, heightPt) = NaturalStampSize(bytes, _pendingStampMaxWidthPt); }
             catch (Exception ex) when (ex is NotSupportedException or FileFormatException or ArgumentException)
@@ -1818,9 +1778,12 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             var page = Pages[pageIndex];
             var (left, bottom, right, top) = ClampToPage(xPt, yPt, widthPt, heightPt, page.WidthPt, page.HeightPt);
 
-            var prevIds = CurrentImageStampIds(); // Plano 21: base do set-diff pra cachear os bytes
+            // Revisão F2 (A6): Id atribuído AQUI (como PasteAnnotation/ReplicarProximaPagina) — o cache de bytes já
+            // sabe sob qual Id guardar, sem reler o PDF (o set-diff antigo fazia 3 leituras dentro do pino).
+            string imageId = Guid.NewGuid().ToString();
             var data = new AnnotationData
             {
+                Id = imageId,
                 Kind = AnnotationKind.ImageStamp,
                 PageIndex = pageIndex,
                 LeftPt = left, BottomPt = bottom, RightPt = right, TopPt = top,
@@ -1838,7 +1801,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             _pendingStampBytes = null;
             // Plano 21 (Task 5): cacheia os bytes sob o Id novo — permite mover/redimensionar depois
             // (clicar no carimbo abre a caixa de edição), mesmo pros carimbos de galeria.
-            await CacheNewImageStampBytesAsync(prevIds, bytes);
+            _imageStampBytes[imageId] = bytes;
         }
         finally { Session.EndEdit(); }
     }
@@ -1957,7 +1920,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     // `Toggle*ToolCommand`/`ApplyMarkupCommand` acima (gated por `CanEdit`/`CanUseAnnotationTool`), este
     // comando funciona em QUALQUER documento aberto, INCLUSIVE assinado -- mesma política uniforme de
     // leitura já registrada em `mPdf.Editing.Contract` para `ExtractPages`/`MergeDocuments`/
-    // `SplitByRanges`/`GetPageRotations`/`ReadOutline`/`ReadFormFields` (nenhuma dessas MUTA o PDF
+    // `SplitByRanges`/`ReadOutline`/`ReadFormFields` (nenhuma dessas MUTA o PDF
     // assinado, só o LEEM para produzir algo novo -- ver doc XML de `ExportImageViewModel`). NÃO arma o
     // funil (`Session.TryBeginEdit`/`ApplyEdit`) -- nenhuma mutação de `Session` acontece.
     //
@@ -2091,12 +2054,6 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (!Session.TryBeginEdit()) return;
         try
         {
-            // COSTURA DE ROTAÇÃO (Task 3, Plano 3b) — ver doc XML de `IsPageRotated`. Checado ANTES do
-            // guard de gesto mínimo abaixo: um usuário que desenhou de verdade numa página girada merece
-            // o aviso, não um retorno silencioso que pareceria "nada aconteceu por acaso". I1 (revisão
-            // Opus): refresca o cache ANTES de confiar em IsPageRotated.
-            await EnsureRotationCacheFreshAsync();
-            if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
             if (pathPt.Count < 2) return; // gesto degenerado (clique sem nenhum move) — nem bbox dá pra formar
 
             double left = pathPt.Min(p => p.XPt), right = pathPt.Max(p => p.XPt);
@@ -2231,7 +2188,9 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// duplicar o gate em cada chamador. `false` (outra edição em voo) reaproveita o MESMO `bool` de
     /// retorno que as 3 falhas tipadas abaixo já usam — `MoveSelectedAnnotationAsync` já sabe restaurar
     /// o overlay quando este método devolve `false`, nenhum caso novo necessário lá.
-    private async Task<bool> LiftSelectedAnnotationAsync(AnnotationData lifted)
+    /// `recacheImageBytes` (imagem): depois de um Apply bem-sucedido, grava os bytes no cache sob o Id (preservado)
+    /// da anotação liftada — Revisão F2 (A6), sem reler o PDF.
+    private async Task<bool> LiftSelectedAnnotationAsync(AnnotationData lifted, byte[]? recacheImageBytes = null)
     {
         if (!Session.TryBeginEdit()) return false;
         try
@@ -2271,7 +2230,12 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             // pelos 3 desfechos de falha acima — MoveSelectedAnnotationAsync já sabe restaurar o overlay de
             // seleção pra posição REAL quando este método devolve false, então nenhum chamador precisa de
             // um caso novo.
-            return TryApplyEdit(pdfDepois);
+            if (!TryApplyEdit(pdfDepois)) return false;
+            // Revisão F2 (A6): o lift PRESERVA o Id (AddAnnotation honra o Id informado) — a entrada do cache continua
+            // valendo; só é regravada (os bytes podem ter vindo da caixa de edição).
+            if (recacheImageBytes is { } imgBytes && lifted.Id is { } liftedId)
+                _imageStampBytes[liftedId] = imgBytes;
+            return true;
         }
         finally { Session.EndEdit(); }
     }
@@ -2286,17 +2250,30 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     {
         if (SelectedAnnotation is not { Id: not null } sel) return;
 
-        // CAIXA DE TEXTO: reabre COM formatação (a formatação não é lida de volta do PDF nesta versão —
-        // começa nos defaults; o usuário reaplica se quiser). NOTA ADESIVA: só texto.
+        // CAIXA DE TEXTO: reabre COM a formatação ATUAL (Fix round 2: `ReadAnnotations` devolve tamanho/negrito/
+        // itálico/família/cor do FreeText — o diálogo começa nela, não nos defaults). NOTA ADESIVA: só texto.
         if (sel.Kind == AnnotationKind.FreeText)
         {
-            var fmt = _annotationDialog.PromptForTextFormatted("Editar caixa de texto", sel.Content);
+            var atual = new AnnotationTextResult(sel.Content ?? string.Empty, sel.FontSizePt ?? 12, sel.Bold, sel.Italic,
+                sel.FontFamily ?? "Helvetica", sel.ColorArgb ?? 0xFF000000);
+            var fmt = _annotationDialog.PromptForTextFormatted("Editar caixa de texto", sel.Content, atual);
             if (fmt is null) return; // cancelado
-            await LiftSelectedAnnotationAsync(sel with
+            var editada = sel with
             {
                 Content = fmt.Text, ColorArgb = fmt.ColorArgb,
                 FontSizePt = fmt.FontSizePt, Bold = fmt.Bold, Italic = fmt.Italic, FontFamily = fmt.FontFamily,
-            });
+            };
+            // Revisão N1 (decisão do produto): só alarga se a caixa NÃO estava quebrando linha antes da edição — a linha
+            // mais longa do texto ANTIGO (formatação antiga) + a folga de 1 pt do alargamento cabia na largura atual
+            // (largura do CONTEÚDO: em conteúdo girado 90/270 é a altura exibida). Numa coluna que já quebrava
+            // (estreitada à mão) o parágrafo inteiro é "uma linha", então qualquer letra a mais a "alongaria" — ela
+            // mantém a largura em qualquer edição (letra, negrito, fonte). Falha da medida = não alarga.
+            int giro = ((sel.ConteudoRotacaoGraus ?? 0) % 360 + 360) % 360;
+            double larguraConteudo = giro is 90 or 270 ? sel.TopPt - sel.BottomPt : sel.RightPt - sel.LeftPt;
+            bool alargar;
+            try { alargar = await Task.Run(() => _editor.LarguraDaLinhaMaisLonga(sel) + 1 <= larguraConteudo + 0.01); }
+            catch (PdfEditingException) { alargar = false; }
+            await LiftSelectedAnnotationAsync(editada with { AjustarLarguraAoTexto = alargar });
             return;
         }
 
@@ -2327,17 +2304,18 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     {
         if (SelectedAnnotation is not { Kind: not AnnotationKind.ImageStamp } sel) return;
         _annotationClipboard = sel with { Id = null };
+        _annotationClipboardSnapshot = Session.Snapshot; // Revisão F2 (A3): frame da cópia — ver doc XML do campo
         PasteAnnotationCommand.NotifyCanExecuteChanged();
     }
 
     private bool CanPasteAnnotation() =>
         _annotationClipboard is not null && CanEdit && !Session.IsEditInFlight;
 
-    /// Cola o clipboard na MESMA página de origem (`clip.PageIndex`), deslocado +`PasteOffsetPt` em X/Y
-    /// (clampado aos limites da página, `ClampToPage` — mesmo helper de todo outro ponto de escrita deste
-    /// VM) — Line/Arrow (`LineStartPt`/`LineEndPt`) e Ink (`InkStrokes`) têm TODOS os pontos deslocados
-    /// pelo MESMO delta resultante do clamp (`Translate`/`TranslateStrokes`, mesma família usada por
-    /// `MoveSelectedAnnotationAsync`), não só o bbox — mesma razão documentada lá (PDFium sintetiza a
+    /// Cola o clipboard no MESMO índice de página da origem (`clip.PageIndex`), deslocado +`PasteOffsetPt` em X/Y.
+    /// Revisão F2: (A3) se a página ainda é a da cópia mas girou/mudou de frame, a geometria é antes levada ao frame
+    /// atual pelo motor (`MapearParaOutraVersao`; outra página no índice = geometria da cópia); (A2) depois vai
+    /// para dentro da página por `EncaixarNaPagina` — bbox, Line/Arrow (`LineStartPt`/`LineEndPt`), Ink
+    /// (`InkStrokes`) e Quads transladados JUNTOS e, se não couberem, encolhidos por igual (o PDFium sintetiza a
     /// aparência a partir dos pontos, não do `/Rect`). Colar de novo cola outra cópia a partir do MESMO
     /// clipboard (sempre +12pt do ORIGINAL copiado, não acumulado sobre a última colada) — aceito
     /// (brief: "colar de novo cola outra cópia, ok").
@@ -2356,27 +2334,26 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (!Session.TryBeginEdit()) return;
         try
         {
-            await EnsureRotationCacheFreshAsync();
             int pageIndex = clip.PageIndex;
             if (pageIndex < 0 || pageIndex >= Pages.Count) return; // página do clipboard não existe mais
-            if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
 
             var page = Pages[pageIndex];
-            double w = clip.RightPt - clip.LeftPt, h = clip.TopPt - clip.BottomPt;
-            var (left, bottom, right, top) = ClampToPage(
-                clip.LeftPt + PasteOffsetPt, clip.BottomPt + PasteOffsetPt, w, h, page.WidthPt, page.HeightPt);
-            double dx = left - clip.LeftPt, dy = bottom - clip.BottomPt;
-
-            var data = clip with
+            // Revisão F2 (A3): a página pode ter girado/mudado de tamanho desde a cópia — leva a geometria do frame
+            // da cópia ao frame atual (motor; nenhuma conta de rotação aqui). Mesmo snapshot = nada a fazer.
+            // Fix round 1: o motor só mapeia se o índice ainda for a MESMA página da cópia (objeto do PDF); outra
+            // página no índice (mover/excluir/inserir) = geometria da cópia, como antes da F2. O clipboard e o
+            // snapshot da cópia NÃO são reescritos: cada colar mapeia a partir do momento da cópia (mover a página de
+            // volta, ou desfazer, continua certo).
+            if (_annotationClipboardSnapshot is { } snapCopia && !ReferenceEquals(snapCopia, Session.Snapshot))
             {
-                Id = Guid.NewGuid().ToString(),
-                PageIndex = pageIndex,
-                LeftPt = left, BottomPt = bottom, RightPt = right, TopPt = top,
-                Quads = TranslateQuads(clip.Quads, dx, dy),
-                InkStrokes = TranslateStrokes(clip.InkStrokes, dx, dy),
-                LineStartPt = Translate(clip.LineStartPt, dx, dy),
-                LineEndPt = Translate(clip.LineEndPt, dx, dy),
-            };
+                byte[] atual = Session.Snapshot;
+                var copiado = clip;
+                try { clip = await Task.Run(() => _editor.MapearParaOutraVersao(snapCopia, atual, copiado)); }
+                catch (PdfEditingException) { /* sem frames legíveis: cola como antes (geometria da cópia) */ }
+            }
+            // Revisão F2 (A2): TODA a geometria acompanha o bbox (transladada e, se não couber, encolhida).
+            var data = EncaixarNaPagina(clip, clip.LeftPt + PasteOffsetPt, clip.BottomPt + PasteOffsetPt, page.WidthPt, page.HeightPt)
+                with { Id = Guid.NewGuid().ToString(), PageIndex = pageIndex };
 
             byte[]? pdfDepois = await TryAddAnnotationAsync(data);
             if (pdfDepois is null) return; // falha tipada, já notificada dentro do helper
@@ -2386,23 +2363,47 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         finally { Session.EndEdit(); }
     }
 
+    /// Revisão F2 (A2): posiciona a anotação `a` com o canto inf.-esq. do bbox em (`x`,`y`) dentro de uma página
+    /// `pageW`×`pageH` (frame exibido), levando TODA a geometria junto. Cabe → só translada (o `ClampToPage` de
+    /// sempre). Não cabe (anotação maior que a página de destino) → ESCALA UNIFORME em torno do canto do bbox, até
+    /// caber (decisão da revisão: encolher em vez de recusar — a cópia sai inteira e proporcional; a espessura do
+    /// traço e o tamanho da fonte de uma caixa de texto NÃO são escalados — a caixa cresce para caber o texto,
+    /// como em qualquer edição). Geometria pura no frame do contrato; nenhuma conta de rotação.
+    internal static AnnotationData EncaixarNaPagina(AnnotationData a, double x, double y, double pageW, double pageH)
+    {
+        double w = a.RightPt - a.LeftPt, h = a.TopPt - a.BottomPt;
+        double k = 1;
+        if (w > pageW && w > 0) k = Math.Min(k, pageW / w);
+        if (h > pageH && h > 0) k = Math.Min(k, pageH / h);
+        var (left, bottom, right, top) = ClampToPage(x, y, w * k, h * k, pageW, pageH);
+        double ox = a.LeftPt, oy = a.BottomPt;
+        PdfPoint P(PdfPoint p) => new(left + (p.XPt - ox) * k, bottom + (p.YPt - oy) * k);
+        return a with
+        {
+            LeftPt = left, BottomPt = bottom, RightPt = right, TopPt = top,
+            Quads = a.Quads?.Select(q => new PdfQuad(left + (q.LeftPt - ox) * k, bottom + (q.BottomPt - oy) * k,
+                left + (q.RightPt - ox) * k, bottom + (q.TopPt - oy) * k)).ToList(),
+            InkStrokes = a.InkStrokes?.Select(st => (IReadOnlyList<PdfPoint>)st.Select(P).ToList()).ToList(),
+            LineStartPt = a.LineStartPt is { } s0 ? P(s0) : null,
+            LineEndPt = a.LineEndPt is { } e0 ? P(e0) : null,
+        };
+    }
+
     /// Deslocamento (pt) aplicado pelo colar — brief: "~12pt em X e Y".
     private const double PasteOffsetPt = 12.0;
 
     private bool CanReplicarProximaPagina() =>
         SelectedAnnotation is { Kind: not AnnotationKind.ImageStamp } && CanEdit && !Session.IsEditInFlight;
 
-    /// pt-BR (brief) — avisos específicos de `ReplicarProximaPagina` (distintos de `RotatedPageNotice`,
-    /// que fala da página de ORIGEM; aqui a checada é sempre a página de DESTINO).
+    /// pt-BR (brief) — aviso de `ReplicarProximaPagina` quando não há página de DESTINO.
     private const string NoNextPageNotice = "Não há próxima página.";
-    private const string RotatedNextPageNotice = "A próxima página está girada; não é possível replicar.";
 
     /// Cria uma cópia de `SelectedAnnotation` na página seguinte (`PageIndex + 1`), com o MESMO
     /// retângulo/pontos (nenhum deslocamento — diferente de `PasteAnnotation` — só clampado ao tamanho
     /// da página DESTINO, que pode ser diferente da origem). Recusa (aviso pt-BR, no-op) se não houver
-    /// próxima página, ou se a destino estiver girada (`IsPageRotated`, MESMO gate/MESMA costura de
-    /// rotação dos outros pontos de escrita — checa EXISTÊNCIA antes de checar ROTAÇÃO, ordem que o
-    /// brief pede). Mesmo truque de Id novo gerado aqui + seleção pós-Apply de `PasteAnnotation` (ver doc
+    /// próxima página. Páginas giradas (Task 5): a destino pode ter outra rotação — o retângulo/pontos estão no
+    /// frame EXIBIDO e o motor converte para o espaço do usuário de CADA página, então a réplica sai no mesmo
+    /// lugar da tela (clampada ao tamanho EXIBIDO da destino). Mesmo truque de Id novo gerado aqui + seleção pós-Apply de `PasteAnnotation` (ver doc
     /// XML lá) — aqui a réplica também dispara `ScrollToPageRequested` pra a página destino ficar visível
     /// (opcional no brief; feito porque o usuário provavelmente quer CONFERIR a réplica).
     [RelayCommand(CanExecute = nameof(CanReplicarProximaPagina))]
@@ -2412,26 +2413,15 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (!Session.TryBeginEdit()) return;
         try
         {
-            await EnsureRotationCacheFreshAsync();
             int destIndex = sel.PageIndex + 1;
             if (destIndex < 0 || destIndex >= Pages.Count) { _notifyError(NoNextPageNotice); return; }
-            if (IsPageRotated(destIndex)) { _notifyError(RotatedNextPageNotice); return; }
 
             var destPage = Pages[destIndex];
-            double w = sel.RightPt - sel.LeftPt, h = sel.TopPt - sel.BottomPt;
-            var (left, bottom, right, top) = ClampToPage(sel.LeftPt, sel.BottomPt, w, h, destPage.WidthPt, destPage.HeightPt);
-            double dx = left - sel.LeftPt, dy = bottom - sel.BottomPt;
-
-            var data = sel with
-            {
-                Id = Guid.NewGuid().ToString(),
-                PageIndex = destIndex,
-                LeftPt = left, BottomPt = bottom, RightPt = right, TopPt = top,
-                Quads = TranslateQuads(sel.Quads, dx, dy),
-                InkStrokes = TranslateStrokes(sel.InkStrokes, dx, dy),
-                LineStartPt = Translate(sel.LineStartPt, dx, dy),
-                LineEndPt = Translate(sel.LineEndPt, dx, dy),
-            };
+            // Revisão F2 (A2): destino menor que a anotação (paisagem -> retrato): TODA a geometria (bbox, Quads,
+            // InkStrokes, Line*) é transladada junto e, se ainda não couber, encolhida por igual — antes só o bbox
+            // encolhia e os pontos ficavam fora dele e da página.
+            var data = EncaixarNaPagina(sel, sel.LeftPt, sel.BottomPt, destPage.WidthPt, destPage.HeightPt)
+                with { Id = Guid.NewGuid().ToString(), PageIndex = destIndex };
 
             byte[]? pdfDepois = await TryAddAnnotationAsync(data);
             if (pdfDepois is null) return; // falha tipada, já notificada dentro do helper
@@ -2477,17 +2467,6 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (!CanEdit) { SetAnnotationSelectionRectFor(sel); return; }
         if (sel is not { Id: not null } target) { SetAnnotationSelectionRectFor(sel); return; }
         if (target.PageIndex < 0 || target.PageIndex >= Pages.Count) { SetAnnotationSelectionRectFor(sel); return; }
-        // M1 (revisão Opus): guarda AUTODEFENSIVA — `SelectedAnnotation` tem setter PÚBLICO, então
-        // `HitTestAnnotation` (já gateado, nunca devolve uma anotação de página girada) não é a ÚNICA
-        // forma de `target` apontar pra uma página girada aqui (um chamador poderia setar
-        // `SelectedAnnotation` diretamente). Mesmo aviso pt-BR dos outros 4 pontos de escrita; overlay
-        // volta pra posição REAL (mesmo padrão de falha dos guards logo abaixo).
-        if (IsPageRotated(target.PageIndex))
-        {
-            SetAnnotationSelectionRectFor(sel);
-            _notifyError(RotatedPageNotice);
-            return;
-        }
         // IMAGEM: ARRASTAR PARA MOVER (melhoria de UX — antes só dava pra mover pela caixa de ajuste +
         // "Salvar"). O lift precisa dos BYTES pra reconstruir o /AP (ReadAnnotations nunca devolve
         // ImageBytes) — o cache `_imageStampBytes` os tem quando a imagem foi colocada/editada NESTA
@@ -2504,13 +2483,11 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             double iw = target.RightPt - target.LeftPt, ih = target.TopPt - target.BottomPt;
             var ipage = Pages[target.PageIndex];
             var (il, ib, ir, it) = ClampToPage(newLeftPt, newBottomPt, iw, ih, ipage.WidthPt, ipage.HeightPt);
-            var prevImgIds = CurrentImageStampIds();
             bool okImg = await LiftSelectedAnnotationAsync(target with
             {
                 LeftPt = il, BottomPt = ib, RightPt = ir, TopPt = it, ImageBytes = imgBytes,
-            });
-            if (okImg) await RecacheAfterImageEditAsync(prevImgIds, imgId, imgBytes);
-            else SetAnnotationSelectionRectFor(target);
+            }, recacheImageBytes: imgBytes);
+            if (!okImg) SetAnnotationSelectionRectFor(target);
             return;
         }
 
@@ -2832,19 +2809,14 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         UpdateFormFieldHighlightOverlay(oldValue, newValue);
 
     /// Só a página ANTIGA (se houver) e a NOVA (se houver) são tocadas — mesma economia de
-    /// `UpdateAnnotationSelectionOverlay`. GATE DE ROTAÇÃO (brief: "gate de rotação só no destaque,
-    /// preencher continua livre") — igual a `HitTestAnnotation`, uma LEITURA: usa o cache CORRENTE de
-    /// `_pageRotations` (populado junto com `AnnotationsByPage`, ver `RefreshAnnotationsByPageAsync`)
-    /// SEM forçar um refresh (`EnsureRotationCacheFreshAsync` é só pros 4 pontos de ESCRITA de
-    /// anotação) — bloquear uma seleção de campo por um instante por causa de rotação obsoleta é uma
-    /// degradação aceitável e rara, mesmo raciocínio já documentado pra `HitTestAnnotation`.
+    /// `UpdateAnnotationSelectionOverlay`. Páginas giradas (Task 5): `WidgetRect` está no frame EXIBIDO (Task 3)
+    /// e `page.HeightPt` é a altura EXIBIDA (PDFium) — o destaque cai sobre o widget em qualquer `/Rotate`.
     private void UpdateFormFieldHighlightOverlay(FormFieldViewModel? oldValue, FormFieldViewModel? newValue)
     {
         if (oldValue is { } o && o.Data.PageIndex >= 0 && o.Data.PageIndex < Pages.Count)
             Pages[o.Data.PageIndex].HasFormFieldHighlight = false;
         if (newValue is not { Data.WidgetRect: { } rect } n) return;
         if (n.Data.PageIndex < 0 || n.Data.PageIndex >= Pages.Count) return;
-        if (IsPageRotated(n.Data.PageIndex)) return; // GATE DE ROTAÇÃO — ver doc XML acima
         var page = Pages[n.Data.PageIndex];
         page.FormFieldHighlightRect = PageViewModel.PointRectToScreenRect(
             rect.LeftPt, rect.BottomPt, rect.RightPt, rect.TopPt, Zoom, page.HeightPt);
@@ -2854,8 +2826,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// Clique num campo do painel (brief: "campo selecionado -> ScrollToPage + destaque do widget") —
     /// `ScrollToPageRequested` dispara SEMPRE (mesma convenção do evento, ver doc XML dele: "SEMPRE
     /// dispara, mesmo se for a mesma página"), mesmo sem `WidgetRect` (campo residual sem widget, ver
-    /// XML doc de `FormFieldData.WidgetRect`) — só o DESTAQUE depende de ter um retângulo (e da
-    /// página não estar girada, ver `UpdateFormFieldHighlightOverlay`); a NAVEGAÇÃO não.
+    /// XML doc de `FormFieldData.WidgetRect`) — só o DESTAQUE depende de ter um retângulo (ver
+    /// `UpdateFormFieldHighlightOverlay`); a NAVEGAÇÃO não.
     [RelayCommand]
     private void SelectFormField(FormFieldViewModel? field)
     {
@@ -2985,8 +2957,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// bloco de comentário no topo desta seção): `EnsureFormFieldsCacheFreshAsync` RE-LÊ antes de montar
     /// o dicionário; se mesmo assim continuar obsoleto (leitura falhou persistentemente, ou o documento
     /// mudou de novo no meio do caminho), recusa com aviso pt-BR em vez de aplicar valores que já não
-    /// correspondem ao campo vivo. Preencher é LIVRE de coordenadas (brief) — nenhuma checagem de
-    /// rotação aqui, ao contrário de `ApplyMarkup`/`PlaceAnnotationAtAsync`/etc.: `SetFormFields`/
+    /// correspondem ao campo vivo. Preencher é LIVRE de coordenadas (brief): `SetFormFields`/
     /// `SetFormFieldsIncremental` operam por NOME de campo, nunca por posição geométrica.
     ///
     /// ROTEAMENTO (Task 6, Plano 4): `IsSignedDocument` decide o MOTOR — `false` -> caminho normal
@@ -3106,7 +3077,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     private bool CanCorrigirTexto() => CanEdit && HasActiveSelection && !Session.IsEditInFlight;
 
     /// "Corrigir texto": troca o trecho selecionado (UMA linha) por um texto novo no mesmo estilo.
-    /// Fluxo: funil `TryBeginEdit` -> gate de rotação (mesmo de `ApplyMarkup`) -> área = retângulo da
+    /// Fluxo: funil `TryBeginEdit` -> área = retângulo da
     /// seleção -> detecta o estilo (`ProbeTextStyle`) e a cor de fundo (mediana da moldura em volta,
     /// render 2x via `Session.Renderer`, fora da UI thread) -> janela pré-preenchida, com prévia
     /// best-effort -> `ApplyTextCorrection` fora da UI -> `TryApplyEdit` (undo/atômico). A seleção é
@@ -3130,8 +3101,6 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             int pageIndex = page.Index;
             byte[] pdfAntes = Session.Snapshot;
 
-            await EnsureRotationCacheFreshAsync();
-            if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
             if (linhas.Count == 0) return; // seleção vazia nunca deveria habilitar o comando
             if (linhas.Count != 1) { _notifyError("Selecione um trecho de uma linha só."); return; }
             var r = linhas[0];
@@ -3553,7 +3522,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     }
 
     /// "Assinar" (Task 3, Plano 4): documento TEMP-BACKED (`NeedsSaveAs`, Task 2 Plano 7) -> relocaliza
-    /// PRIMEIRO (ver `TryRelocateBeforeSign` abaixo — fix CRÍTICO pós-revisão) -> doc sujo -> confirma
+    /// PRIMEIRO (fluxo antigo; o fluxo Adobe — ver o corpo — assina em memória e salva como arquivo novo) -> doc sujo -> confirma
     /// salvar ANTES (recusa aborta o fluxo inteiro, SEM armar o funil — mesma ordem de `FlattenForm`:
     /// diálogo síncrono ANTES de `TryBeginEdit`) -> diálogo de assinatura (certificado/motivo/local/
     /// DocMDP/carimbo) -> se o usuário escolheu carimbo visível, entra em modo de COLOCAÇÃO na página
@@ -3618,28 +3587,6 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         finally { Session.EndEdit(); }
     }
 
-    /// Relocaliza um documento TEMP-BACKED (`NeedsSaveAs`) ANTES de assinar — ver doc XML de `Sign`
-    /// acima (fix CRÍTICO pós-revisão). MESMA FORMA de `MainViewModel.TrySaveAsSync` (diálogo síncrono
-    /// -> `Session.SaveAs` -> zera a flag), implementada AQUI (não delegada a `MainViewModel`) porque
-    /// `Sign` já vive neste VM e `_dialogs`/`Session` já são acessíveis — não precisa de uma 2ª
-    /// dependência cruzando VMs só pra este caminho. DIFERENÇA aceita (registrada no relatório): não
-    /// adiciona `path` a `RecentFilesStore` — esse serviço só existe em `MainViewModel` (compartilhado
-    /// entre abas), `DocumentViewModel` nunca teve acesso a ele; a lista de recentes é UX, não uma
-    /// garantia de correção (a garantia de correção É o documento nunca ficar preso no temp — essa
-    /// continua valendo sem recentes). Diálogo CANCELADO -> `false`, mesma semântica de "recusa aborta
-    /// sem notificar erro" que o dirty-check logo acima em `Sign` já usa (cancelar não é uma falha).
-    private bool TryRelocateBeforeSign()
-    {
-        if (_dialogs.PickPdfToSaveAs(Session.FilePath) is not { } path) return false;
-        try
-        {
-            Session.SaveAs(path);
-            NeedsSaveAs = false;
-            return true;
-        }
-        catch (Exception ex) { _notifyError(ex.Message); return false; }
-    }
-
     /// Plano 22: abre o seletor de imagem e valida como rubrica (mesmos critérios de `ToggleImageTool`:
     /// PNG/JPG, ≤50MP, não CMYK), notificando o erro em pt-BR e devolvendo os bytes prontos (ou `null` se
     /// cancelado/rejeitado). Passado ao diálogo de assinar como o callback do "+" da galeria — o diálogo
@@ -3673,9 +3620,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// MOUSE-DOWN da página (`PdfViewerControl.Page_MouseLeftButtonDown`) quando `ActiveTool ==
     /// AnnotationTool.SignatureStamp` e a máquina ainda não está em Adjusting. Substitui
     /// `PlaceSignatureStampAtAsync` (clique único, Task 3/Plano 4 — deletado nesta task) como o ponto de
-    /// entrada de produção: mesma guarda `ActiveTool != SignatureStamp -> no-op`, mesmo GATE DE ROTAÇÃO
-    /// (`EnsureRotationCacheFreshAsync`/`IsPageRotated`, mesmo aviso pt-BR, ferramenta continua ativa —
-    /// só que agora recusado ANTES de sequer entrar em Drawing, não mais no momento do commit). O CN do
+    /// entrada de produção: mesma guarda `ActiveTool != SignatureStamp -> no-op` (sem gate de rotação: o
+    /// motor converte o rect EXIBIDO, ver PadesSigningEngine.ApplyVisibleStamp). O CN do
     /// certificado (prévia "fiel o suficiente" do carimbo, ver `StampBoxCertificateCn`) é resolvido AQUI
     /// a partir do certificado ESCOLHIDO no diálogo "Assinar" (`_pendingSignPlacement.Result.Certificate`),
     /// via `X509Certificate2.GetNameInfo(SimpleName, forIssuer: false)` — mesmo extrator já usado por
@@ -3690,8 +3636,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
 
         // SÍNCRONO de propósito (fix do "arrasto não fiel"): a caixa entra em Drawing IMEDIATAMENTE no
         // mouse-down, pra o `UpdateDrawTo` de cada mouse-move seguir o mouse desde o clique. ANTES havia
-        // um `await EnsureRotationCacheFreshAsync()` aqui (herança do gate de rotação, REMOVIDO da
-        // assinatura — a costura de rotação vive no motor, ver StampRotation.cs); esse await atrasava o
+        // um `await` de refresh do cache de rotação aqui (herança do gate de rotação, REMOVIDO da
+        // assinatura — a costura de rotação vive no motor, ver PadesSigningEngine.ApplyVisibleStamp); esse await atrasava o
         // Drawing pra DEPOIS do arrasto, então o UpdateDrawTo não pegava e caía numa caixa PADRÃO parada.
         string cn = pending.Result.Certificate.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
         // Plano 21: no modo rubrica, a prévia da caixa é a IMAGEM da rubrica (não o texto do CN) — o
@@ -3703,23 +3649,22 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
 
     /// Plano 21 (Task 5): gatilho da colocação de IMAGEM pela caixa ajustável — chamado pela View no
     /// mouse-down quando `ActiveTool == ImageStamp` (substitui o clique único `PlaceStampAtAsync`). Mesmo
-    /// gate de rotação de `BeginStampBoxPlacementAsync`; a prévia da caixa é a PRÓPRIA imagem, o rótulo do
-    /// confirmar vira "Inserir aqui". O commit real (adicionar a anotação) só acontece no Confirmar
-    /// (`ConfirmStampBoxAsync` -> `ConfirmImageBoxAsync`).
-    public async Task BeginImageBoxPlacementAsync(int pageIndex, PdfPoint startPt)
+    /// formato de `BeginStampBoxPlacementAsync` — SÍNCRONO (páginas giradas, Task 5: o `await` do refresh do
+    /// cache de rotação saiu com o gate, e com ele o atraso do Drawing descrito lá); a prévia da caixa é a
+    /// PRÓPRIA imagem, o rótulo do confirmar vira "Inserir aqui". O commit real (adicionar a anotação) só
+    /// acontece no Confirmar (`ConfirmStampBoxAsync` -> `ConfirmImageBoxAsync`).
+    public Task BeginImageBoxPlacementAsync(int pageIndex, PdfPoint startPt)
     {
-        if (ActiveTool != AnnotationTool.ImageStamp) return;
-        if (_pendingStampBytes is not { Length: > 0 } bytes) return;
-        if (pageIndex < 0 || pageIndex >= Pages.Count) return;
-
-        await EnsureRotationCacheFreshAsync();
-        if (IsPageRotated(pageIndex)) { _notifyError(RotatedPageNotice); return; }
+        if (ActiveTool != AnnotationTool.ImageStamp) return Task.CompletedTask;
+        if (_pendingStampBytes is not { Length: > 0 } bytes) return Task.CompletedTask;
+        if (pageIndex < 0 || pageIndex >= Pages.Count) return Task.CompletedTask;
 
         _stampBoxImageBytes = bytes;
         _editingAnnotationId = null;
         ImageSource? preview = TryDecodeFrozenImage(bytes);
         BeginStampBoxPlacement(pageIndex, startPt, certificateCn: "", preview,
             confirmLabel: "Inserir aqui", purpose: StampBoxPurpose.Imagem);
+        return Task.CompletedTask;
     }
 
     /// Plano 21 (Task 5): confirmar UNIFICADO do cartão flutuante — a View chama SEMPRE este método; ele
@@ -3785,7 +3730,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
 
     /// Adiciona a imagem como anotação `ImageStamp` no rect final (aspect-fit dentro da caixa desenhada,
     /// centralizado — mesma proporção que a prévia `Stretch=Uniform` mostrou). Mesmo funil/gate de
-    /// `PlaceStampAtAsync`; ao ter sucesso, CACHEIA os bytes sob o Id da anotação recém-criada (set-diff),
+    /// `PlaceStampAtAsync`; ao ter sucesso, CACHEIA os bytes sob o Id da anotação recém-criada (Id atribuído antes do Add — Revisão F2/A6),
     /// pra permitir mover/redimensionar depois (ver `MoveSelectedAnnotationAsync`/`BeginImageEditBox`).
     private async Task PlaceImageStampFromBoxAsync(StampBoxPlacement placement, byte[] bytes)
     {
@@ -3796,9 +3741,10 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             if (AspectFitWithinBox(bytes, placement.Rect) is not { } rect)
             { _notifyError("Não foi possível ler esta imagem."); return; }
 
-            var prevIds = CurrentImageStampIds();
+            string imageId = Guid.NewGuid().ToString(); // Revisão F2 (A6) — ver PlaceStampAtAsync
             var data = new AnnotationData
             {
+                Id = imageId,
                 Kind = AnnotationKind.ImageStamp, PageIndex = placement.PageIndex,
                 LeftPt = rect.LeftPt, BottomPt = rect.BottomPt, RightPt = rect.RightPt, TopPt = rect.TopPt,
                 ImageBytes = bytes, Author = _config.Autor,
@@ -3811,7 +3757,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             ActiveTool = AnnotationTool.None;
             _pendingStampBytes = null;
             _stampBoxImageBytes = null;
-            await CacheNewImageStampBytesAsync(prevIds, bytes);
+            _imageStampBytes[imageId] = bytes;
         }
         finally { Session.EndEdit(); }
     }
@@ -3829,12 +3775,12 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             _notifyError("Esta imagem foi inserida em outra sessão — recoloque-a para redimensionar ou mover.");
             return;
         }
-        if (IsPageRotated(target.PageIndex)) { _notifyError(RotatedPageNotice); return; }
 
         StampBoxPageIndex = target.PageIndex;
         StampBoxCertificateCn = null;
         StampBoxDateLabel = null;
-        _stampBoxPreviewImage = TryDecodeFrozenImage(bytes);
+        // Imagem que GIROU com a página (Girar depois de colocar): a prévia da caixa mostra o MESMO giro da tela.
+        _stampBoxPreviewImage = TryDecodeFrozenImage(bytes, target.ConteudoRotacaoGraus ?? 0);
         _stampBoxConfirmLabel = "Salvar";
         _stampBoxPurpose = StampBoxPurpose.EdicaoImagem;
         _stampBoxImageBytes = bytes;
@@ -3847,8 +3793,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
 
     /// Confirmar de uma EDIÇÃO de imagem (propósito EdicaoImagem) — faz lift (Remove+Add) da anotação
     /// selecionada pro novo rect (aspect-fit), reusando `LiftSelectedAnnotationAsync` (mesma mecânica de
-    /// mover/editar qualquer anotação), com os bytes do cache. Re-mapeia o cache pro Id NOVO (o lift cria
-    /// uma anotação nova). Captura Id/bytes ANTES de `ConfirmStampBox()`.
+    /// mover/editar qualquer anotação), com os bytes do cache. O lift preserva o Id — a entrada do
+    /// cache continua valendo (Revisão F2/A6). Captura Id/bytes ANTES de `ConfirmStampBox()`.
     private async Task ConfirmImageEditBoxAsync()
     {
         string? editId = _editingAnnotationId;
@@ -3857,16 +3803,14 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         if (editId is null || bytes is not { Length: > 0 }) return;
         if (SelectedAnnotation is not { Id: not null } sel || sel.Id != editId) return; // seleção mudou
 
-        if (AspectFitWithinBox(bytes, placement.Rect) is not { } rect)
+        if (AspectFitWithinBox(bytes, placement.Rect, sel.ConteudoRotacaoGraus ?? 0) is not { } rect)
         { _notifyError("Não foi possível ler esta imagem."); return; }
 
-        var prevIds = CurrentImageStampIds();
-        bool applied = await LiftSelectedAnnotationAsync(sel with
+        await LiftSelectedAnnotationAsync(sel with
         {
             LeftPt = rect.LeftPt, BottomPt = rect.BottomPt, RightPt = rect.RightPt, TopPt = rect.TopPt,
             ImageBytes = bytes,
-        });
-        if (applied) await RecacheAfterImageEditAsync(prevIds, editId, bytes);
+        }, recacheImageBytes: bytes);
     }
 
     // ==== Task 3 (SDD desenho-caixa-melhorias): redimensionar/mover uma FORMA (Rectangle) já colocada ==
@@ -3880,13 +3824,12 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     /// (`_editingAnnotationId` — mesmo campo de `BeginImageEditBox`, RENOMEADO de `_editingImageAnnotationId`
     /// pra cobrir os 2 modos; nunca os dois ativos ao mesmo tempo, `_stampBoxPurpose` decide qual). Gate
     /// `CanEdit` (silencioso — mesmo espírito do gate de `SelectFillAsync`/`MoveSelectedAnnotationAsync`:
-    /// documento assinado não abre a caixa) + `IsPageRotated` (avisa, mesmo padrão de `BeginImageEditBox`).
+    /// documento assinado não abre a caixa).
     public void BeginShapeEditBox(AnnotationData target)
     {
         if (target.Kind != AnnotationKind.Rectangle || target.Id is not { } id) return;
         if (target.PageIndex < 0 || target.PageIndex >= Pages.Count) return;
         if (!CanEdit) return;
-        if (IsPageRotated(target.PageIndex)) { _notifyError(RotatedPageNotice); return; }
 
         StampBoxPageIndex = target.PageIndex;
         StampBoxCertificateCn = null;
@@ -3979,8 +3922,10 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     }
 
     /// Aspect-fit da imagem DENTRO da caixa (sem distorção), centralizado — devolve o rect final em
-    /// pontos de página, ou `null` se a caixa é degenerada ou a imagem não decodifica.
-    private static PdfQuad? AspectFitWithinBox(byte[] imageBytes, PdfQuad box)
+    /// pontos de página, ou `null` se a caixa é degenerada ou a imagem não decodifica. `conteudoRotacaoGraus`
+    /// (imagem que girou junto com a página — `AnnotationData.ConteudoRotacaoGraus`): em 90/270 a proporção
+    /// NA TELA é a da imagem deitada (largura e altura trocadas).
+    private static PdfQuad? AspectFitWithinBox(byte[] imageBytes, PdfQuad box, int conteudoRotacaoGraus = 0)
     {
         double boxW = box.RightPt - box.LeftPt, boxH = box.TopPt - box.BottomPt;
         if (boxW <= 0 || boxH <= 0) return null;
@@ -3993,50 +3938,12 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         }
         catch { return null; }
         if (iw <= 0 || ih <= 0) return null;
+        if (RotacaoDeConteudo.TrocaEixos(conteudoRotacaoGraus)) (iw, ih) = (ih, iw);
 
         double scale = Math.Min(boxW / iw, boxH / ih);
         double w = iw * scale, h = ih * scale;
         double cx = (box.LeftPt + box.RightPt) / 2, cy = (box.BottomPt + box.TopPt) / 2;
         return new PdfQuad(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);
-    }
-
-    /// Ids de todas as anotações `ImageStamp` no cache corrente (`AnnotationsByPage`) — base do set-diff
-    /// que descobre qual Id é o RECÉM-criado após um add/lift (ReadAnnotations nunca devolve os bytes,
-    /// mas devolve o Id).
-    private HashSet<string> CurrentImageStampIds()
-    {
-        var ids = new HashSet<string>();
-        foreach (var pageAnns in AnnotationsByPage)
-            foreach (var a in pageAnns)
-                if (a.Kind == AnnotationKind.ImageStamp && a.Id is { } id) ids.Add(id);
-        return ids;
-    }
-
-    /// Após COLOCAR uma imagem nova: espera o cache de anotações refletir o add e mapeia o Id novo
-    /// (o que não estava em `prevIds`) -> bytes.
-    private async Task CacheNewImageStampBytesAsync(HashSet<string> prevIds, byte[] bytes)
-    {
-        await EnsureRotationCacheFreshAsync(); // renova AnnotationsByPage (anotações + rotações) do snapshot novo
-        foreach (var pageAnns in AnnotationsByPage)
-            foreach (var a in pageAnns)
-                if (a.Kind == AnnotationKind.ImageStamp && a.Id is { } id && !prevIds.Contains(id))
-                    _imageStampBytes[id] = bytes;
-    }
-
-    /// Após EDITAR (lift) uma imagem: o Id muda (Remove+Add). Remove o Id antigo do cache e mapeia o Id
-    /// novo (o que não estava em `prevIds`) -> os MESMOS bytes.
-    private async Task RecacheAfterImageEditAsync(HashSet<string> prevIds, string oldId, byte[] bytes)
-    {
-        await EnsureRotationCacheFreshAsync();
-        // ACHADO (bug de campo "imagem move uma vez e depois dá erro"): o lift (Remove+Add) PRESERVA o
-        // Id da anotação (AddAnnotation honra o Id informado) — então o `oldId` continua VÁLIDO na página
-        // depois do lift, e removê-lo cegamente esvaziava o cache (2º move/edição virava "imagem de outra
-        // sessão"). Só remove o `oldId` se ele REALMENTE sumiu (caso o lift algum dia troque o Id) — e
-        // cacheia os bytes para QUALQUER imagem nova (Id que não existia antes), cobrindo os dois casos.
-        var currentIds = CurrentImageStampIds();
-        if (!currentIds.Contains(oldId)) _imageStampBytes.Remove(oldId);
-        foreach (var id in currentIds)
-            if (!prevIds.Contains(id)) _imageStampBytes[id] = bytes;
     }
 
     /// Assume o funil JÁ armado pelo chamador (`Sign` ou `ConfirmSignatureStampAsync`) — roda o motor
@@ -4166,7 +4073,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
 
     /// Decodifica bytes de imagem numa `BitmapImage` congelada (thread-safe, sem cache de arquivo) pra
     /// prévia da caixa. `null` se os bytes não decodificam (nunca lança) — a caixa cai na prévia de texto.
-    private static ImageSource? TryDecodeFrozenImage(byte[]? bytes)
+    /// `rotacaoGraus` (horário): a prévia girada como a imagem aparece na tela (0 = como está).
+    private static ImageSource? TryDecodeFrozenImage(byte[]? bytes, int rotacaoGraus = 0)
     {
         if (bytes is null || bytes.Length == 0) return null;
         try
@@ -4177,7 +4085,11 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
             bmp.StreamSource = new MemoryStream(bytes);
             bmp.EndInit();
             bmp.Freeze();
-            return bmp;
+            int giro = RotacaoDeConteudo.Normalizada(rotacaoGraus);
+            if (giro == 0) return bmp;
+            var girada = new TransformedBitmap(bmp, new RotateTransform(giro)); // WPF: ângulo positivo = horário
+            girada.Freeze();
+            return girada;
         }
         catch { return null; }
     }
@@ -4236,7 +4148,7 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     public string? StampBoxDateLabel { get; private set; }
 
     /// Chamado no mouse-down da página (via `BeginStampBoxPlacementAsync`, Task 2/Plano 8 — que resolve
-    /// o CN do certificado e aplica o gate de rotação antes de chegar aqui). Mesmo guard do clique único
+    /// o CN do certificado antes de chegar aqui). Mesmo guard do clique único
     /// original (`ActiveTool != SignatureStamp -> no-op`) — evita a máquina rodar fora do modo de
     /// colocação de assinatura. `startPt`: ponto de PÁGINA do mouse-down (mesma
     /// convenção pt de página de todo o resto do arquivo — conversão screen->page é responsabilidade da
@@ -4764,19 +4676,15 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
         UpdateSignatureHighlightOverlay(oldValue, newValue);
 
     /// Só a página ANTIGA (se houver) e a NOVA (se houver) são tocadas — mesma economia de
-    /// `UpdateFormFieldHighlightOverlay`. GATE DE ROTAÇÃO (revisão da Task 4): navegação é livre de
-    /// coordenadas (`ScrollToPageRequested` só usa o ÍNDICE da página, nunca um retângulo); só o
-    /// DESTAQUE depende do frame não-rotacionado (`PointRectToScreenRect` assume página sem `/Rotate`,
-    /// mesma ressalva de `IsPageRotated`) — mesma política de `SelectFormField`/
-    /// `UpdateFormFieldHighlightOverlay` (Task 2, Plano 3c): "preencher/navegar continua livre", só o
-    /// retângulo desenhado é que ficaria geometricamente errado numa página girada.
+    /// `UpdateFormFieldHighlightOverlay`. Páginas giradas (Task 5): `StampRect` está no frame EXIBIDO (Task 3,
+    /// `SignatureReader`) e `page.HeightPt` é a altura EXIBIDA (PDFium) — o destaque cai sobre o carimbo em
+    /// qualquer `/Rotate`, sem gate (mesma política de `UpdateFormFieldHighlightOverlay`).
     private void UpdateSignatureHighlightOverlay(SignatureRowViewModel? oldValue, SignatureRowViewModel? newValue)
     {
         if (oldValue?.Data.StampPageIndex is int o && o >= 0 && o < Pages.Count)
             Pages[o].HasSignatureStampHighlight = false;
         if (newValue?.Data is not { StampPageIndex: int pageIndex, StampRect: { } rect }) return;
         if (pageIndex < 0 || pageIndex >= Pages.Count) return;
-        if (IsPageRotated(pageIndex)) return; // GATE DE ROTAÇÃO — ver doc XML acima
         var page = Pages[pageIndex];
         page.SignatureStampHighlightRect = PageViewModel.PointRectToScreenRect(
             rect.LeftPt, rect.BottomPt, rect.RightPt, rect.TopPt, Zoom, page.HeightPt);
@@ -4784,9 +4692,8 @@ public sealed partial class DocumentViewModel : ObservableObject, IDisposable
     }
 
     /// Clique num signatário do painel (`SignaturePanel.xaml`) -> seleciona, navega (se houver carimbo)
-    /// e destaca (se a página não estiver girada) — exemplar EXATO de `SelectFormField`:
-    /// `ScrollToPageRequested` dispara sempre que há `StampPageIndex` (navegação é livre de
-    /// coordenadas), o gate de rotação vive só em `UpdateSignatureHighlightOverlay` (acima), nunca aqui.
+    /// e destaca (ver `UpdateSignatureHighlightOverlay` acima) — exemplar EXATO de `SelectFormField`:
+    /// `ScrollToPageRequested` dispara sempre que há `StampPageIndex` (navegação é livre de coordenadas).
     [RelayCommand]
     private void SelectSignature(SignatureRowViewModel? row)
     {

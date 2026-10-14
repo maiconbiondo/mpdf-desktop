@@ -97,6 +97,18 @@ internal sealed class PadesSigningEngine : ISigningEngine
             if (request.Stamp is { } stampToValidate)
                 ValidateStamp(stampToValidate, inspection.PageCount);
 
+            // Revisão F1 (E6): página do carimbo com /Rotate fora de múltiplo de 90 (malformada). O /Rect segue a
+            // regra do PDFium (135 → exibe 90), mas o iText gira a APARÊNCIA do campo com o próprio `GetRotation()`
+            // (`% 360`; troca os eixos quando `r/90` é ímpar e só aplica a /Matrix em 90/180/270 EXATOS): o carimbo
+            // sairia deitado (135) ou espremido (−135). Não há ponto de extensão seguro no PdfPadesSigner para isso
+            // (e reescrever o /Rotate da página mudaria o documento): carimbo visível recusado com mensagem pt-BR;
+            // a assinatura invisível continua aceita. Múltiplos de 90 (todo PDF bem-formado) não passam por aqui.
+            if (request.Stamp is { } stampRot && inspection.StampPageRawRotation % 90 != 0)
+                throw new PdfStampRotationException(
+                    $"A página {stampRot.PageIndex + 1} tem uma rotação fora do padrão ({inspection.StampPageRawRotation}°) " +
+                    "e o carimbo visível sairia torto. Assine sem carimbo visível (assinatura invisível) ou " +
+                    "coloque o carimbo em outra página.", stampRot.PageIndex, inspection.StampPageRawRotation);
+
             var chain = BuildChain(request.Certificate);
             var signature = new X509Certificate2Signature(request.Certificate);
 
@@ -123,8 +135,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
 
             if (request.Stamp is { } stamp)
                 ApplyVisibleStamp(props, stamp, request.Certificate, request.Reason, request.Location,
-                    inspection.StampPageRotation, inspection.StampPageMediaW, inspection.StampPageMediaH,
-                    inspection.StampPageOriginX, inspection.StampPageOriginY, inspection.IsPdfA1);
+                    inspection.StampPageFrame, inspection.IsPdfA1);
 
             padesSigner.SignWithBaselineBProfile(props, chain, signature);
             return output.ToArray();
@@ -172,8 +183,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
     /// hipóteses ficam truncados com "..." (nunca um comportamento pior que uma linha cortada).
     private static void ApplyVisibleStamp(
         SignerProperties props, VisibleStampSpec stamp, X509Certificate2 certificate, string? reason,
-        string? location, int rotation, double mediaW, double mediaH, double originX, double originY,
-        bool opaqueForPdfA1)
+        string? location, DisplayFrame stampFrame, bool opaqueForPdfA1)
     {
         var r = stamp.Rect;
         // Dimensões EXIBIDAS (o que o usuário desenhou/vê) — a camada de aparência (texto/selo/rubrica)
@@ -181,14 +191,12 @@ internal sealed class PadesSigningEngine : ISigningEngine
         // leitor, então o `Div`/renderer trabalha no frame VISUAL.
         float widthPt = (float)(r.RightPt - r.LeftPt), heightPt = (float)(r.TopPt - r.BottomPt);
 
-        // Costura de rotação: o `/Rect` do campo vai em coordenadas do MEDIABOX (o que o iText espera),
-        // convertidas do retângulo EXIBIDO. Em rot 0 é identidade (`mbRect` == retângulo exibido).
-        // `mediaW`/`mediaH`/`origin*` descrevem a caixa EXIBIDA não-rotacionada (CropBox ∩ MediaBox, ver
-        // InspectDocument): a rotação inversa dá coordenadas relativas a ela; somar a origem leva ao
-        // espaço do usuário que o iText grava no /Rect.
-        var mb = StampRotation.DisplayedToMediaBox(r, rotation, mediaW, mediaH);
-        var mbRect = new Rectangle((float)(mb.LeftPt + originX), (float)(mb.BottomPt + originY),
-            (float)(mb.RightPt - mb.LeftPt), (float)(mb.TopPt - mb.BottomPt));
+        // Costura de rotação: o `/Rect` do campo vai no ESPAÇO DO USUÁRIO (o que o iText espera), convertido do
+        // retângulo EXIBIDO pela conversão única do motor (`DisplayFrame.ToUser`: rotação inversa relativa à caixa
+        // exibida CropBox ∩ MediaBox + a origem dela — ver InspectDocument). Em rot 0 sem CropBox é a identidade.
+        var u = stampFrame.ToUser(r);
+        var mbRect = new Rectangle((float)u.LeftPt, (float)u.BottomPt,
+            (float)(u.RightPt - u.LeftPt), (float)(u.TopPt - u.BottomPt));
 
         // Plano 21: rubrica — a aparência vira SÓ a imagem (aspect-fit centralizada), sem moldura/selo/
         // texto. Mesma mecânica de `SignatureFieldAppearance`/`Div`/renderer customizado do carimbo
@@ -607,8 +615,7 @@ internal sealed class PadesSigningEngine : ISigningEngine
     private readonly record struct DocumentInspection(
         int ExistingSignatures, int PageCount, string FieldName,
         DocMdpCertificationProbe.Result CertificationProbe, int CertificationP,
-        int StampPageRotation, double StampPageMediaW, double StampPageMediaH,
-        double StampPageOriginX, double StampPageOriginY, bool IsPdfA1);
+        DisplayFrame StampPageFrame, bool IsPdfA1, int StampPageRawRotation);
 
     private static DocumentInspection InspectDocument(byte[] pdf, int? stampPageIndex)
     {
@@ -618,32 +625,24 @@ internal sealed class PadesSigningEngine : ISigningEngine
         string fieldName = ChooseNonCollidingFieldName(doc);
         var certProbe = DocMdpCertificationProbe.ReadLevel(doc, out int certP);
 
-        // Rotação + MediaBox (NÃO-rotacionado) da página do carimbo — a costura de rotação
-        // (`StampRotation`) converte o retângulo EXIBIDO que o app manda para o frame do MediaBox que o
-        // iText espera. Só lido quando há carimbo numa página válida; caso contrário fica em 0 (rot 0 =
-        // identidade, o caminho comum não muda em nada).
-        int rotation = 0;
-        double mediaW = 0, mediaH = 0, originX = 0, originY = 0;
+        // Frame EXIBIDO da página do carimbo (`PageFrame.Frame`: rotação pela regra do PDFium sobre o /Rotate cru +
+        // caixa exibida CropBox ∩ MediaBox — fix/markup-cropbox: em página recortada usar a MediaBox deslocava o
+        // carimbo) — `ApplyVisibleStamp` converte o retângulo EXIBIDO que o app manda para o espaço do usuário que o
+        // iText espera. Só lido quando há carimbo numa página válida; senão fica o default (nunca usado: sem
+        // carimbo `ApplyVisibleStamp` não roda, e página inválida já foi recusada por `ValidateStamp`).
+        DisplayFrame frame = default;
+        int rawRotation = 0;
         if (stampPageIndex is { } idx && idx >= 0 && idx < pageCount)
         {
             var page = doc.GetPage(idx + 1);
-            rotation = page.GetRotation();
-            // fix/markup-cropbox: o frame EXIBIDO é a CropBox recortada pela MediaBox (o que o PDFium
-            // mostra), NÃO a MediaBox — em página recortada (origem != 0,0 ou CropBox menor) usar a
-            // MediaBox deslocava o carimbo. `PageFrame` (mPdf.Editing) é a fonte única dessa caixa.
-            // Sem /CropBox (caso comum) é a própria MediaBox — comportamento intocado.
-            var box = PageFrame.DisplayedBox(page); // NÃO-rotacionado (iText nunca aplica /Rotate aqui)
-            mediaW = box.GetWidth();
-            mediaH = box.GetHeight();
-            originX = box.GetLeft();
-            originY = box.GetBottom();
+            frame = PageFrame.Frame(page);
+            rawRotation = PageFrame.RawRotation(page); // revisão F1 (E6): fora de múltiplo de 90 = carimbo recusado
         }
         // PDF/A-1 (a/b): identificação lida do XMP pelo próprio iText (`pdfaid:part`) — o MESMO dado que
         // faz o `PdfPadesSigner` abrir a entrada como PDF/A e aplicar as regras da parte 1 (sem
         // transparência). A2/A3 permitem transparência e seguem o desenho de sempre.
         bool isPdfA1 = doc.GetConformance()?.GetAConformance()?.GetPart() == "1";
-        return new DocumentInspection(existing, pageCount, fieldName, certProbe, certP, rotation, mediaW, mediaH,
-            originX, originY, isPdfA1);
+        return new DocumentInspection(existing, pageCount, fieldName, certProbe, certP, frame, isPdfA1, rawRotation);
     }
 
     /// M7 (achado do revisor, escalado a hard gate PRÉ-ROLLOUT): o nome gerado ANTES

@@ -87,6 +87,27 @@ public class PdfEnvelopeTests
         finally { File.Delete(path); }
     }
 
+    [Fact] // conserto em DUAS FASES: a de disco (roda no pool no App) grava SEM evento; a de estado limpa e dispara
+    public async Task GravarConsertoEnvelope_SemEvento_ConcluirDispara()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"mpdf-b64-{Guid.NewGuid():N}.pdf");
+        File.WriteAllBytes(path, Ascii("\"" + B64 + "\""));
+        try
+        {
+            using var s = await DocumentSession.OpenAsync(path);
+            int eventos = 0; s.NeedsEnvelopeFixChanged += (_, _) => eventos++;
+            Assert.True(await Task.Run(s.GravarConsertoEnvelope));
+            Assert.Equal(Pdf, File.ReadAllBytes(path));
+            Assert.Equal(0, eventos);
+            Assert.True(s.NeedsEnvelopeFix);
+            s.ConcluirConsertoEnvelope();
+            Assert.False(s.NeedsEnvelopeFix);
+            Assert.Equal(1, eventos);
+            Assert.False(s.GravarConsertoEnvelope()); // nada mais a consertar
+        }
+        finally { File.Delete(path); }
+    }
+
     [Fact] // PDF normal nunca pede conserto
     public void Open_PlainPdf_DoesNotNeedFix()
     {

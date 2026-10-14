@@ -57,7 +57,7 @@ public class CorrigirTextoScanTests
     /// alheia na borda). A caixa fica assim (é o estímulo), mas a MÁSCARA (dono da tinta, usada nas checagens
     /// de sobra e de dano) vem da segmentação real da linha: as N-1 maiores lacunas entre colunas de tinta são
     /// os espaços entre as N palavras.
-    private static Scan BuildScanGdi(string[] linhas, double entrelinha, string fonte, bool legada, bool pdfA = false)
+    private static Scan BuildScanGdi(string[] linhas, double entrelinha, string fonte, bool legada, bool pdfA = false, int rotacao = 0)
     {
         int passo = (int)Math.Round(FontePx * entrelinha);
         var tinta = new Dictionary<string, Int32Rect>();
@@ -119,14 +119,42 @@ public class CorrigirTextoScanTests
         }
         byte[] png;
         using (var ms = new MemoryStream()) { pagina.Save(ms, System.Drawing.Imaging.ImageFormat.Png); png = ms.ToArray(); }
-        return new Scan(AplicarCamada(png, boxes, legada, pdfA), tinta, bases, mascaras);
+        return new Scan(AplicarCamada(png, boxes, legada, pdfA, rotacao), tinta, bases, mascaras);
     }
 
     /// `pdfA` (feat/pdfa-ocr-largura): em vez da camada sobre a imagem, compõe o PDF/A do "Salvar como PDF/A"
     /// (`CriarPdfADeImagens`, imagem JPEG RGB + texto invisível na fonte embutida Inter — a mesma do App).
-    private static byte[] AplicarCamada(byte[] png, List<OcrTextBox> boxes, bool legada, bool pdfA = false)
+    ///
+    /// `rotacao` (páginas giradas, Task 4): o scanner gravou a imagem DEITADA e a página tem /Rotate para ela
+    /// aparecer em pé — a imagem é guardada girada em −rotacao e a página recebe /Rotate rotacao. A página
+    /// EXIBIDA (o que o PDFium renderiza, as caixas OCR, a tinta, as máscaras) é a MESMA da rotação 0; a camada
+    /// OCR é gravada sobre a página já girada, como o comando OCR faz — a nova (`ApplyOcrTextLayer`) ou a LEGADA
+    /// em modo girado (`LegacyOcrLayer.Apply(..., girada: true)`, a matriz da v2.14.1; Task 5).
+    private static byte[] AplicarCamada(byte[] png, List<OcrTextBox> boxes, bool legada, bool pdfA = false, int rotacao = 0)
     {
         var editor = PdfEditorFactory.Create();
+        if (rotacao != 0)
+        {
+            Assert.False(pdfA, "rotação só nas camadas sobre a imagem (nova ou legada)");
+            byte[] deitada;
+            using (var src = new MemoryStream(png))
+            using (var bmp = new System.Drawing.Bitmap(src))
+            {
+                bmp.RotateFlip(rotacao switch
+                {
+                    90 => System.Drawing.RotateFlipType.Rotate270FlipNone,  // guardada 90° anti-horário; /Rotate 90 (horário) a endireita
+                    180 => System.Drawing.RotateFlipType.Rotate180FlipNone,
+                    _ => System.Drawing.RotateFlipType.Rotate90FlipNone,
+                });
+                bmp.SetResolution(Dpi, Dpi);
+                using var ms = new MemoryStream();
+                bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                deitada = ms.ToArray();
+            }
+            var girada = editor.RotatePages(editor.ImageToPdf(deitada), new[] { 0 }, rotacao);
+            var camadaGirada = new[] { new OcrTextLayer(0, W, H, boxes) };
+            return legada ? LegacyOcrLayer.Apply(girada, camadaGirada, girada: true) : editor.ApplyOcrTextLayer(girada, camadaGirada);
+        }
         if (pdfA)
         {
             byte[] jpeg;
@@ -397,8 +425,48 @@ public class CorrigirTextoScanTests
         string selecionado, string tokenEsperado, string novo, string camada)
         => Executar(caso, conjunto, fonte, entrelinha, selecionado, tokenEsperado, novo, gdi: true, camada);
 
+    /// Páginas giradas (Task 4): uma amostra dos casos acima (linhas normais e coladas, vírgula, parcial, fonte
+    /// estreita, acentos com linhas coladas, meio e fim de linha, vizinhas, última de linha longa) num scan cuja
+    /// página tem /Rotate 90/180/270 com a imagem guardada deitada — a página EXIBIDA é a mesma, e o pipeline do
+    /// VM (probe -> tinta -> correção) tem de dar o mesmo resultado, com as mesmas checagens de pixel.
+    /// Fix F3 (T6): o "scan" girado é desenhado pelo GDI (`BuildScanGdi`, System.Drawing) — não pela fixture WPF
+    /// (`RenderTargetBitmap`), que falha em bloco quando a sessão RDP desconecta. Os mesmos casos já passam no GDI
+    /// sem rotação (`EscaneadoGdi_*`); o que a matriz girada prova é a rotação, não o desenhista do scan.
+    public static IEnumerable<object[]> CasosGirados()
+    {
+        var amostra = Casos().Where(c => (string)c[0] switch
+        {
+            "normal" or "coladas" or "virgula" or "parcial" or "estreita" or "ultima-longa" => true,
+            "acentos-coladas" => (string)c[4] is "MÚSICA" or "CONCEIÇÃO",
+            "meio-linha" or "fim-linha" => (string)c[4] == "PAGAMENTO",
+            "vizinhas" => (double)c[3] == 1.0 && (string)c[4] == "JOÃO",
+            _ => false,
+        }).ToList();
+        return from r in new[] { 90, 180, 270 } from c in amostra select c.Append(r).ToArray();
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(CasosGirados))]
+    public void EscaneadoGirado_TrocaPalavra_ApagaSoOTokenEPreservaVizinhos(string caso, string conjunto, string fonte, double entrelinha,
+        string selecionado, string tokenEsperado, string novo, int rotacao)
+        => Executar(caso, conjunto, fonte, entrelinha, selecionado, tokenEsperado, novo, gdi: true, "Nova", rotacao);
+
+    /// Task 5: PDF girado reconhecido ATÉ a v2.14.1 (camada LEGADA: Helvetica sem ajuste de largura + a matriz de
+    /// rotação daquela versão). Amostra menor (normal, coladas, vírgula, parcial) × 90/180/270 — mesmas checagens.
+    public static IEnumerable<object[]> CasosGiradosLegados()
+    {
+        var amostra = Casos().Where(c => (string)c[0] is "normal" or "coladas" or "virgula" or "parcial").ToList();
+        return from r in new[] { 90, 180, 270 } from c in amostra select c.Append(r).ToArray();
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(CasosGiradosLegados))]
+    public void EscaneadoGiradoLegado_TrocaPalavra_ApagaSoOTokenEPreservaVizinhos(string caso, string conjunto, string fonte, double entrelinha,
+        string selecionado, string tokenEsperado, string novo, int rotacao)
+        => Executar(caso, conjunto, fonte, entrelinha, selecionado, tokenEsperado, novo, gdi: true, "Legada", rotacao);
+
     private static void Executar(string caso, string conjunto, string fonte, double entrelinha,
-        string selecionado, string tokenEsperado, string novo, bool gdi, string camada)
+        string selecionado, string tokenEsperado, string novo, bool gdi, string camada, int rotacao = 0)
     {
         Assert.Contains(camada, new[] { "Nova", "Legada" });
         bool legada = camada == "Legada";
@@ -407,10 +475,18 @@ public class CorrigirTextoScanTests
         Skip.If(fonte == Narrow && !File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "ARIALN.TTF")),
             "Arial Narrow não instalada");
         var linhas = conjunto switch { "Coladas" => Coladas, "Virgula" => Virgula, "Caps" => Caps, "Estreita" => Estreita, "Acentos" => Acentos, "Misto" => Misto, "MeioLinha" => MeioLinha, "FimLinha" => FimLinha, "Vizinhas" => Vizinhas, "Nomes" => Nomes, "Conceicao" => Conceicao, "UltimaLonga" => UltimaLonga, "UltimaCurta" => UltimaCurta, _ => Normal };
-        var scan = gdi ? BuildScanGdi(linhas, entrelinha, fonte, legada) : BuildScan(linhas, entrelinha, fonte, legada);
+        Assert.True(gdi || rotacao == 0, "casos girados usam o scan GDI (a fixture WPF depende da sessão RDP)");
+        var scan = gdi ? BuildScanGdi(linhas, entrelinha, fonte, legada, rotacao: rotacao) : BuildScan(linhas, entrelinha, fonte, legada);
         var editor = PdfEditorFactory.Create();
         using var r0 = new PdfDocumentRenderer(scan.Pdf);
         var size = r0.GetPageSize(0);
+        if (rotacao != 0)
+        {
+            // sanity: a página é mesmo girada e o PDFium a exibe com o tamanho da rotação 0 (396 x 126 pt)
+            Assert.Equal(new[] { rotacao }, RotacaoGravada.Ler(scan.Pdf));
+            Assert.Equal(W * 72.0 / Dpi, size.WidthPt, 0);
+            Assert.Equal(H * 72.0 / Dpi, size.HeightPt, 0);
+        }
         const double s = 2.0;
         double pxToPt = size.WidthPt / W; // imagem cobre a página inteira
         var tp0 = r0.GetTextPage(0);
@@ -545,6 +621,88 @@ public class CorrigirTextoScanTests
             if (!palavrasIText.SequenceEqual(palavrasFixture)) falhas.Add($"iText  [{string.Join(" / ", linhas)}] -> [{string.Join(" / ", itext)}]");
         }
         return falhas;
+    }
+
+    /// Janela "Corrigir texto" que devolve o texto novo com o estilo PROPOSTO pelo VM (família/tamanho/cor do
+    /// pedido) — o que o usuário faz ao só digitar a palavra nova; também pede 1 prévia (best-effort).
+    private sealed class EcoDialog(string novo) : mPdf.App.Services.ICorrigirTextoDialogService
+    {
+        public mPdf.App.Services.CorrigirTextoPedido? Pedido { get; private set; }
+        public mPdf.App.Services.CorrigirTextoPrevia? Previa { get; private set; }
+        public mPdf.App.Services.CorrigirTextoResultado? Pedir(mPdf.App.Services.CorrigirTextoPedido pedido,
+            Func<mPdf.App.Services.CorrigirTextoResultado, mPdf.App.Services.CorrigirTextoPrevia> previa)
+        {
+            Pedido = pedido;
+            var res = new mPdf.App.Services.CorrigirTextoResultado(novo, pedido.Familia, pedido.Negrito, pedido.Italico, pedido.TamanhoPt, pedido.CorArgb);
+            Previa = previa(res);
+            return res;
+        }
+    }
+
+    /// Páginas giradas, Task 5: ESCANEADO girado (imagem guardada deitada + /Rotate + camada OCR nova ou LEGADA da
+    /// v2.14.1) pelo COMANDO do VM — gesto de seleção sobre a palavra, probe, janela (eco), Apply. A tinta antiga
+    /// some (máscara do token, fora da caixa do texto novo), o texto novo entra na camada pesquisável e há undo.
+    [SkippableTheory]
+    [InlineData(90, "Nova")]
+    [InlineData(180, "Nova")]
+    [InlineData(270, "Nova")]
+    [InlineData(90, "Legada")]
+    [InlineData(270, "Legada")]
+    public async Task Vm_EscaneadoGirado_CorrigirTexto_TrocaATintaPelaPalavraNova(int rotacao, string camada)
+    {
+        var scan = BuildScanGdi(Normal, 1.2, Times, legada: camada == "Legada", rotacao: rotacao); // GDI: sem RenderTargetBitmap (RDP)
+        var dialog = new EcoDialog("Silva");
+        var vm = VmTemporaria.Abrir(scan.Pdf, "scan-girado", autor: null, corrigirTextoDialog: dialog);
+        var (d, errors) = (vm.D, vm.Errors);
+        try
+        {
+            var page = d.Pages[0];
+            Assert.Equal(H * 72.0 / Dpi, page.HeightPt, 0); // altura EXIBIDA (igual à da rotação 0)
+            page.BeginSelection(new Point(1, 1)); page.ClearSelection(); // garante o cache da TextPage
+            var tp = page.TextPageCache!;
+            int ini = tp.Text.IndexOf("Pereira", StringComparison.Ordinal);
+            Assert.True(ini >= 0, $"'Pereira' não está na camada OCR: {tp.Text}");
+            var cs = tp.Characters.Skip(ini).Take("Pereira".Length).ToList();
+            double sc = d.Zoom * mPdf.App.ViewModels.PageViewModel.PtToPx;
+            Point Centro(PdfCharacter c) => new((c.LeftPt + c.RightPt) / 2 * sc, (page.HeightPt - (c.BottomPt + c.TopPt) / 2) * sc);
+            page.BeginSelection(Centro(cs[0]));
+            page.UpdateSelection(Centro(cs[^1]));
+            Assert.Equal("Pereira", page.SelectedText?.Trim());
+
+            await d.CorrigirTextoCommand.ExecuteAsync(null);
+
+            Assert.Empty(errors);
+            Assert.Equal("Pereira", dialog.Pedido?.TextoAtual);
+            Assert.NotNull(dialog.Previa?.Recorte); // a prévia renderizou
+            Assert.True(d.Session.CanUndo);
+
+            using var r1 = new PdfDocumentRenderer(d.Session.Snapshot);
+            var tp1 = r1.GetTextPage(0);
+            Assert.DoesNotContain("Pereira", tp1.Text);
+            int ni = tp1.Text.IndexOf("Silva", StringComparison.Ordinal);
+            Assert.True(ni >= 0, $"texto novo ausente: {tp1.Text}");
+            Assert.Contains("Joaquim", tp1.Text);
+            Assert.Contains("Gomes", tp1.Text);
+            var novoPt = Quad(tp1.Characters.Skip(ni).Take("Silva".Length).ToList());
+            double s2 = Dpi / 72.0; // 1 px de render = 1 px do scan
+            var d200 = r1.RenderPage(0, s2);
+            (int X0, int Y0, int X1, int Y1) novo200 = ((int)((novoPt.LeftPt - 1) * s2), (int)((page.HeightPt - novoPt.TopPt - 1) * s2),
+                (int)Math.Ceiling((novoPt.RightPt + 1) * s2), (int)Math.Ceiling((page.HeightPt - novoPt.BottomPt + 1) * s2));
+            bool Escuro(int k)
+            {
+                int x = k % W, y = k / W;
+                if (x >= d200.WidthPx || y >= d200.HeightPx) return false;
+                int i = (y * d200.WidthPx + x) * 4;
+                return 0.114 * d200.Bgra[i] + 0.587 * d200.Bgra[i + 1] + 0.299 * d200.Bgra[i + 2] < 128;
+            }
+            bool NoNovo(int k) => k % W >= novo200.X0 && k % W < novo200.X1 && k / W >= novo200.Y0 && k / W < novo200.Y1;
+            var alheias = new HashSet<int>(scan.Mascaras.Where(kv => kv.Key != "Pereira").SelectMany(kv => kv.Value));
+            int sobra = scan.Mascaras["Pereira"].Count(k => !alheias.Contains(k) && !NoNovo(k) && Escuro(k));
+            Assert.True(sobra == 0, $"sobrou tinta de 'Pereira': {sobra} px");
+            Assert.True(Escuros(r1.RenderPage(0, 2.0), (int)(novoPt.LeftPt * 2), (int)((page.HeightPt - novoPt.TopPt) * 2),
+                (int)Math.Ceiling(novoPt.RightPt * 2), (int)Math.Ceiling((page.HeightPt - novoPt.BottomPt) * 2)) > 30, "texto novo não aparece");
+        }
+        finally { vm.Dispose(); }
     }
 
     private static void RunOnSta(Action scenario)

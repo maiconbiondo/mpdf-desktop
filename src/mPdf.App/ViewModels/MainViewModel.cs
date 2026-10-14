@@ -313,6 +313,11 @@ public sealed partial class MainViewModel : ObservableObject
         if (_dialogs.PickPdfToOpen() is { } path) await OpenPath(path);
     }
 
+    /// Prefixo das falhas de ABRIR (revisão I1). Era do canal de erro inteiro (`UiPrompts.MainNotifyError`), que também
+    /// recebe erros de salvar/juntar/dividir e de TODO DocumentViewModel — um Salvar travado aparecia como "Não foi
+    /// possível abrir o arquivo: Não foi possível salvar…". Agora o canal é cru e só a abertura prefixa.
+    internal const string PrefixoErroAbrir = "Não foi possível abrir o arquivo:\n";
+
     public async Task OpenPath(string path)
     {
         // Task 2 (Plano 7): caminho de IMAGEM (.jpg/.jpeg/.png) -> ramo SEPARADO, antes de qualquer
@@ -377,6 +382,24 @@ public sealed partial class MainViewModel : ObservableObject
             // seguro pro caso comum (documento sem assinatura nenhuma, a maioria), mesmo espírito
             // condicional de `formFields` abaixo (só lê quando `!isXfaForm`). Mesma rede de descarte que
             // os 2 checks acima — uma falha aqui não pode vazar a sessão já aberta.
+            // Revisão F2 (A7): Linhas/Setas gravadas até a v2.16 não têm /AP e o PDFium não as desenha — ficavam
+            // invisíveis. O motor dá o /AP que falta (reescreve o documento: /AP + margem no /Rect da Linha; `ReadAnnotations`
+            // igual) e a
+            // sessão troca os bytes SEM marcar modificado e SEM desfazer (a normalização não é uma edição do
+            // usuário). Fora da UI thread, como os checks acima. Documento assinado: o motor devolve null (reescrever
+            // invalidaria a assinatura) — nem chama. Senha de proprietário/PDF que o iText não reescreve: abre como antes.
+            if (!isSigned)
+            {
+                byte[]? regenerado = null;
+                try { regenerado = await Task.Run(() => _editor.RegenerarAparenciasAusentes(session.Snapshot)); }
+                catch (PdfEditingException) { /* PdfPasswordRequiredException inclusive: abre sem regenerar */ }
+                if (regenerado is not null)
+                {
+                    try { session.ReplaceSnapshotSilently(regenerado); }
+                    catch (ArgumentException) { /* bytes que o PDFium recusa: abre o original */ }
+                }
+            }
+
             var signedFillPermission = FillPermission.NotSigned;
             if (isSigned)
             {
@@ -428,7 +451,7 @@ public sealed partial class MainViewModel : ObservableObject
                 OnPropertyChanged(nameof(RecentFiles));
             }
             catch (Exception) { /* limpeza de recentes é best-effort; a notificação abaixo é o que importa */ }
-            _notifyError(ex.Message);
+            _notifyError(PrefixoErroAbrir + ex.Message);
         }
         finally
         {
@@ -518,7 +541,7 @@ public sealed partial class MainViewModel : ObservableObject
         {
             byte[] pdfBytes;
             try { pdfBytes = await ImageImport.ConvertToPdfAsync(imagePath, _editor); }
-            catch (Exception ex) { _notifyError(ex.Message); return; }
+            catch (Exception ex) { _notifyError(PrefixoErroAbrir + ex.Message); return; }
 
             string tempPath = BuildConvertedImageTempPath(imagePath);
             try
@@ -526,7 +549,7 @@ public sealed partial class MainViewModel : ObservableObject
                 Directory.CreateDirectory(Path.GetDirectoryName(tempPath)!);
                 await Task.Run(() => DocumentSession.WriteNewFile(tempPath, pdfBytes));
             }
-            catch (Exception ex) { _notifyError(ex.Message); return; }
+            catch (Exception ex) { _notifyError(PrefixoErroAbrir + ex.Message); return; }
 
             await OpenPath(tempPath);
             // Task 2 (Plano 7): NeedsSaveAs setado DEPOIS que a aba já existe (não antes) — se a
@@ -619,8 +642,14 @@ public sealed partial class MainViewModel : ObservableObject
     // agora é reutilizada tanto pra fechar UMA aba (CloseDocument) quanto pra fechar a JANELA inteira
     // (ConfirmCloseAll, abaixo) — um único lugar decide "posso descartar este documento sem perder
     // dados do usuário?", nunca duas implementações que podem divergir com o tempo.
+    internal const string AguardeOperacaoNotice = "Aguarde: uma operação no arquivo ainda está em andamento.";
+
     private bool TryResolveDirtyDocument(DocumentViewModel doc)
     {
+        // Revisão M2/N2: Salvar ou QUALQUER operação com o pino armado (consertar, edição, OCR…) em voo -> NÃO fecha
+        // (aba nem janela). Perguntar levaria a um 2º `TrySaveSync` gravando o MESMO arquivo junto com a operação, e
+        // ao Dispose da sessão com o pino armado. Fechar volta a funcionar quando a operação termina.
+        if (doc.IsSaving || doc.Session.IsEditInFlight) { _notifyInfo(AguardeOperacaoNotice); return false; }
         if (!doc.IsDirty) return true;
         var choice = _confirmClose.Confirm(doc.Session.FileName);
         switch (choice)
@@ -720,7 +749,13 @@ public sealed partial class MainViewModel : ObservableObject
         if (doc.NeedsSaveAs) { await SaveAs(); return; }
         if (!doc.Session.TryBeginEdit()) return; // outra edição em voo — mesmo funil de qualquer outro comando
         doc.IsSaving = true;
-        try { await Task.Run(() => doc.Session.Save(_config)); }
+        // Só o DISCO no pool; o estado da sessão (IsDirty/FilePath + eventos -> SaveCommand.NotifyCanExecuteChanged ->
+        // Button da MainWindow) volta na UI thread — ver doc XML de `DocumentSession.GravarSalvar`.
+        try
+        {
+            var gravacao = await Task.Run(() => doc.Session.GravarSalvar(_config));
+            doc.Session.ConcluirGravacao(gravacao);
+        }
         catch (Exception ex) { _notifyError(ex.Message); }
         finally
         {
@@ -753,7 +788,8 @@ public sealed partial class MainViewModel : ObservableObject
         doc.IsSaving = true;
         try
         {
-            await Task.Run(() => doc.Session.SaveAs(path));
+            var gravacao = await Task.Run(() => doc.Session.GravarSalvarComo(path)); // disco no pool
+            doc.Session.ConcluirGravacao(gravacao); // estado + eventos na UI thread (ver `Save` acima)
             // Task 2 (Plano 7): documento ganhou um "lar" definitivo — o próximo Save já pode gravar
             // direto ali (sem desviar de novo pra este mesmo diálogo). No-op para um documento que já
             // não era temp-backed (o caso comum, `NeedsSaveAs` já false).
@@ -781,6 +817,20 @@ public sealed partial class MainViewModel : ObservableObject
     // do campo), não `PdfEditorFactory.Create()` inline como `EditCopy` — só pra Merge/Split, adicionado
     // na revisão pós-Task 4 pra permitir testar o catch de `ArgumentException` abaixo sem o motor real.
 
+    /// Revisão N3: lê UM arquivo escolhido no Juntar com a falha em pt-BR NOMEANDO o arquivo (a mensagem crua do .NET
+    /// sai em inglês e não diz qual dos vários falhou). Imagem: `ImageImport` já nomeia nas falhas de conversão.
+    private byte[] LerParaJuntar(string path)
+    {
+        string nome = Path.GetFileName(path);
+        try { return ImageImport.ReadOrConvertToPdf(path, _editor); }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        { throw new IOException($"'{nome}' não foi encontrado.", ex); }
+        catch (UnauthorizedAccessException ex)
+        { throw new IOException($"Sem permissão para ler '{nome}'.", ex); }
+        catch (IOException ex)
+        { throw new IOException($"'{nome}' não pôde ser lido — pode estar aberto em outro programa.", ex); }
+    }
+
     /// ➕ Juntar (brief) — SEMPRE habilitado (nenhum `CanExecute`), mesmo sem documento algum aberto.
     /// Diálogo devolve os caminhos JÁ na ordem de concatenação; lê os bytes (convertendo cada entrada de
     /// IMAGEM pra PDF na fronteira — Task 2, Plano 7, `ImageImport.ReadOrConvertToPdf`, ANTES de
@@ -803,8 +853,8 @@ public sealed partial class MainViewModel : ObservableObject
         if (_mergeDialog.PickFilesToMerge() is not { Count: > 0 } paths) return;
 
         byte[][] inputs;
-        try { inputs = await Task.Run(() => paths.Select(p => ImageImport.ReadOrConvertToPdf(p, _editor)).ToArray()); }
-        catch (Exception ex) { _notifyError(ex.Message); return; }
+        try { inputs = await Task.Run(() => paths.Select(LerParaJuntar).ToArray()); }
+        catch (Exception ex) { _notifyError(PrefixoErroAbrir + ex.Message); return; }
 
         // C1 (revisão final pré-merge): `MergeDocuments` agora tira o widget visual de assinatura de
         // CADA fonte antes de mesclar (ver `PdfEditor.MergeDocuments`) — o arquivo unificado NUNCA fica
@@ -946,7 +996,7 @@ public sealed partial class MainViewModel : ObservableObject
             isPathOpen: IsPathOpenInAnyTab,
             pickFiles: PickPdfFilesForBatch);
         // A costura de rotação do carimbo do lote agora vive inteiramente no motor
-        // (PadesSigningEngine/StampRotation, que lê o /Rotate sozinho) — o BatchSignViewModel não precisa
+        // (PadesSigningEngine + DisplayFrame, que lê o /Rotate sozinho) — o BatchSignViewModel não precisa
         // mais de IPdfEditor.
         _batchSignDialog.ShowBatchSignDialog(vm);
     }

@@ -27,7 +27,7 @@ public enum ExportImageRange { CurrentPage, AllPages }
 /// (`PdfDocumentRenderer.RenderPage`) — nunca `mPdf.Editing`, nunca `Session.TryBeginEdit`/`ApplyEdit`.
 /// Por isso funciona em documento ASSINADO sem gate nenhum (mesma política uniforme de leitura já
 /// registrada em `mPdf.Editing.Contract` para `ExtractPages`/`MergeDocuments`/`SplitByRanges`/
-/// `GetPageRotations`/`ReadOutline`/`ReadFormFields`: nenhuma dessas opera MUTANDO o PDF assinado, só
+/// `ReadOutline`/`ReadFormFields`: nenhuma dessas opera MUTANDO o PDF assinado, só
 /// LEEM ele para produzir algo novo — exportar como imagem é a MESMA classe de operação, um passo
 /// adiante: produz pixels, não bytes de PDF).
 ///

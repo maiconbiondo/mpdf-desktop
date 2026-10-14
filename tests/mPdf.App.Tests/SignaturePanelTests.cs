@@ -3,6 +3,7 @@ using mPdf.App.Services;
 using mPdf.App.ViewModels;
 using mPdf.Documents;
 using mPdf.Editing;
+using mPdf.Rendering;
 using mPdf.Signing;
 using Xunit;
 
@@ -346,8 +347,7 @@ public class SignaturePanelTests : IDisposable
         var (doc, editor, engine, _) = BuildForSignaturesPanel();
         using var d = doc;
         editor.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        editor.PageRotationsResult = new[] { 0 };
-        await d.RefreshAnnotationsByPageAsync(); // popula _pageRotations (cache compartilhado)
+        await d.RefreshAnnotationsByPageAsync();
         var rect = new PdfQuad(10, 10, 30, 30);
         engine.ReadSignaturesResult = new[] { BuildInfo(stampPageIndex: 0, stampRect: rect) };
         await d.RefreshSignaturesAsync();
@@ -359,29 +359,55 @@ public class SignaturePanelTests : IDisposable
         Assert.Equal(expected, d.Pages[0].SignatureStampHighlightRect);
     }
 
-    [Fact] // GATE DE ROTAÇÃO (revisão da Task 4): mesma política de SelectFormField — navegação é livre
-    // de coordenadas (ScrollToPageRequested só usa o ÍNDICE, nunca um retângulo), então continua
-    // disparando numa página girada; só o DESTAQUE fica suprimido (o retângulo ficaria geometricamente
-    // errado). Sem aviso nenhum — mesmo silêncio do painel de Campos, não uma recusa.
-    public async Task SelectSignature_PageRotated_NavigatesAndSelectsButSuppressesHighlight()
+    [Theory] // páginas giradas (Fix F3/T1 — antes um teste com fake que só setava uma rotação que ninguém lia): motor
+    // REAL assina uma página com /Rotate de verdade; o StampRect lido (frame EXIBIDO) vira o destaque com a altura
+    // EXIBIDA da página e cai sobre os pixels que o carimbo pintou.
+    [InlineData(0)]
+    [InlineData(90)]
+    [InlineData(180)]
+    [InlineData(270)]
+    public async Task SelectSignature_PaginaGirada_DestaqueCaiSobreOCarimbo(int rot)
     {
-        var (doc, editor, engine, errors) = BuildForSignaturesPanel();
-        using var d = doc;
-        editor.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        editor.PageRotationsResult = new[] { 90 };
-        await d.RefreshAnnotationsByPageAsync();
-        var rect = new PdfQuad(10, 10, 30, 30);
-        engine.ReadSignaturesResult = new[] { BuildInfo(stampPageIndex: 0, stampRect: rect) };
+        byte[] pdf = File.ReadAllBytes(Path.Combine(Fixtures.Root, "fixture-a4.pdf"));
+        if (rot != 0) pdf = PdfEditorFactory.Create().RotatePages(pdf, new[] { 0 }, rot);
+        var pedido = new PdfQuad(100, 100, 350, 250); // exibido; cabe em retrato e paisagem
+        using var cert = SignCommandTests.CreateEphemeralRsaCertificate("Fulano de Tal");
+        byte[] assinado = SigningEngineFactory.Create().Sign(
+            new SignRequest(pdf, cert, "Aprovação", "Local", new VisibleStampSpec(0, pedido), null));
+        var path = Path.Combine(Path.GetTempPath(), $"mpdf-sigpanel-girada-{Guid.NewGuid():N}.pdf");
+        File.WriteAllBytes(path, assinado);
+        _tempFilesToDelete.Add(path);
+
+        using var d = new DocumentViewModel(DocumentSession.Open(path), editor: PdfEditorFactory.Create(),
+            config: new AppConfig(NewConfigDir()), notifyError: _ => { }, notifyInfo: _ => { });
         await d.RefreshSignaturesAsync();
-        int? scrolledTo = null;
-        d.ScrollToPageRequested += idx => scrolledTo = idx;
+        d.SelectSignatureCommand.Execute(Assert.Single(d.SignatureRows));
 
-        d.SelectSignatureCommand.Execute(d.SignatureRows[0]);
+        var page = d.Pages[0];
+        using var r0 = new PdfDocumentRenderer(pdf);
+        using var r1 = new PdfDocumentRenderer(assinado);
+        Assert.Equal(r0.GetPageSize(0).HeightPt, page.HeightPt, 0); // altura EXIBIDA (trocada em 90/270)
+        Assert.True(page.HasSignatureStampHighlight);
+        var esperado = PageViewModel.PointRectToScreenRect(pedido.LeftPt, pedido.BottomPt, pedido.RightPt, pedido.TopPt, d.Zoom, page.HeightPt);
+        var real = page.SignatureStampHighlightRect;
+        Assert.True(Math.Abs(esperado.Left - real.Left) <= 1 && Math.Abs(esperado.Top - real.Top) <= 1
+            && Math.Abs(esperado.Right - real.Right) <= 1 && Math.Abs(esperado.Bottom - real.Bottom) <= 1,
+            $"rot {rot}: destaque {real}, esperado {esperado}");
 
-        Assert.Equal(0, scrolledTo); // navegação disparou -- livre de coordenadas
-        Assert.Same(d.SignatureRows[0], d.SelectedSignature); // seleção normal, sem recusa
-        Assert.False(d.Pages[0].HasSignatureStampHighlight); // só o destaque fica suprimido
-        Assert.Empty(errors); // sem aviso -- mesmo silêncio do painel de Campos
+        // oráculo de render: os pixels que o carimbo mudou ficam dentro do destaque (folga de 4 px)
+        double s = d.Zoom * PageViewModel.PtToPx;
+        var (pa, pb) = (r0.RenderPage(0, s), r1.RenderPage(0, s));
+        int minx = int.MaxValue, miny = int.MaxValue, maxx = -1, maxy = -1;
+        for (int y = 0; y < pa.HeightPx; y++)
+            for (int x = 0; x < pa.WidthPx; x++)
+            {
+                int i = (y * pa.WidthPx + x) * 4;
+                if (pa.Bgra[i] == pb.Bgra[i] && pa.Bgra[i + 1] == pb.Bgra[i + 1] && pa.Bgra[i + 2] == pb.Bgra[i + 2]) continue;
+                minx = Math.Min(minx, x); maxx = Math.Max(maxx, x); miny = Math.Min(miny, y); maxy = Math.Max(maxy, y);
+            }
+        Assert.True(maxx >= 0, $"rot {rot}: o carimbo não apareceu");
+        Assert.True(minx >= real.Left - 4 && maxx <= real.Right + 4 && miny >= real.Top - 4 && maxy <= real.Bottom + 4,
+            $"rot {rot}: tinta do carimbo ({minx},{miny})-({maxx},{maxy}) fora do destaque {real}");
     }
 
     [Fact] // assinatura SEM carimbo (StampPageIndex null, o caso mais comum na prática — "aprovação
@@ -410,7 +436,6 @@ public class SignaturePanelTests : IDisposable
         var (doc, editor, engine, _) = BuildForSignaturesPanel();
         using var d = doc;
         editor.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        editor.PageRotationsResult = new[] { 0 };
         await d.RefreshAnnotationsByPageAsync();
         engine.ReadSignaturesResult = new[] { BuildInfo(stampPageIndex: 0, stampRect: new PdfQuad(10, 10, 30, 30)) };
         await d.RefreshSignaturesAsync();
@@ -430,7 +455,6 @@ public class SignaturePanelTests : IDisposable
         var (doc, editor, engine, _) = BuildForSignaturesPanel();
         using var d = doc;
         editor.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        editor.PageRotationsResult = new[] { 0 };
         await d.RefreshAnnotationsByPageAsync();
         engine.ReadSignaturesResult = new[] { BuildInfo(stampPageIndex: 0, stampRect: new PdfQuad(10, 10, 30, 30)) };
         await d.RefreshSignaturesAsync();

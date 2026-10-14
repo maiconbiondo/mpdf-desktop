@@ -36,6 +36,90 @@ public class DocumentSessionTests
         Assert.Equal(1, s.Renderer.PageCount);  // sessão segue funcional (memória)
     }
 
+    // Fix "O thread de chamada não pode acessar este objeto" (Salvar, v2.16): a fase de DISCO roda no pool no App e
+    // NÃO pode disparar evento nenhum (os assinantes chegam a DispatcherObjects); a fase de ESTADO dispara.
+    [Fact]
+    public async Task GravarSalvar_NaoDisparaEventos_ConcluirGravacaoMarcaSalvo()
+    {
+        var tmp = CopyFixtureToTemp();
+        var cfg = new AppConfig(Path.Combine(Path.GetTempPath(), $"mpdf-cfg-{Guid.NewGuid():N}"));
+        try
+        {
+            using var s = DocumentSession.Open(tmp);
+            var novo = File.ReadAllBytes(Path.Combine(Fixtures.Root, "fixture-30p.pdf"));
+            s.Apply(novo);
+            int dirty = 0, caminho = 0;
+            s.DirtyChanged += (_, _) => dirty++;
+            s.FilePathChanged += (_, _) => caminho++;
+
+            var g = await Task.Run(() => s.GravarSalvar(cfg));
+            Assert.Equal(novo, File.ReadAllBytes(tmp));
+            Assert.True(File.Exists(tmp + ".bak"));
+            Assert.Equal(0, dirty);
+            Assert.True(s.IsDirty);
+
+            s.ConcluirGravacao(g);
+            Assert.False(s.IsDirty);
+            Assert.Equal(1, dirty);
+            Assert.Equal(0, caminho);
+
+            // 2ª gravação desta sessão não regrava o .bak (o _hasSavedOnce é marcado na conclusão)
+            File.WriteAllText(tmp + ".bak", "marcador");
+            s.Apply(File.ReadAllBytes(Path.Combine(Fixtures.Root, "fixture-a4.pdf")));
+            s.ConcluirGravacao(s.GravarSalvar(cfg));
+            Assert.Equal("marcador", File.ReadAllText(tmp + ".bak"));
+        }
+        finally { File.Delete(tmp); File.Delete(tmp + ".bak"); }
+    }
+
+    [Fact] // revisão M1: snapshot mudou entre gravar e concluir -> o disco tem A, a sessão B: continua SUJA
+    public void ConcluirGravacao_SnapshotMudouDepoisDeGravar_ContinuaSujo()
+    {
+        var tmp = CopyFixtureToTemp();
+        var cfg = new AppConfig(Path.Combine(Path.GetTempPath(), $"mpdf-cfg-{Guid.NewGuid():N}"));
+        try
+        {
+            using var s = DocumentSession.Open(tmp);
+            var a = File.ReadAllBytes(Path.Combine(Fixtures.Root, "fixture-30p.pdf"));
+            s.Apply(a);
+            var g = s.GravarSalvar(cfg);
+            s.Apply(File.ReadAllBytes(Path.Combine(Fixtures.Root, "fixture-sumario.pdf")));
+            s.ConcluirGravacao(g);
+            Assert.True(s.IsDirty, "o disco tem A e a sessão B — não pode marcar salvo");
+            Assert.Equal(a, File.ReadAllBytes(tmp));
+            s.Apply(a); // voltar exatamente ao gravado = limpo (o hash salvo é o de A)
+            Assert.False(s.IsDirty);
+        }
+        finally { File.Delete(tmp); File.Delete(tmp + ".bak"); }
+    }
+
+    [Fact]
+    public async Task GravarSalvarComo_NaoTrocaCaminhoNemDispara_AteConcluir()
+    {
+        var tmp = CopyFixtureToTemp();
+        var destino = Path.Combine(Path.GetTempPath(), $"mpdf-test-dest-{Guid.NewGuid():N}.pdf");
+        try
+        {
+            using var s = DocumentSession.Open(tmp);
+            s.Apply(File.ReadAllBytes(Path.Combine(Fixtures.Root, "fixture-30p.pdf")));
+            int dirty = 0, caminho = 0;
+            s.DirtyChanged += (_, _) => dirty++;
+            s.FilePathChanged += (_, _) => caminho++;
+
+            var g = await Task.Run(() => s.GravarSalvarComo(destino));
+            Assert.True(File.Exists(destino));
+            Assert.Equal(destino, g.Caminho);
+            Assert.Equal(tmp, s.FilePath);
+            Assert.Equal((0, 0), (dirty, caminho));
+
+            s.ConcluirGravacao(g);
+            Assert.Equal(destino, s.FilePath);
+            Assert.False(s.IsDirty);
+            Assert.Equal((1, 1), (dirty, caminho));
+        }
+        finally { File.Delete(tmp); File.Delete(destino); }
+    }
+
     [Fact] // arquivo inexistente -> FileNotFoundException
     public void Open_MissingFile_Throws()
     {

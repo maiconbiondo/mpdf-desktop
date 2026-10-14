@@ -767,8 +767,8 @@ public partial class PdfViewerControl : UserControl
             _annotationDragMoved = true;
 
             double dx = pos.X - _annotationDragAnchorPx.X, dy = pos.Y - _annotationDragAnchorPx.Y;
-            var baseRect = PageViewModel.PointRectToScreenRect(
-                dragged.LeftPt, dragged.BottomPt, dragged.RightPt, dragged.TopPt, doc.Zoom, dragPage.HeightPt);
+            // Revisão F2 (A4): mesma base do overlay de seleção (tamanho mínimo p/ Linha/Seta reta).
+            var baseRect = PageViewModel.AnnotationOverlayRect(dragged, doc.Zoom, dragPage.HeightPt);
             dragPage.AnnotationSelectionRect = new Rect(baseRect.X + dx, baseRect.Y + dy, baseRect.Width, baseRect.Height);
             return;
         }

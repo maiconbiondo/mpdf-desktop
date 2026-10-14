@@ -85,19 +85,18 @@ public sealed partial class PageViewModel : ObservableObject
     // ---- Task 2 (Plano 3c): destaque do CAMPO DE FORMULÁRIO selecionado (painel Campos) -------------
     // Exemplar EXATO de HasAnnotationSelection/AnnotationSelectionRect acima — mesma mecânica (1 Rect +
     // 1 bool, reconvertido em ApplyZoom), só que a fonte é DocumentViewModel.SelectedFormField
-    // (FormFieldData.WidgetRect) em vez de AnnotationData. GATE DE ROTAÇÃO (brief): decidido em
-    // DocumentViewModel.UpdateFormFieldHighlightOverlay — este VM só expõe pro binding, mesma separação
-    // de responsabilidade do overlay de anotação.
+    // (FormFieldData.WidgetRect) em vez de AnnotationData. Páginas giradas (Task 5): sem gate — WidgetRect
+    // vem no frame EXIBIDO e é convertido com HeightPt (altura EXIBIDA, PDFium); DocumentViewModel.
+    // UpdateFormFieldHighlightOverlay escreve, este VM só expõe pro binding.
     [ObservableProperty] private bool hasFormFieldHighlight;
     [ObservableProperty] private Rect formFieldHighlightRect;
 
     // ---- Task 4 (Plano 4): destaque do CARIMBO DE ASSINATURA selecionado (painel Assinaturas) -------
     // Exemplar EXATO de HasFormFieldHighlight/FormFieldHighlightRect acima — mesma mecânica (1 Rect + 1
     // bool, reconvertido em ApplyZoom), só que a fonte é DocumentViewModel.SelectedSignature
-    // (SignatureInfo.StampRect) em vez de FormFieldData.WidgetRect. GATE DE ROTAÇÃO: decidido em
-    // DocumentViewModel.SelectSignature ANTES de chegar até aqui (recusa a ação inteira numa página
-    // girada, diferente do gate silencioso-só-no-destaque de FormField) — este VM só expõe pro binding,
-    // mesma separação de responsabilidade do overlay de campo/anotação.
+    // (SignatureInfo.StampRect) em vez de FormFieldData.WidgetRect. Páginas giradas (Task 5): sem gate —
+    // StampRect vem no frame EXIBIDO; DocumentViewModel.UpdateSignatureHighlightOverlay escreve, este VM
+    // só expõe pro binding, mesma separação de responsabilidade do overlay de campo/anotação.
     [ObservableProperty] private bool hasSignatureStampHighlight;
     [ObservableProperty] private Rect signatureStampHighlightRect;
 
@@ -214,7 +213,7 @@ public sealed partial class PageViewModel : ObservableObject
         // já em pontos por natureza (LeftPt/BottomPt/RightPt/TopPt). Só reconverte se ESTA página for a
         // dona da seleção corrente (mesmo guard de "há algo pra reconverter" dos 3 acima).
         if (HasAnnotationSelection && _owner.SelectedAnnotation is { } sel && sel.PageIndex == Index)
-            AnnotationSelectionRect = PointRectToScreenRect(sel.LeftPt, sel.BottomPt, sel.RightPt, sel.TopPt, zoom, HeightPt);
+            AnnotationSelectionRect = AnnotationOverlayRect(sel, zoom, HeightPt); // Revisão F2 (A4): tamanho mínimo
 
         // Task 2 (Plano 3c): mesma reconversão, fonte = DocumentViewModel.SelectedFormField.WidgetRect.
         if (HasFormFieldHighlight && _owner.SelectedFormField is { Data.WidgetRect: { } rect } selField && selField.Data.PageIndex == Index)
@@ -253,6 +252,21 @@ public sealed partial class PageViewModel : ObservableObject
     {
         double scale = zoom * PtToPx;
         return new Rect(leftPt * scale, (pageHeightPt - topPt) * scale, (rightPt - leftPt) * scale, (topPt - bottomPt) * scale);
+    }
+
+    /// Revisão F2 (A4): lado mínimo (px de tela) do overlay de seleção de anotação. Uma Linha/Seta reta tem bbox de
+    /// altura (ou largura) ZERO — selecionável pela folga de 5 px do hit-test, mas o `Rectangle` WPF de altura 0 não
+    /// desenha nada (seleção e arrasto "às cegas").
+    internal const double MinAnnotationOverlayPx = 6.0;
+
+    /// Overlay (px de tela) da anotação `a`: `PointRectToScreenRect` do bbox, crescido em torno do CENTRO até
+    /// `MinAnnotationOverlayPx` no eixo que for menor que isso (qualquer kind; na prática Linha/Seta/Tinta retas).
+    /// Fonte única do overlay de seleção (DocumentViewModel), da reconversão no zoom e da prévia do arrasto.
+    internal static Rect AnnotationOverlayRect(mPdf.Editing.AnnotationData a, double zoom, double pageHeightPt)
+    {
+        var r = PointRectToScreenRect(a.LeftPt, a.BottomPt, a.RightPt, a.TopPt, zoom, pageHeightPt);
+        double w = Math.Max(r.Width, MinAnnotationOverlayPx), h = Math.Max(r.Height, MinAnnotationOverlayPx);
+        return new Rect(r.X - (w - r.Width) / 2, r.Y - (h - r.Height) / 2, w, h);
     }
 
     public void OnRealized()

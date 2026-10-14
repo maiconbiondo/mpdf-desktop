@@ -15,11 +15,16 @@ namespace mPdf.App.Tests;
 /// abre a fixture COMPARTILHADA direto (sem cópia temporária): diferente de `SignCommandTests`, nada
 /// aqui grava em disco (`Session.CommitSigned`) — mesmo precedente de
 /// `DocumentViewModelTests.BuildForAnnotations`.
-public class StampBoxPlacementTests
+public class StampBoxPlacementTests : IDisposable
 {
-    private static (DocumentViewModel doc, List<string> errors) BuildForStampBox()
+    // Pastas de AppConfig criadas pelos builders desta classe — apagadas no Dispose (uma instância por teste).
+    private readonly PastasDeConfigTemporarias _cfgs = new();
+
+    public void Dispose() => _cfgs.Dispose();
+
+    private (DocumentViewModel doc, List<string> errors) BuildForStampBox()
     {
-        var configDir = Path.Combine(Path.GetTempPath(), $"mpdf-stampbox-cfg-{Guid.NewGuid():N}");
+        var configDir = _cfgs.Nova("stampbox");
         var errors = new List<string>();
         var doc = new DocumentViewModel(
             DocumentSession.Open(Path.Combine(Fixtures.Root, "fixture-a4.pdf")),

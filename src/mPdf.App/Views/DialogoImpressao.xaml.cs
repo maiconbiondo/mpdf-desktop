@@ -63,6 +63,10 @@ public partial class DialogoImpressao : Window
         catch { _totalPaginas = 1; }
         TxtAte.Text = _totalPaginas.ToString();
 
+        // "Salvar PDF" (imposição) não leva anotações/campos/assinaturas — avisa quando o documento tem algum.
+        // Revisão F2 (A9): calculado FORA da UI thread (parse do documento inteiro); o painel aparece quando chega.
+        AvisoImposicaoCarregado = CarregarAvisoImposicaoAsync(_session.Snapshot);
+
         InicializarImpressora();
 
         _debounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
@@ -78,6 +82,20 @@ public partial class DialogoImpressao : Window
             _ajustarZoom = true;
             AplicarZoom();
         }));
+    }
+
+    /// Revisão F2 (A9): conclusão da checagem do aviso da imposição (testes esperam por ela; a UI não precisa).
+    internal Task AvisoImposicaoCarregado { get; }
+
+    private async Task CarregarAvisoImposicaoAsync(byte[] pdf)
+    {
+        string? aviso = await ImposicaoAviso.ParaAsync(PdfEditorFactory.Create(), pdf).ConfigureAwait(false);
+        if (aviso is null) return;
+        await Dispatcher.InvokeAsync(() =>
+        {
+            TxtAvisoImposicao.Text = aviso;
+            PainelAvisoImposicao.Visibility = Visibility.Visible;
+        });
     }
 
     private void Fechar_Click(object sender, RoutedEventArgs e) => Close();

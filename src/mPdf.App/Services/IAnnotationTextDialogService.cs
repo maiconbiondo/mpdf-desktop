@@ -17,9 +17,9 @@ public interface IAnnotationTextDialogService
 
     /// Caixa de texto (FreeText) COM formatação — o diálogo mostra tamanho, negrito/itálico, cor e
     /// família de fonte. `initialText` pré-preenche o texto (edição). Devolve texto + formatação, ou
-    /// `null` se cancelou. (A formatação inicial começa nos defaults; ler a formatação de uma caixa
-    /// existente de volta fica pra depois.)
-    AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null);
+    /// `null` se cancelou. `initialFormat` (edição): a formatação ATUAL da caixa, lida de volta do PDF
+    /// (`ReadAnnotations` devolve tamanho/negrito/itálico/família/cor do FreeText); `null` = defaults (criação).
+    AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null, AnnotationTextResult? initialFormat = null);
 }
 
 /// Implementação de produção — abre `Views.AnnotationTextDialog` (janela modal simples, pt-BR) como
@@ -36,9 +36,9 @@ public sealed class AnnotationTextDialogService : IAnnotationTextDialogService
         return dialog.ShowDialog() == true ? dialog.ResultText : null;
     }
 
-    public AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null)
+    public AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null, AnnotationTextResult? initialFormat = null)
     {
-        var dialog = new Views.AnnotationTextDialog(title, initialText, showFormatting: true)
+        var dialog = new Views.AnnotationTextDialog(title, initialText, showFormatting: true, initialFormat)
         {
             Owner = System.Windows.Application.Current?.MainWindow,
         };

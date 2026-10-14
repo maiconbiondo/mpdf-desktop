@@ -108,6 +108,7 @@ public class ImageBoxTests : IDisposable
             await d.BeginImageBoxPlacementAsync(0, new PdfPoint(100, 100));
             d.UpdateDrawTo(new PdfPoint(300, 300)); // 200x200 -> imagem 200x200 centralizada
             await d.EndStampDrawAsync();
+            await d.RefreshAnnotationsByPageAsync(); // Revisão F2 (A6): o cache de anotações é renovado pelo refresh normal do Applied (despachado na UI, que este teste não bombeia) — não mais pelo set-diff dentro do pino.
 
             var placed = Assert.Single(d.AnnotationsByPage[0], a => a.Kind == AnnotationKind.ImageStamp);
             double larguraAntes = placed.RightPt - placed.LeftPt;
@@ -139,6 +140,7 @@ public class ImageBoxTests : IDisposable
             await d.BeginImageBoxPlacementAsync(0, new PdfPoint(100, 100));
             d.UpdateDrawTo(new PdfPoint(300, 300)); // imagem 200x200 -> rect (100,100)-(300,300)
             await d.EndStampDrawAsync(); // coloca a imagem (Adobe)
+            await d.RefreshAnnotationsByPageAsync(); // Revisão F2 (A6): o cache de anotações é renovado pelo refresh normal do Applied (despachado na UI, que este teste não bombeia) — não mais pelo set-diff dentro do pino.
 
             var placed = Assert.Single(d.AnnotationsByPage[0], a => a.Kind == AnnotationKind.ImageStamp);
             d.SelectedAnnotation = placed;
@@ -165,9 +167,11 @@ public class ImageBoxTests : IDisposable
             await d.BeginImageBoxPlacementAsync(0, new PdfPoint(100, 100));
             d.UpdateDrawTo(new PdfPoint(300, 300));
             await d.EndStampDrawAsync(); // coloca a imagem (Adobe)
+            await d.RefreshAnnotationsByPageAsync(); // Revisão F2 (A6): o cache de anotações é renovado pelo refresh normal do Applied (despachado na UI, que este teste não bombeia) — não mais pelo set-diff dentro do pino.
 
             d.SelectedAnnotation = d.AnnotationsByPage[0].Single(a => a.Kind == AnnotationKind.ImageStamp);
             await d.MoveSelectedAnnotationAsync(250, 400);
+            await d.RefreshAnnotationsByPageAsync();
             // re-seleciona (a View faz isso por hit-test no proximo mouse-down)
             d.SelectedAnnotation = d.AnnotationsByPage[0].Single(a => a.Kind == AnnotationKind.ImageStamp);
             await d.MoveSelectedAnnotationAsync(150, 500);

@@ -86,6 +86,7 @@ public sealed partial class BatchSignViewModel : ObservableObject
     private readonly Func<string, bool> _isPathOpen;
     private readonly Func<IReadOnlyList<string>?> _pickFiles;
     private readonly ISigningEngine _signingEngine;
+    private readonly IPdfEditor _editor;
 
     private bool _cancelRequested;
 
@@ -122,12 +123,14 @@ public sealed partial class BatchSignViewModel : ObservableObject
         IReadOnlyList<SigningCertificateInfo> certificates,
         Func<string, bool> isPathOpen,
         Func<IReadOnlyList<string>?> pickFiles,
-        ISigningEngine? signingEngine = null)
+        ISigningEngine? signingEngine = null,
+        IPdfEditor? editor = null)
     {
         Certificates = certificates.Select(c => new BatchCertificateItem(c)).ToList();
         _isPathOpen = isPathOpen;
         _pickFiles = pickFiles;
         _signingEngine = signingEngine ?? SigningEngineFactory.Create();
+        _editor = editor ?? PdfEditorFactory.Create();
 
         Files.CollectionChanged += (_, _) => StartCommand.NotifyCanExecuteChanged();
     }
@@ -238,6 +241,13 @@ public sealed partial class BatchSignViewModel : ObservableObject
         try
         {
             byte[] pdf = File.ReadAllBytes(path);
+            // Revisão F2 (A7): Linhas/Setas gravadas até a v2.16 sem /AP (invisíveis no mPDF) ganham o /AP ANTES de
+            // assinar — depois de assinado o documento não pode mais ser reescrito e elas ficariam invisíveis para
+            // sempre. O reparo REESCREVE o arquivo (o /Rect de cada Linha ganha a margem da espessura/ponta, além do
+            // /AP; `ReadAnnotations` continua igual); documento já assinado = null (nada muda). Falha (senha de
+            // proprietário, PDF que o iText não reescreve) = assina os bytes originais, como antes.
+            try { pdf = _editor.RegenerarAparenciasAusentes(pdf) ?? pdf; }
+            catch (PdfEditingException) { }
 
             VisibleStampSpec? stamp = null;
             if (placeStamp)
@@ -264,7 +274,7 @@ public sealed partial class BatchSignViewModel : ObservableObject
                     // Frame de EXIBIÇÃO (PDFium já aplica /Rotate aqui — é o que o usuário VÊ). O
                     // retângulo do carimbo é montado NESTE frame; a costura de rotação (converter pro
                     // frame de conteúdo que o iText grava) é responsabilidade ÚNICA do motor
-                    // (PadesSigningEngine/StampRotation) — o motor lê o /Rotate da página sozinho.
+                    // (PadesSigningEngine + DisplayFrame) — o motor lê o /Rotate da página sozinho.
                     var displaySize = renderer.GetPageSize(lastPageIndex);
                     stamp = new VisibleStampSpec(lastPageIndex,
                         ComputeStampRect(displaySize.WidthPt, displaySize.HeightPt));
@@ -281,6 +291,12 @@ public sealed partial class BatchSignViewModel : ObservableObject
 
             return new BatchSignFileResult(fileName, Succeeded: true, $"{fileName} assinado");
         }
+        catch (PdfStampRotationException ex)
+        {
+            // Revisão F2 (A8): a mensagem do motor manda "colocar o carimbo em outra página", o que o lote não deixa
+            // (carimba sempre a última) — orientação própria do lote.
+            return new BatchSignFileResult(fileName, Succeeded: false, RotacaoForaDoPadraoNoLote(fileName, ex.RotationDegrees));
+        }
         catch (Exception ex)
         {
             return new BatchSignFileResult(fileName, Succeeded: false, $"{fileName}: {ex.Message}");
@@ -292,13 +308,18 @@ public sealed partial class BatchSignViewModel : ObservableObject
     /// — ver doc XML lá pro ACHADO CRÍTICO da revisão e a álgebra completa). `internal` (não `private`):
     /// testável direto (`BatchSignViewModelTests`), sem precisar renderizar pixels pra cada asserção de
     /// número — a prova PIXEL-A-PIXEL (oráculo mandatório da revisão) vive à parte, na integração.
+    /// Revisão F2 (A8) — recusa do carimbo do LOTE numa última página com /Rotate fora de múltiplo de 90 (pt-BR).
+    internal static string RotacaoForaDoPadraoNoLote(string fileName, int rotacao) =>
+        $"{fileName}: a última página tem uma rotação fora do padrão ({rotacao}°) e o carimbo visível sairia torto. " +
+        "Assine este arquivo com \"Sem carimbo\" (assinatura invisível) ou abra-o no mPDF e assine com o carimbo em outra página.";
+
     internal static PdfQuad ComputeStampRect(double displayWidthPt, double displayHeightPt)
     {
         double x = displayWidthPt - StampMarginPt - StampWidthPt;
         double y = StampMarginPt;
         var v = ClampToPage(x, y, StampWidthPt, StampHeightPt, displayWidthPt, displayHeightPt);
         // Retângulo no frame de EXIBIÇÃO — o motor converte pro frame de conteúdo conforme o /Rotate da
-        // página (StampRotation.DisplayedToMediaBox). Aqui NÃO há mais transformação de rotação.
+        // página (`DisplayFrame.ToUser`, em PadesSigningEngine). Aqui NÃO há mais transformação de rotação.
         return new PdfQuad(v.left, v.bottom, v.right, v.top);
     }
 

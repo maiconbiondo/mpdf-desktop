@@ -1267,12 +1267,27 @@ public class PdfEditorTests
         // spec PDF não pede que ele altere o `/Rect` de nenhuma anotação; o retângulo da anotação
         // continua no sistema de coordenadas ORIGINAL (não-rotacionado) da página, e é o LEITOR de
         // PDF (aqui, PDFium via PdfDocumentRenderer abaixo) que aplica a rotação a TODO o conteúdo —
-        // texto e anotações igualmente — na hora de desenhar. Por isso o Rect lido de volta é
-        // IDÊNTICO ao de antes da rotação (confirmado por este teste, não uma hipótese não-verificada).
-        Assert.Equal(annotationBefore.LeftPt, annotationAfter.LeftPt, 0.01);
-        Assert.Equal(annotationBefore.BottomPt, annotationAfter.BottomPt, 0.01);
-        Assert.Equal(annotationBefore.RightPt, annotationAfter.RightPt, 0.01);
-        Assert.Equal(annotationBefore.TopPt, annotationAfter.TopPt, 0.01);
+        // texto e anotações igualmente — na hora de desenhar.
+        // PÁGINAS GIRADAS (Task 2, 2026-10-13): o /Rect gravado continua IDÊNTICO (a anotação gira junto com
+        // a página), mas o CONTRATO agora é o frame EXIBIDO também em página girada — então ReadAnnotations
+        // devolve o mesmo retângulo levado ao frame girado (onde o leitor o vê depois de girar).
+        DisplayFrame f0, f1;
+        using (var d0 = new iText.Kernel.Pdf.PdfDocument(new iText.Kernel.Pdf.PdfReader(new MemoryStream(Fixtures.Anotada()))))
+            f0 = PageFrame.Frame(d0.GetPage(1));
+        using (var d1 = new iText.Kernel.Pdf.PdfDocument(new iText.Kernel.Pdf.PdfReader(new MemoryStream(result))))
+        {
+            f1 = PageFrame.Frame(d1.GetPage(1));
+            var rawRect = d1.GetPage(1).GetAnnotations().Single().GetRectangle().ToRectangle();
+            var userBefore = f0.ToUser(new PdfQuad(annotationBefore.LeftPt, annotationBefore.BottomPt, annotationBefore.RightPt, annotationBefore.TopPt));
+            Assert.Equal(userBefore.LeftPt, rawRect.GetLeft(), 0.01);   // /Rect intocado pelo giro
+            Assert.Equal(userBefore.TopPt, rawRect.GetTop(), 0.01);
+        }
+        Assert.Equal(90, f1.Rotation);
+        var expected = f1.ToDisplayed(f0.ToUser(new PdfQuad(annotationBefore.LeftPt, annotationBefore.BottomPt, annotationBefore.RightPt, annotationBefore.TopPt)));
+        Assert.Equal(expected.LeftPt, annotationAfter.LeftPt, 0.01);
+        Assert.Equal(expected.BottomPt, annotationAfter.BottomPt, 0.01);
+        Assert.Equal(expected.RightPt, annotationAfter.RightPt, 0.01);
+        Assert.Equal(expected.TopPt, annotationAfter.TopPt, 0.01);
 
         // página renderizada não pode ficar em branco (motor INDEPENDENTE do iText — Docnet/PDFium —
         // mesmo padrão de AddAnnotation_ImageStamp_RendersNonBlankInStampRegion acima).
@@ -1285,40 +1300,20 @@ public class PdfEditorTests
             $"página rotacionada renderizou praticamente em branco ({nonWhite} pixels não-brancos)");
     }
 
-    // --- GetPageRotations (Task 3, Plano 3b — costura de rotação, requisito de 1ª ordem) --------------
-
-    [Fact]
-    public void GetPageRotations_UnrotatedDocument_AllZero()
-    {
-        var rotations = Editor.GetPageRotations(Fixtures.ThirtyPages());
-        Assert.Equal(30, rotations.Count);
-        Assert.All(rotations, r => Assert.Equal(0, r));
-    }
+    // --- Rotação por página (antes `GetPageRotations`, removido do contrato; lida por RotacaoDasPaginas) --------
 
     [Fact] // lê de volta exatamente o que RotatePages escreveu — só a página girada muda, as demais
     // continuam 0 (prova que a leitura é POR PÁGINA, não um valor global).
-    public void GetPageRotations_ReflectsRotatePages()
+    public void RotatePages_OnlyTheRequestedPageRotates()
     {
         var rotated = Editor.RotatePages(Fixtures.ThirtyPages(), new[] { 2 }, 90);
 
-        var rotations = Editor.GetPageRotations(rotated);
+        var rotations = RotacaoDasPaginas.Ler(rotated);
 
         Assert.Equal(90, rotations[2]);
         Assert.Equal(0, rotations[0]);
         Assert.Equal(0, rotations[1]);
         Assert.Equal(0, rotations[3]);
-    }
-
-    [Fact] // 2 rotações de 90° somam 180° na MESMA página (mesmo invariante aditivo-com-normalização
-    // já provado por RotatePages_DoubleRotate90Plus90_Is180) — GetPageRotations reflete a SOMA, não a
-    // última chamada isolada.
-    public void GetPageRotations_DoubleRotate90Plus90_Is180()
-    {
-        var rotated = Editor.RotatePages(
-            Editor.RotatePages(Fixtures.ThirtyPages(), new[] { 0 }, 90),
-            new[] { 0 }, 90);
-
-        Assert.Equal(180, Editor.GetPageRotations(rotated)[0]);
     }
 
     // --- ReadOutline (Task 5, Plano 3b — sumário/bookmarks) ---------------------------------------
@@ -1398,7 +1393,7 @@ public class PdfEditorTests
     }
 
     [Fact] // ReadOutline é leitura pura, SEM gate de assinatura (mesma política de ReadAnnotations/
-    // HasSignatures/GetPageRotations) — lê fixture-carimbo (documento assinado) sem lançar.
+    // HasSignatures) — lê fixture-carimbo (documento assinado) sem lançar.
     public void ReadOutline_FixtureCarimbo_SignedDocument_ReadsWithoutThrowing()
     {
         var outline = Editor.ReadOutline(Fixtures.Carimbo());
@@ -2351,7 +2346,7 @@ public class PdfEditorTests
     // pixels de fixture-foto, só que pré-rotacionados 90° CCW + EXIF Orientation=6. iText NÃO honra
     // o tag (achado empírico, ver task-1-report.md) — ImageToPdf precisa ler o tag e corrigir via
     // MATRIZ DE TRANSFORMAÇÃO no desenho da imagem (revisão pré-merge, I3 — NUNCA via
-    // `PdfPage.SetRotation`, ver comentário de `GetPageRotations` abaixo), senão a foto abre DE LADO.
+    // `PdfPage.SetRotation`, ver o teste de /Rotate 0 abaixo), senão a foto abre DE LADO.
     // Cores de canto esperadas são as MESMAS de ImageToPdf_Jpeg_RendersMatchingKnownCornerColors
     // (TL=vermelho etc.) — provando que abriu EM PÉ.
     public void ImageToPdf_JpegWithExifOrientation6_OpensUpright()
@@ -2367,7 +2362,7 @@ public class PdfEditorTests
 
     [Fact] // dimensões finais (pós-correção) devem bater com a foto "em pé" (150x112.5pt), NÃO com os
     // pixels crus armazenados (que seriam 112.5x150pt, de lado) — a página NASCE direto no tamanho
-    // corrigido (ver GetPageRotations abaixo: /Rotate nunca é usado pra chegar nesse tamanho).
+    // corrigido (ver o teste de /Rotate 0 abaixo: /Rotate nunca é usado pra chegar nesse tamanho).
     public void ImageToPdf_JpegWithExifOrientation6_FinalPageSizeMatchesUprightOrientation()
     {
         var pdf = Editor.ImageToPdf(Fixtures.FotoExif90());
@@ -2379,16 +2374,14 @@ public class PdfEditorTests
 
     [Fact] // I3 CRÍTICO da revisão pré-merge (task-1-report.md "## Fix" — "o /Rotate collision", o
     // "flagship-breaking landmine"): a versão anterior corrigia o EXIF via `PdfPage.SetRotation`, o
-    // que fazia CADA foto de celular convertida com Orientation != 1 nascer como "página girada" — e
-    // o gate de rotação do Plano 3b (`GetPageRotations`/interação de anotação, ver Contract.cs)
-    // DESLIGA anotação/assinatura em qualquer página girada. Isso quebraria o fluxo real "foto do
-    // WhatsApp -> assinar". Fix por construção (matriz de transformação, não `/Rotate`): asserção
-    // LOAD-BEARING — `GetPageRotations(convertido)[0] == 0` MESMO numa foto com EXIF Orientation=6,
-    // provando que o gate do Plano 3b continua ABERTO (anotação/assinatura permanecem possíveis).
-    public void ImageToPdf_JpegWithExifOrientation6_PageRotationStaysZero_AnnotationGateStaysOpen()
+    // que fazia CADA foto de celular convertida com Orientation != 1 nascer como "página girada" (na
+    // época o gate de rotação do Plano 3b desligava anotação/assinatura nela; o gate saiu no plano
+    // páginas-giradas). Fix por construção (matriz de transformação, não `/Rotate`), mantido: a foto
+    // vira uma página COMUM — `/Rotate` 0 no convertido MESMO numa foto com EXIF Orientation=6.
+    public void ImageToPdf_JpegWithExifOrientation6_PageRotationStaysZero()
     {
         var pdf = Editor.ImageToPdf(Fixtures.FotoExif90());
-        var rotations = Editor.GetPageRotations(pdf);
+        var rotations = RotacaoDasPaginas.Ler(pdf);
         Assert.Equal(0, Assert.Single(rotations));
     }
 
@@ -2724,7 +2717,7 @@ public class PdfEditorTests
 
         // orientação "defaulted" (parse falhou) -> SEM rotação nenhuma, página no tamanho cru (10x10px
         // @ fallback 96dpi = 7.5x7.5pt), /Rotate sempre 0 (I3 acima).
-        Assert.Equal(0, Assert.Single(Editor.GetPageRotations(pdf)));
+        Assert.Equal(0, Assert.Single(RotacaoDasPaginas.Ler(pdf)));
         using var r = new PdfDocumentRenderer(pdf);
         var size = r.GetPageSize(0);
         Assert.Equal(7.5, size.WidthPt, 0.5);
@@ -2743,7 +2736,7 @@ public class PdfEditorTests
         var jpeg = BuildJpegWithCustomExifPayload(exifPayload);
         var pdf = Editor.ImageToPdf(jpeg); // nunca lança — payload EXIF malformado não é "imagem corrompida"
         Assert.NotEmpty(pdf);
-        Assert.Equal(0, Assert.Single(Editor.GetPageRotations(pdf)));
+        Assert.Equal(0, Assert.Single(RotacaoDasPaginas.Ler(pdf)));
     }
 
     // --- Minor (revisão pré-merge): imagem 1x1 degenerada ---

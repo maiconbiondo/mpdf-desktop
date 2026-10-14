@@ -24,9 +24,10 @@ namespace mPdf.App.Services;
 /// negativo — ver `UiPromptsGuardTests`).
 ///
 /// COBERTURA (mapeada grep-a-grep nos 3 ctors, revisão final 3b): `NotifyInfo` é o ÚNICO default
-/// idêntico nos 3 VMs (mesmo texto/ícone) — unificado numa propriedade só. `NotifyError` tem DOIS textos
-/// DIFERENTES (`MainViewModel` prefixa "Não foi possível abrir o arquivo:", `DocumentViewModel` não) —
-/// mantidos SEPARADOS (`MainNotifyError`/`DocumentNotifyError`) pra preservar o texto exato de cada um.
+/// idêntico nos 3 VMs (mesmo texto/ícone) — unificado numa propriedade só. `NotifyError`: dois canais
+/// (`MainNotifyError`/`DocumentNotifyError`), hoje com o MESMO texto cru. Revisão I1: o prefixo "Não foi possível
+/// abrir o arquivo:" saiu do canal (pegava erros de salvar e de todo documento, que recebem o canal do
+/// MainViewModel) e foi para a falha de abertura em `MainViewModel` (`PrefixoErroAbrir`). Seguem separados como seams.
 /// `OrganizerViewModel` não tem default de NotifyError (parâmetro obrigatório, sem risco de hang aqui).
 /// Os 4 diálogos de serviço (arquivo/anotação/juntar/dividir) + o prompt de fechar sujo
 /// (`IConfirmCloseService`, default usado pelos overloads de conveniência de 2/3 argumentos de
@@ -46,8 +47,8 @@ public static class UiPrompts
     /// <summary>Canal de SUCESSO (ícone Information) — texto idêntico nos 3 VMs.</summary>
     public static Action<string> NotifyInfo { get; set; } = ProductionNotifyInfo;
 
-    /// <summary>Canal de ERRO de <see cref="mPdf.App.ViewModels.MainViewModel"/> — prefixa "Não foi
-    /// possível abrir o arquivo:" (usado no contexto de abrir arquivo/recente).</summary>
+    /// <summary>Canal de ERRO de <see cref="mPdf.App.ViewModels.MainViewModel"/> (e dos documentos que ele abre) —
+    /// mensagem crua; a falha de ABRIR já chega prefixada pelo VM (`MainViewModel.PrefixoErroAbrir`).</summary>
     public static Action<string> MainNotifyError { get; set; } = ProductionMainNotifyError;
 
     /// <summary>Canal de ERRO de <see cref="mPdf.App.ViewModels.DocumentViewModel"/> — mensagem crua,
@@ -158,8 +159,7 @@ public static class UiPrompts
         MessageBox.Show(message, "mPDF", MessageBoxButton.OK, MessageBoxImage.Information);
 
     private static void ProductionMainNotifyError(string message) =>
-        MessageBox.Show($"Não foi possível abrir o arquivo:\n{message}",
-            "mPDF", MessageBoxButton.OK, MessageBoxImage.Warning);
+        MessageBox.Show(message, "mPDF", MessageBoxButton.OK, MessageBoxImage.Warning);
 
     private static void ProductionDocumentNotifyError(string message) =>
         MessageBox.Show(message, "mPDF", MessageBoxButton.OK, MessageBoxImage.Warning);

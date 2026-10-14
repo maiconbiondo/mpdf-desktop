@@ -19,12 +19,17 @@ namespace mPdf.App.Tests;
 /// `ImageBytes` de volta (ver doc XML de `AnnotationData.ImageBytes`), então nem Copy nem Replicar
 /// conseguiriam reconstruir a appearance de um carimbo — os testes de `CanExecute` abaixo fecham essa
 /// exclusão nos 3 comandos novos.
-public class Task4CopiarColarReplicarTests
+public class Task4CopiarColarReplicarTests : IDisposable
 {
-    private static (DocumentViewModel doc, FakePdfEditor fake, List<string> errors) BuildForClipboard(
+    // Pastas de AppConfig criadas pelos builders desta classe — apagadas no Dispose (uma instância por teste).
+    private readonly PastasDeConfigTemporarias _cfgs = new();
+
+    public void Dispose() => _cfgs.Dispose();
+
+    private (DocumentViewModel doc, FakePdfEditor fake, List<string> errors) BuildForClipboard(
         string autor = "Autor de Teste")
     {
-        var configDir = Path.Combine(Path.GetTempPath(), $"mpdf-clip-cfg-{Guid.NewGuid():N}");
+        var configDir = _cfgs.Nova("clip");
         var fake = new FakePdfEditor();
         var errors = new List<string>();
         var doc = new DocumentViewModel(
@@ -255,28 +260,6 @@ public class Task4CopiarColarReplicarTests
 
         Assert.Equal(0, fake.AddAnnotationCallCount);
         Assert.Contains(errors, e => e.Contains("Não há próxima página"));
-    }
-
-    [Fact] // destino GIRADA -> aviso pt-BR distinto + no-op (nenhum AddAnnotation) — MESMO gate/costura de
-    // rotação (IsPageRotated) dos outros pontos de escrita, mas aqui checando a página DESTINO, não a de
-    // origem.
-    public async Task ReplicarProximaPaginaCommand_RotatedDestination_NotifiesAndDoesNotAdd()
-    {
-        var (doc, fake, errors) = BuildForClipboard();
-        using var d = doc;
-        var rotations = new int[30];
-        rotations[1] = 90; // página DESTINO (0+1) girada — origem (0) continua reta
-        fake.PageRotationsResult = rotations;
-        var original = Rect("ret-1", 0, 10, 10, 60, 40);
-        fake.ReadAnnotationsResult = new[] { original };
-        await d.RefreshAnnotationsByPageAsync();
-        d.SelectAnnotationAt(0, 20, 20);
-        Assert.NotNull(d.SelectedAnnotation);
-
-        await d.ReplicarProximaPaginaCommand.ExecuteAsync(null);
-
-        Assert.Equal(0, fake.AddAnnotationCallCount);
-        Assert.Contains(errors, e => e.Contains("girada"));
     }
 
     [Fact]

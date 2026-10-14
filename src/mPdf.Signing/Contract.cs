@@ -14,7 +14,7 @@ public enum DocMdpLevel { None, FormsAndSignatures }
 
 /// Retângulo de carimbo visível, em pontos PDF, no frame EXIBIDO da página: relativo à origem da CropBox
 /// recortada pela MediaBox (fix/markup-cropbox — mesmo `PageFrame` de `AnnotationData`) e já girado por
-/// `/Rotate`, como o usuário o desenha (o motor converte para o `/Rect` via `StampRotation` + origem —
+/// `/Rotate`, como o usuário o desenha (o motor converte para o `/Rect` via `PageFrame.Frame(página).ToUser` —
 /// ver `PadesSigningEngine.ApplyVisibleStamp`). `PageIndex` 0-based, mesma convenção do resto do contrato.
 ///
 /// `ImageBytes` (Plano 21): quando NÃO-null, a APARÊNCIA do carimbo vira SÓ essa imagem (PNG/JPG —
@@ -54,10 +54,11 @@ public sealed record SignRequest(byte[] Pdf, X509Certificate2 Certificate, strin
 /// estiver instalada como confiável nesta máquina — dependência que este módulo não resolve nem tenta
 /// resolver (fora de escopo: instalar/confiar raízes é decisão do gerente de TI, não deste código).
 /// `StampPageIndex`/`StampRect` (Task 4, Plano 4): página (0-based) e retângulo (pontos PDF, frame
-/// NÃO-ROTACIONADO, relativo à origem da CropBox ∩ MediaBox — fix/markup-cropbox) do PRIMEIRO widget
-/// do campo de assinatura — mesma convenção de `FormFieldData.WidgetRect` (mPdf.Editing/Contract.cs:
-/// `/Rotate` é atributo de EXIBIÇÃO, nunca muda o `/Rect` gravado). ATENÇÃO: em página GIRADA difere de
-/// `VisibleStampSpec.Rect`, que está no frame exibido JÁ girado; em rot 0 os dois coincidem. Os DOIS ficam `null` juntos (nunca só um) quando a
+/// EXIBIDO — já girado por `/Rotate`, relativo à origem da CropBox ∩ MediaBox — fix/markup-cropbox) do
+/// PRIMEIRO widget do campo de assinatura — mesma convenção de `FormFieldData.WidgetRect` (mPdf.Editing/
+/// Contract.cs). Coincide com `VisibleStampSpec.Rect` em qualquer rotação (o `/Rect` gravado no PDF fica no
+/// espaço do usuário; a leitura o devolve ao frame exibido — `DisplayFrame`, plano páginas-giradas
+/// Task 3). Os DOIS ficam `null` juntos (nunca só um) quando a
 /// assinatura não tem carimbo visível (`SignRequest.Stamp == null` na hora de assinar — o caso mais
 /// comum na prática, "aprovação invisível") ou quando o widget tem um `/Rect` degenerado (largura ou
 /// altura não-positiva — mesmo critério de `PadesSigningEngine.ValidateStamp` do lado da ESCRITA).
@@ -170,6 +171,21 @@ public static class SigningEngineFactory
 public class PdfSigningException : Exception
 {
     public PdfSigningException(string message, Exception? inner = null) : base(message, inner) { }
+}
+
+/// Revisão F2 (A8): carimbo visível recusado porque a página do carimbo tem `/Rotate` fora de múltiplo de 90 (o
+/// iText desenharia o carimbo torto — revisão F1/E6). Tipada para o chamador dar a orientação certa: a assinatura
+/// única deixa o usuário escolher outra página (a `Message` diz isso); o LOTE carimba sempre a última página e
+/// troca a orientação (ver `BatchSignViewModel`). `PageIndex` 0-based; `RotationDegrees` = o /Rotate cru.
+public sealed class PdfStampRotationException : PdfSigningException
+{
+    public int PageIndex { get; }
+    public int RotationDegrees { get; }
+    public PdfStampRotationException(string message, int pageIndex, int rotationDegrees) : base(message)
+    {
+        PageIndex = pageIndex;
+        RotationDegrees = rotationDegrees;
+    }
 }
 
 /// PDF protegido por senha — caso mais específico e mais ACIONÁVEL de `PdfSigningException` (o

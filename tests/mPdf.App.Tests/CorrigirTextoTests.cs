@@ -9,8 +9,13 @@ using mPdf.Rendering;
 
 namespace mPdf.App.Tests;
 
-public class CorrigirTextoTests
+public class CorrigirTextoTests : IDisposable
 {
+    // Pastas de AppConfig criadas pelos builders desta classe — apagadas no Dispose (uma instância por teste).
+    private readonly PastasDeConfigTemporarias _cfgs = new();
+
+    public void Dispose() => _cfgs.Dispose();
+
     private static RenderedPage Solid(int w, int h, byte b, byte g, byte r)
     {
         var px = new byte[w * h * 4];
@@ -69,9 +74,9 @@ public class CorrigirTextoTests
     private static readonly TextStyleProbe ProbeSerif11Preto =
         new("Texto antigo", TextFontFamily.Serif, false, false, 11, 0xFF000000u, 700, 72, 200, false);
 
-    private static (DocumentViewModel doc, FakePdfEditor fake, FakeCorrigirTextoDialog dialog, List<string> errors) Build(string? pdfPath = null)
+    private (DocumentViewModel doc, FakePdfEditor fake, FakeCorrigirTextoDialog dialog, List<string> errors) Build(string? pdfPath = null)
     {
-        var configDir = Path.Combine(Path.GetTempPath(), $"mpdf-corrigir-cfg-{Guid.NewGuid():N}");
+        var configDir = _cfgs.Nova("corrigir");
         var fake = new FakePdfEditor { ProbeResult = ProbeSerif11Preto };
         var dialog = new FakeCorrigirTextoDialog();
         var errors = new List<string>();
@@ -287,17 +292,13 @@ public class CorrigirTextoTests
     public async Task CorrigirTexto_GlifoDeLarguraZero_AbreJanelaEAplica()
     {
         var dialog = new FakeCorrigirTextoDialog { Resultado = new CorrigirTextoResultado("X", TextFontFamily.Serif, false, false, 11, 0xFF000000u) };
-        var errors = new List<string>();
         // Página digital com "l - |" em Times 9 pt (relatório tipo Crystal), escrita pelo próprio editor numa
         // área em branco de fixture-sem-texto.
         var ed = PdfEditorFactory.Create();
         byte[] pdf = ed.ApplyTextCorrection(Fixtures.NoText(), new TextCorrection(0, new PdfQuad(400, 100, 401, 101),
             "Total l - | fim", TextFontFamily.Serif, false, false, 9, 0xFF000000u, 700, 100, 0xFFFFFFFFu));
-        string path = Path.Combine(Path.GetTempPath(), $"mpdf-corrigir-l-{Guid.NewGuid():N}.pdf");
-        File.WriteAllBytes(path, pdf);
-        var d = new DocumentViewModel(DocumentSession.Open(path),
-            editor: PdfEditorFactory.Create(), config: new AppConfig(Path.Combine(Path.GetTempPath(), $"mpdf-corrigir-cfg-{Guid.NewGuid():N}")),
-            notifyError: errors.Add, corrigirTextoDialog: dialog);
+        var vm = VmTemporaria.Abrir(pdf, "corrigir-l", autor: null, corrigirTextoDialog: dialog);
+        var (d, errors) = (vm.D, vm.Errors);
         try
         {
             var page = d.Pages[0];
@@ -320,7 +321,7 @@ public class CorrigirTextoTests
             Assert.Equal(1, dialog.Chamadas);
             Assert.True(d.Session.CanUndo); // a correção foi aplicada
         }
-        finally { d.Dispose(); File.Delete(path); }
+        finally { vm.Dispose(); }
     }
 
     [Fact] // revisão: a seleção é capturada ANTES do 1º await — mexer nela enquanto o probe roda não muda

@@ -10,7 +10,6 @@ using iText.Kernel.Exceptions;
 using iText.Kernel.Geom;
 using iText.Kernel.Pdf;
 using iText.Kernel.Pdf.Annot;
-using iText.Kernel.Pdf.Annot.DA;
 using iText.Kernel.Pdf.Canvas;
 using iText.Kernel.Pdf.Navigation;
 using iText.Kernel.Pdf.Xobject;
@@ -49,9 +48,11 @@ internal sealed class PdfEditor : IPdfEditor
             for (int pageNumber = 1; pageNumber <= doc.GetNumberOfPages(); pageNumber++)
             {
                 var page = doc.GetPage(pageNumber);
-                // Frame EXIBIDO (fix/markup-cropbox): o iText lê no espaço do usuário; o contrato devolve
-                // relativo à origem da CropBox (ver `PageFrame` e o doc de `AnnotationData`).
-                var (ox, oy) = PageFrame.DisplayedOrigin(page);
+                // Frame EXIBIDO (fix/markup-cropbox + páginas giradas): o iText lê no espaço do usuário; o
+                // contrato devolve no frame que o PDFium mostra — relativo à origem da CropBox e, em página
+                // com /Rotate, já girado (ver `PageFrame`/`DisplayFrame` e o doc de `AnnotationData`). Rotação
+                // 0 continua sendo só a translação de antes (bit a bit).
+                var frame = PageFrame.Frame(page);
                 foreach (var annot in page.GetAnnotations())
                 {
                     var subtype = annot.GetSubtype();
@@ -61,40 +62,85 @@ internal sealed class PdfEditor : IPdfEditor
                     // anotação de usuário): a lista resultante deve vir vazia.
                     if (PdfName.Widget.Equals(subtype)) continue;
 
-                    var kind = MapKind(subtype, annot);
+                    var kind = Opcional(() => MapKind(subtype, annot));
                     if (kind is null) continue; // subtype ainda não suportado pela leitura (ex.: Popup)
 
-                    var rect = annot.GetRectangle()?.ToRectangle();
-                    var name = annot.GetName();
-                    var title = annot.GetTitle(); // /T — autor em anotações de marcação (ver HIPÓTESE abaixo em AddAnnotation)
-                    var contents = annot.GetContents();
-                    var lineEndpoints = ReadLineEndpoints(annot); // Task 8 (Plano 3a) — só não-nulo p/ Line/Arrow
-
-                    result.Add(PageFrame.Translate(new AnnotationData
+                    // Revisão F1 (E1): UMA anotação malformada de outro programa não derruba a leitura do documento
+                    // inteiro (no App: nenhuma anotação selecionável, sem aviso). Cada dado OPCIONAL degrada só ele
+                    // (`Opcional` → null); geometria ilegível (/Rect) descarta só ESTA anotação (catch abaixo).
+                    AnnotationData data;
+                    try
                     {
-                        Id = name?.ToUnicodeString(),
-                        Kind = kind.Value,
-                        PageIndex = pageNumber - 1,
-                        LeftPt = rect?.GetLeft() ?? 0,
-                        BottomPt = rect?.GetBottom() ?? 0,
-                        RightPt = rect?.GetRight() ?? 0,
-                        TopPt = rect?.GetTop() ?? 0,
-                        ColorArgb = ReadColorArgb(annot),
-                        FillArgb = ReadFillArgb(annot),
-                        StrokeWidthPt = ReadStrokeWidth(annot),
-                        Content = contents?.ToUnicodeString(),
-                        Author = title?.ToUnicodeString(),
-                        Quads = ReadQuads(annot),
-                        InkStrokes = ReadInkStrokes(annot),
-                        LineStartPt = lineEndpoints?.Start,
-                        LineEndPt = lineEndpoints?.End,
-                    }, -ox, -oy));
+                        var rect = annot.GetRectangle()?.ToRectangle();
+                        var name = Opcional(() => annot.GetName());
+                        var title = Opcional(() => annot.GetTitle()); // /T — autor em anotações de marcação (ver HIPÓTESE abaixo em AddAnnotation)
+                        var contents = Opcional(() => annot.GetContents());
+                        var lineEndpoints = Opcional(() => ReadLineEndpoints(annot)); // Task 8 (Plano 3a) — só não-nulo p/ Line/Arrow
+
+                        data = new AnnotationData
+                        {
+                            Id = name?.ToUnicodeString(),
+                            Kind = kind.Value,
+                            PageIndex = pageNumber - 1,
+                            LeftPt = rect?.GetLeft() ?? 0,
+                            BottomPt = rect?.GetBottom() ?? 0,
+                            RightPt = rect?.GetRight() ?? 0,
+                            TopPt = rect?.GetTop() ?? 0,
+                            ColorArgb = Opcional(() => ReadColorArgb(annot)),
+                            FillArgb = Opcional(() => ReadFillArgb(annot)),
+                            StrokeWidthPt = Opcional(() => ReadStrokeWidth(annot)),
+                            Content = contents?.ToUnicodeString(),
+                            Author = title?.ToUnicodeString(),
+                            Quads = Opcional(() => ReadQuads(annot)),
+                            InkStrokes = Opcional(() => ReadInkStrokes(annot)),
+                            LineStartPt = lineEndpoints?.Start,
+                            LineEndPt = lineEndpoints?.End,
+                            ConteudoRotacaoGraus = Opcional(() => ReadContentRotation(annot, kind.Value, frame)),
+                        };
+                        // Fix round 2: formatação do FreeText (tamanho/negrito/itálico/família + cor do texto quando não
+                        // há /C) — sem isso todo lift do App reescrevia a caixa em 12 pt Helvetica normal.
+                        if (kind == AnnotationKind.FreeText) { var d0 = data; data = Opcional(() => WithFreeTextFormat(d0, annot)) ?? data; }
+                        data = data with { Flags = Opcional(() => annot.GetPdfObject().GetAsNumber(PdfName.F)?.IntValue()) };
+                        // Revisão F1 (E5): NoRotate em página girada — bbox = onde o PDFium desenha (ver `NoRotateDesenhado`).
+                        if (NoRotateGirada(data.Flags, data.Kind, frame))
+                        {
+                            var (l, b, r, tp) = NoRotateDesenhado(data.LeftPt, data.BottomPt, data.RightPt, data.TopPt, frame.Rotation);
+                            data = data with { LeftPt = l, BottomPt = b, RightPt = r, TopPt = tp };
+                        }
+                        // Line/Arrow: o bbox do contrato é o ENVELOPE dos 2 pontos (doc de `LineStartPt`). O /Rect
+                        // gravado é maior (margem para a espessura e a ponta da seta do /AP — ver
+                        // `SetLineAppearance`; outros programas fazem o mesmo), então o bbox vem do /L — senão o
+                        // lift (Read→Remove→Add) inflaria a caixa a cada movimento.
+                        if (kind is AnnotationKind.Line or AnnotationKind.Arrow && lineEndpoints is { } le)
+                            data = data with
+                            {
+                                LeftPt = Math.Min(le.Start.XPt, le.End.XPt), RightPt = Math.Max(le.Start.XPt, le.End.XPt),
+                                BottomPt = Math.Min(le.Start.YPt, le.End.YPt), TopPt = Math.Max(le.Start.YPt, le.End.YPt),
+                            };
+                        data = frame.ToDisplayed(data); // rotação 0 = `Translate(−origem)`, bit a bit como antes
+                    }
+                    catch (Exception ex) when (Malformado(ex)) { continue; } // geometria ilegível: só esta anotação some
+                    result.Add(data);
                 }
             }
             return result;
         }
         catch (BadPasswordException ex) { throw WrapPassword(ex); }
         catch (ITextException ex) { throw WrapGeneric(ex); }
+    }
+
+    /// Revisão F1 (E1): exceções que um dado MALFORMADO de outro programa provoca nas leituras do iText (elemento não
+    /// numérico num array, tipo errado, array curto). Usado só em leituras por anotação — nunca engole falha de I/O.
+    internal static bool Malformado(Exception ex) =>
+        ex is ITextException or InvalidCastException or NullReferenceException or IndexOutOfRangeException
+            or ArgumentException or FormatException or OverflowException;
+
+    /// Leitura OPCIONAL de uma anotação: malformada = `null` (perde só este dado, não a anotação nem o documento).
+    /// (`T` é o tipo ANULÁVEL lido — `uint?`, `PdfString?`... —, então `default` é `null`.)
+    private static T Opcional<T>(Func<T> ler)
+    {
+        try { return ler(); }
+        catch (Exception ex) when (Malformado(ex)) { return default!; }
     }
 
     public byte[] AddAnnotation(byte[] pdf, AnnotationData annotation)
@@ -133,6 +179,9 @@ internal sealed class PdfEditor : IPdfEditor
         // sem nenhuma aparência visual.
         if (annotation.Kind == AnnotationKind.ImageStamp && (annotation.ImageBytes is null || annotation.ImageBytes.Length == 0))
             throw new ArgumentException("ImageStamp requer ImageBytes (os bytes PNG/JPG do carimbo).", nameof(annotation));
+        // Orientação do conteúdo (revisão final das páginas giradas): só múltiplos de 90 — checagem de INPUT pura.
+        if (annotation.ConteudoRotacaoGraus is { } giro && giro % 90 != 0)
+            throw new ArgumentException("ConteudoRotacaoGraus deve ser múltiplo de 90.", nameof(annotation));
 
         using var input = new MemoryStream(pdf);
         using var output = new MemoryStream();
@@ -150,29 +199,100 @@ internal sealed class PdfEditor : IPdfEditor
                 // origem da CropBox (caixas do PDFium, cliques na página renderizada); o iText grava
                 // /Rect, /QuadPoints, /InkList e /L no espaço do usuário. ReadAnnotations faz o inverso,
                 // então o lift (Read -> Remove -> Add) do App não deriva. Ver `PageFrame`.
-                var (ox, oy) = PageFrame.DisplayedOrigin(page);
-                annotation = PageFrame.Translate(annotation, ox, oy);
-                var bbox = new Rectangle(
-                    (float)annotation.LeftPt, (float)annotation.BottomPt,
-                    (float)(annotation.RightPt - annotation.LeftPt),
-                    (float)(annotation.TopPt - annotation.BottomPt));
+                //
+                // PÁGINAS GIRADAS (2026-10-13): o contrato é o frame EXIBIDO também em /Rotate 90/180/270 —
+                // `DisplayFrame` converte toda a geometria (bbox, Quads, InkStrokes, Line*) para o usuário, e
+                // os kinds com conteúdo orientado (FreeText, ImageStamp, StickyNote, Underline/Strikeout) ganham
+                // um /AP desenhado EM PÉ no frame exibido (BBox nas dimensões exibidas + /Matrix de rotação —
+                // `UprightAppearance`). Rotação 0 segue EXATAMENTE o caminho de antes (pin tests:
+                // AnnotationRotationPinTests).
+                //
+                // CONTEÚDO GIRADO (revisão final): `ConteudoRotacaoGraus` = quanto o conteúdo orientado está girado na
+                // tela (a página foi girada DEPOIS de anotar). O /AP é desenhado no frame do CONTEÚDO (BBox com as
+                // dimensões em pé do conteúdo) e a /Matrix é a `ContentMatrix` da rotação `apRot = página − conteúdo`
+                // — o lift preserva a orientação vista em vez de "desvirar" o conteúdo numa caixa de proporção trocada.
+                var frame = PageFrame.Frame(page);
+                int contentRot = ContentRotation(annotation);
+                int apRot = PageFrame.NormalizeRotation(frame.Rotation - contentRot);
+                bool legacy = frame.Rotation == 0 && contentRot == 0; // o caminho de antes, bit a bit (pins)
+                // Revisão F1 (E5): NoRotate em página girada — o PDFium desenha o /AP em pé, girado em torno do canto
+                // sup.-esq. do /Rect. O bbox exibido é onde ele APARECE; o /Rect sai da conta inversa e o /AP é o
+                // "plano" (em pé no espaço do usuário, como na rotação 0): o próprio PDFium o põe em pé na tela.
+                bool noRotate = !legacy && NoRotateGirada(annotation.Flags, annotation.Kind, frame);
+                bool plano = legacy || noRotate; // /AP sem /Matrix de rotação (ou, na nota, sem /AP: o PDFium gera)
+                // CAIXA DE TEXTO que alarga para caber a linha (pedido explícito do App ao criar/editar — ver
+                // `AnnotationData.AjustarLarguraAoTexto`): no frame EXIBIDO, antes de qualquer conversão; o crescimento
+                // de ALTURA abaixo já mede na largura nova. Sem o pedido nada muda (pins de rotação 0 intactos).
+                if (annotation.Kind == AnnotationKind.FreeText && annotation.AjustarLarguraAoTexto && !noRotate)
+                    annotation = AlargarCaixaDeTexto(doc, annotation, contentRot, frame);
+                Rectangle bbox;
+                float[]? quadPoints = null; // null = BuildQuadPoints (rotação 0)
+                var displayed = annotation; // geometria no frame EXIBIDO (o contrato), antes da conversão
+                if (legacy)
+                {
+                    var (ox, oy) = PageFrame.DisplayedOrigin(page);
+                    annotation = PageFrame.Translate(annotation, ox, oy);
+                    bbox = new Rectangle(
+                        (float)annotation.LeftPt, (float)annotation.BottomPt,
+                        (float)(annotation.RightPt - annotation.LeftPt),
+                        (float)(annotation.TopPt - annotation.BottomPt));
 
-                // CAIXA DE TEXTO (feedback do usuário: "se o texto for muito grande fica cortado"):
-                // cresce a ALTURA da caixa pra caber o texto quebrado na largura dela. Cobre criar/editar/
-                // mover de uma só vez — todos passam por aqui. `bbox` é a MESMA variável usada tanto pro
-                // /Rect da anotação (BuildAnnotation abaixo) quanto pro /AP (bloco FreeText mais abaixo),
-                // então crescer aqui alinha os dois automaticamente.
-                if (annotation.Kind == AnnotationKind.FreeText)
-                    bbox = GrowFreeTextBoxToFitText(doc, annotation, bbox, (float)oy);
+                    // CAIXA DE TEXTO (feedback do usuário: "se o texto for muito grande fica cortado"):
+                    // cresce a ALTURA da caixa pra caber o texto quebrado na largura dela. Cobre criar/editar/
+                    // mover de uma só vez — todos passam por aqui. `bbox` é a MESMA variável usada tanto pro
+                    // /Rect da anotação (BuildAnnotation abaixo) quanto pro /AP (bloco FreeText mais abaixo),
+                    // então crescer aqui alinha os dois automaticamente.
+                    if (annotation.Kind == AnnotationKind.FreeText)
+                        bbox = GrowFreeTextBoxToFitText(doc, annotation, bbox, (float)oy);
+                }
+                else if (noRotate)
+                {
+                    var u = frame.ToUser(displayed); // onde aparece, no usuário
+                    var (l, b, r, tp) = NoRotateRect(u.LeftPt, u.BottomPt, u.RightPt, u.TopPt, frame.Rotation);
+                    annotation = u with { LeftPt = l, BottomPt = b, RightPt = r, TopPt = tp };
+                    bbox = new Rectangle((float)l, (float)b, (float)(r - l), (float)(tp - b));
+                    // Cresce para baixo DO CONTEÚDO (= na tela): o canto de giro (sup.-esq. do /Rect) não se move.
+                    if (annotation.Kind == AnnotationKind.FreeText)
+                        bbox = GrowFreeTextBoxToFitText(doc, annotation, bbox, float.MinValue);
+                }
+                else
+                {
+                    // A caixa de texto cresce PARA BAIXO NA TELA: o crescimento é calculado no frame exibido
+                    // (largura exibida; clamp no rodapé exibido, y=0) e só depois a caixa vai ao usuário.
+                    if (displayed.Kind == AnnotationKind.FreeText && contentRot != 0)
+                        displayed = GrowRotatedFreeText(doc, displayed, contentRot, frame);
+                    else if (displayed.Kind == AnnotationKind.FreeText)
+                    {
+                        var dBox = new Rectangle((float)displayed.LeftPt, (float)displayed.BottomPt,
+                            (float)(displayed.RightPt - displayed.LeftPt), (float)(displayed.TopPt - displayed.BottomPt));
+                        var grown = GrowFreeTextBoxToFitText(doc, displayed, dBox, 0f);
+                        if (!ReferenceEquals(grown, dBox)) displayed = displayed with { BottomPt = grown.GetBottom() };
+                    }
+                    annotation = frame.ToUser(displayed);
+                    bbox = new Rectangle(
+                        (float)annotation.LeftPt, (float)annotation.BottomPt,
+                        (float)(annotation.RightPt - annotation.LeftPt),
+                        (float)(annotation.TopPt - annotation.BottomPt));
+                    // /QuadPoints por VÉRTICE (TL,TR,BL,BR EXIBIDOS levados ao usuário) — nunca reconstruídos dos
+                    // retângulos normalizados de `ToUser` (que perdem a ordem dos vértices).
+                    // Texto girado na tela: na ordem do CONTEÚDO (TL→TR = direção do texto) — é dela que
+                    // `ReadAnnotations` relê a orientação.
+                    if (displayed.Kind is AnnotationKind.Highlight or AnnotationKind.Underline or AnnotationKind.Strikeout)
+                        quadPoints = MarkupQuads(displayed).SelectMany(q => frame.ContentQuadPointsToUser(q, contentRot)).ToArray();
+                }
 
-                var markup = BuildAnnotation(annotation, bbox);
+                var markup = BuildAnnotation(annotation, bbox, quadPoints);
 
                 // Sentinela de cor (pós-M7): null -> NENHUM /C escrito (não default para preto). Vale
                 // pros 5 kinds: Highlight/Underline/Strikeout usam /C como cor de marcação; StickyNote
                 // como cor do ÍCONE; FreeText também recebe aqui (round-trip via ReadColorArgb, que só
                 // enxerga /C) — a cor de TEXTO visível de FreeText é escrita separadamente no /DA
                 // abaixo, espelhando este mesmo valor (ver bloco FreeText mais abaixo).
-                if (annotation.ColorArgb is { } argb)
+                // Revisão F1 (E4): FreeText COM fundo (`FillArgb`) grava o fundo em /C — a semântica do Acrobat/PDFBox
+                // (/C = preenchimento da caixa; cor do texto só no /DA). Sem fundo, /C continua o espelho da cor do
+                // texto (o que o mPDF grava desde a v2.16 — caixas sem fundo saem byte a byte iguais).
+                uint? corC = annotation.Kind == AnnotationKind.FreeText && annotation.FillArgb is { } fundoC ? fundoC : annotation.ColorArgb;
+                if (corC is { } argb)
                 {
                     var (r, g, b) = ArgbToRgb(argb);
                     markup.SetColor(new DeviceRgb(r, g, b));
@@ -181,22 +301,20 @@ internal sealed class PdfEditor : IPdfEditor
                 // NM: honra o Id informado pelo chamador (pós-M11/I5 — estabilidade de Id entre
                 // chamadas, a Task 7/undo-redo depende disso); gera um GUID só se Id vier nulo.
                 markup.SetName(new PdfString(annotation.Id ?? Guid.NewGuid().ToString("N")));
+                // Revisão F1 (E5): /F de outro programa (lido em `Flags`) sobrevive ao lift; null = sem /F (como antes).
+                if (annotation.Flags is { } flags) markup.SetFlags(flags);
                 if (annotation.Content is not null) markup.SetContents(annotation.Content);
                 // /T é o campo de autor em anotações de marcação (PdfMarkupAnnotation herda
                 // GetTitle/SetTitle de PdfAnnotation) — confirmado via reflexão contra itext.kernel.dll
                 // 9.7.0 (não há GetAuthor/SetAuthor dedicado; /T É o autor por definição do spec PDF).
                 if (annotation.Author is not null) markup.SetTitle(new PdfString(annotation.Author));
 
-                // FreeText (Task 7, Plano 3a): `// HIPÓTESE:` do brief — "appearance/DefaultAppearance
-                // para o texto" — reconciliada por reflexão contra itext.kernel.dll 9.7.0:
-                // `PdfFreeTextAnnotation.SetDefaultAppearance(AnnotationDefaultAppearance)` monta o /DA
-                // ("/Helv 12 Tf 0 0 1 rg" etc.) a partir de `SetFont`/`SetFontSize`/`SetColor` —
-                // reprodução type-safe do string de /DA cru. Tamanho fixo 12pt (v1, brief). Cor: espelha
-                // o MESMO ColorArgb já escrito em /C acima (ausência de cor -> sem operador de cor no
-                // /DA, o leitor assume preto por default do spec, nunca escrevemos preto explícito à
-                // toa). PDFium (o motor de renderização deste app) sintetiza a aparência visual do texto
-                // a partir do /DA quando não há /AP explícito (comportamento padrão do spec para
-                // FreeText) — nenhuma appearance stream é construída manualmente aqui.
+                // FreeText: o /DA e o /AP são montados À MÃO aqui. /DA = `BuildFreeTextDa` (fonte padrão-14,
+                // tamanho, e SEMPRE uma cor `r g b rg` — preto explícito quando `ColorArgb` é null), não o
+                // `AnnotationDefaultAppearance` do iText (que grava "/Courier-Oblique" para Helvetica itálico —
+                // fix round 2). /AP /N = parágrafo do iText Layout num `PdfFormXObject` (`UprightAppearance` em
+                // página girada), porque o PDFium não sintetiza o texto do FreeText a partir do /DA. `ReadAnnotations`
+                // relê a formatação desse /DA e da fonte do /AP (`WithFreeTextFormat`).
                 if (markup is PdfFreeTextAnnotation freeText)
                 {
                     // Formatação (v2): tamanho/negrito/itálico/família — default 12pt, Helvetica, preto.
@@ -206,11 +324,12 @@ internal sealed class PdfEditor : IPdfEditor
                     var (fr, fg, fb) = annotation.ColorArgb is { } c ? ArgbToRgb(c) : ((int)0, (int)0, (int)0);
                     var textColor = new DeviceRgb(fr, fg, fb);
 
-                    // /DA (usado por editores de PDF ao re-editar a caixa) — fonte-base/tamanho/cor.
-                    freeText.SetDefaultAppearance(new AnnotationDefaultAppearance()
-                        .SetFont(DaFontFor(annotation.FontFamily, annotation.Bold, annotation.Italic))
-                        .SetFontSize(fontSize)
-                        .SetColor(textColor));
+                    // /DA (usado por editores de PDF ao re-editar a caixa, e por `ReadAnnotations` como reserva da
+                    // formatação) — fonte-base/tamanho/cor. Fix round 2: escrito à mão com o MESMO nome padrão-14 do
+                    // /AP (`StandardFontNameFor`): o `AnnotationDefaultAppearance` do iText 9.7 grava
+                    // "/Courier-Oblique" para Helvetica itálico (medido) — a formatação lida de volta viraria Courier.
+                    freeText.GetPdfObject().Put(PdfName.DA, new PdfString(BuildFreeTextDa(
+                        StandardFontNameFor(annotation.FontFamily, annotation.Bold, annotation.Italic), fontSize, fr, fg, fb)));
 
                     // /AP /N (RENDERIZAÇÃO): sem uma appearance stream explícita, o PDFium (motor deste
                     // app) NÃO sintetiza o texto do FreeText a partir do /DA — a caixa saía VAZIA na tela
@@ -220,10 +339,20 @@ internal sealed class PdfEditor : IPdfEditor
                     // PdfDocument comum, nunca valida PDF/A, então fonte não-embutida é OK aqui).
                     var pdfFont = PdfFontFactory.CreateFont(
                         StandardFontNameFor(annotation.FontFamily, annotation.Bold, annotation.Italic));
-                    var textAppearance = new PdfFormXObject(bbox);
+                    // Página girada: o texto é posto no frame EXIBIDO (BBox nas dimensões exibidas) e a /Matrix
+                    // o gira junto com a página — sai em pé para o leitor (sonda "FreeText V2").
+                    var textAppearance = plano ? new PdfFormXObject(bbox) : UprightAppearance(apRot, bbox);
                     using (var layout = new iText.Layout.Canvas(textAppearance, doc))
                     {
-                        layout.Add(new iText.Layout.Element.Paragraph(annotation.Content ?? string.Empty)
+                        // Revisão F1 (E4): fundo da caixa (FreeText de outro programa com /C, ou caixa com fundo) —
+                        // a BBox inteira, ANTES do texto. Sem `FillArgb` nada é escrito (caixas do mPDF intocadas).
+                        if (annotation.FillArgb is { } fundo)
+                        {
+                            var (br, bg, bb) = ArgbToRgb(fundo);
+                            layout.GetPdfCanvas().SaveState().SetFillColor(new DeviceRgb(br, bg, bb))
+                                .Rectangle(textAppearance.GetBBox().ToRectangle()).Fill().RestoreState();
+                        }
+                        layout.Add(new iText.Layout.Element.Paragraph(TextoDaCaixa(annotation.Content))
                             .SetFont(pdfFont)
                             .SetFontSize(fontSize)
                             .SetFontColor(textColor)
@@ -250,10 +379,48 @@ internal sealed class PdfEditor : IPdfEditor
                 if (markup is PdfStampAnnotation stamp)
                 {
                     var imageData = ImageDataFactory.Create(annotation.ImageBytes!);
-                    var appearance = new PdfFormXObject(bbox);
-                    new PdfCanvas(appearance, doc).AddImageFittedIntoRectangle(imageData, bbox, false);
-                    stamp.SetNormalAppearance(appearance.GetPdfObject());
+                    if (plano)
+                    {
+                        var appearance = new PdfFormXObject(bbox);
+                        new PdfCanvas(appearance, doc).AddImageFittedIntoRectangle(imageData, bbox, false);
+                        stamp.SetNormalAppearance(appearance.GetPdfObject());
+                    }
+                    else
+                    {
+                        // Página girada: imagem posta no frame EXIBIDO + /Matrix de rotação = em pé (sonda "img V2").
+                        var appearance = UprightAppearance(apRot, bbox);
+                        new PdfCanvas(appearance, doc).AddImageFittedIntoRectangle(imageData, appearance.GetBBox().ToRectangle(), false);
+                        stamp.SetNormalAppearance(appearance.GetPdfObject());
+                    }
                 }
+
+                // StickyNote em página girada: sem /AP o PDFium desenha o ícone no espaço do usuário (gira junto
+                // com a página). Damos o MESMO desenho de balão do PDFium, posto em pé no frame exibido. Rotação
+                // 0 continua sem /AP (o PDFium gera — pin tests).
+                if (!plano && markup is PdfTextAnnotation note)
+                {
+                    var appearance = UprightAppearance(apRot, bbox);
+                    DrawNoteIcon(new PdfCanvas(appearance, doc), appearance.GetBBox().ToRectangle());
+                    note.SetNormalAppearance(appearance.GetPdfObject());
+                }
+
+                // Underline/Strikeout em página girada: o PDFium gera o /AP a partir do bbox NO ESPAÇO DO USUÁRIO
+                // (traço na borda "de baixo" do usuário = um risco vertical ao lado da palavra, com qualquer ordem
+                // de vértices — sonda `ul_norm_r90`). Damos o /AP: o traço do PDFium (1 pt; base+1 / meio de cada
+                // quad) desenhado no frame exibido. Rotação 0 continua sem /AP (pin tests).
+                if (!legacy && displayed.Kind is AnnotationKind.Underline or AnnotationKind.Strikeout)
+                {
+                    var appearance = UprightAppearance(apRot, bbox);
+                    DrawMarkupLines(new PdfCanvas(appearance, doc), displayed, contentRot, annotation.ColorArgb);
+                    markup.SetNormalAppearance(appearance.GetPdfObject());
+                }
+
+                // Line/Arrow (TODAS as rotações): o iText não gera /AP para /Line e o PDFium não sintetiza — a
+                // linha/seta saíam INVISÍVEIS no mPDF mesmo em página normal (medido: 0 px; `AnnotationRotationRender
+                // Tests.Line_*`/`Arrow_*` em rotação 0). Desenho geométrico no espaço do usuário (vale para
+                // qualquer /Rotate); o /Rect ganha margem para a espessura e a ponta.
+                if (markup is PdfLineAnnotation lineAnnot)
+                    SetLineAppearance(doc, lineAnnot, annotation);
 
                 // Espessura de traço (Task: StrokeWidthPt, Plano desenho-caixa-revisao). Só os 4 kinds
                 // cujo visual é uma BORDA/TRAÇO precisam disto: Highlight/Underline/Strikeout marcam
@@ -294,7 +461,117 @@ internal sealed class PdfEditor : IPdfEditor
         }
         catch (BadPasswordException ex) { throw WrapPassword(ex); }
         catch (ITextException ex) { throw WrapGeneric(ex); }
+        // Revisão F1 (E2): o iText.Layout (medição/desenho do texto da caixa) pode falhar com exceções que NÃO são
+        // ITextException em casos-limite de geometria; o lift do App só trata PdfEditingException — nunca vaza crua.
+        catch (Exception ex) when (ex is NullReferenceException or InvalidOperationException or IndexOutOfRangeException
+            or InvalidCastException)
+        { throw new PdfEditingException("Não foi possível processar o PDF.", ex); }
         return output.ToArray();
+    }
+
+    /// Revisão F1 (E9) — ver o doc em Contract.cs. 1ª passada só LÊ (nada a fazer = null, sem reescrever o arquivo).
+    public byte[]? RegenerarAparenciasAusentes(byte[] pdf)
+    {
+        try
+        {
+            using (var probe = new PdfDocument(new PdfReader(new MemoryStream(pdf))))
+            {
+                if (!LinhasSemAparencia(probe).Any()) return null;
+                if (CountSignatures(probe) > 0) return null; // reescrever invalidaria a assinatura
+            }
+            using var output = new MemoryStream();
+            using (var doc = new PdfDocument(new PdfReader(new MemoryStream(pdf)), new PdfWriter(output)))
+                foreach (var (line, ends) in LinhasSemAparencia(doc).ToList())
+                {
+                    var data = new AnnotationData
+                    {
+                        Kind = IsArrowLine(line) ? AnnotationKind.Arrow : AnnotationKind.Line, PageIndex = 0,
+                        ColorArgb = Opcional(() => ReadColorArgb(line)), StrokeWidthPt = Opcional(() => ReadStrokeWidth(line)),
+                        LineStartPt = ends.Start, LineEndPt = ends.End,
+                    };
+                    SetLineAppearance(doc, line, data);
+                }
+            return output.ToArray();
+        }
+        catch (BadPasswordException ex) { throw WrapPassword(ex); }
+        catch (ITextException ex) { throw WrapGeneric(ex); }
+        // Revisão F2, fix round 2: anotação/estrutura malformada que escapa do iText como exceção crua = nada a regenerar (o App abre
+        // como antes), nunca uma exceção crua na abertura/no lote.
+        catch (Exception ex) when (Malformado(ex)) { return null; }
+    }
+
+    /// Revisão F2, fix round 1 (A1) — ver o doc em Contract.cs (implementação em `DirecaoDoTexto.cs`).
+    public int? DirecaoDoTexto(byte[] pdf, int pageIndex, IReadOnlyList<PdfQuad> quads) =>
+        mPdf.Editing.DirecaoDoTexto.Ler(pdf, pageIndex, quads);
+
+    /// Revisão F2 (A9) — ver o doc em Contract.cs.
+    public bool TemConteudoInterativo(byte[] pdf)
+    {
+        try
+        {
+            using var doc = new PdfDocument(new PdfReader(new MemoryStream(pdf)));
+            for (int p = 1; p <= doc.GetNumberOfPages(); p++)
+            {
+                if (doc.GetPage(p).GetPdfObject().GetAsArray(PdfName.Annots) is not { } annots) continue;
+                for (int i = 0; i < annots.Size(); i++)
+                {
+                    var subtype = Opcional(() => annots.GetAsDictionary(i)?.GetAsName(PdfName.Subtype));
+                    if (subtype is null) continue; // malformada: nada que o leitor desenhe
+                    if (!PdfName.Link.Equals(subtype) && !PdfName.Popup.Equals(subtype)) return true;
+                }
+            }
+            return CountSignatures(doc) > 0;
+        }
+        catch (BadPasswordException ex) { throw WrapPassword(ex); }
+        catch (ITextException ex) { throw WrapGeneric(ex); }
+        catch (Exception ex) when (Malformado(ex)) { throw WrapMalformado(ex); } // Revisão F2, fix round 2: nunca crua (o App não avisa)
+    }
+
+    /// Revisão F2 (A3) — ver o doc em Contract.cs.
+    public AnnotationData MapearParaOutraVersao(byte[] pdfOrigem, byte[] pdfDestino, AnnotationData a)
+    {
+        ArgumentNullException.ThrowIfNull(a);
+        try
+        {
+            // Fix round 1 (A3): a página de `a.PageIndex` no destino só é "a mesma" se for o MESMO objeto da página da
+            // origem (número + geração da referência indireta do dicionário). RotatePages/MovePage/DeletePages/
+            // InsertPages/AddAnnotation reescrevem em modo stamping e preservam esses números; página nova ganha número
+            // novo (IdentidadeDaPaginaTests). Outra página no índice (mover, excluir, inserir antes) = sem mapeamento.
+            (DisplayFrame Frame, int Num, int Gen)? PaginaDe(byte[] pdf)
+            {
+                using var doc = new PdfDocument(new PdfReader(new MemoryStream(pdf)));
+                if (a.PageIndex < 0 || a.PageIndex >= doc.GetNumberOfPages()) return null;
+                var page = doc.GetPage(a.PageIndex + 1);
+                var r = page.GetPdfObject().GetIndirectReference();
+                return r is null ? null : (PageFrame.Frame(page), r.GetObjNumber(), r.GetGenNumber());
+            }
+            if (PaginaDe(pdfOrigem) is not { } o || PaginaDe(pdfDestino) is not { } n) return a;
+            if (o.Num != n.Num || o.Gen != n.Gen) return a; // outra página no mesmo índice
+            var (antes, depois) = (o.Frame, n.Frame);
+            if (antes == depois) return a;
+            var mapeada = depois.ToDisplayed(antes.ToUser(a));
+            bool orientada = a.Kind is AnnotationKind.FreeText or AnnotationKind.ImageStamp or AnnotationKind.StickyNote
+                or AnnotationKind.Underline or AnnotationKind.Strikeout;
+            bool noRotate = a.Flags is { } f && (f & PdfAnnotation.NO_ROTATE) != 0;
+            if (!orientada || noRotate || antes.Rotation == depois.Rotation) return mapeada;
+            int giro = (((a.ConteudoRotacaoGraus ?? 0) + depois.Rotation - antes.Rotation) % 360 + 360) % 360;
+            return mapeada with { ConteudoRotacaoGraus = giro == 0 ? null : giro };
+        }
+        catch (BadPasswordException ex) { throw WrapPassword(ex); }
+        catch (ITextException ex) { throw WrapGeneric(ex); }
+        catch (Exception ex) when (Malformado(ex)) { return a; } // Revisão F2, fix round 2: frames ilegíveis = sem mapeamento (como antes da F2)
+    }
+
+    /// `/Line` sem /AP /N e com /L legível (a malformada fica como está: não há o que desenhar).
+    private static IEnumerable<(PdfLineAnnotation Line, (PdfPoint Start, PdfPoint End) Ends)> LinhasSemAparencia(PdfDocument doc)
+    {
+        for (int p = 1; p <= doc.GetNumberOfPages(); p++)
+            foreach (var annot in doc.GetPage(p).GetAnnotations())
+            {
+                if (annot is not PdfLineAnnotation line) continue;
+                if (Opcional(() => line.GetPdfObject().GetAsDictionary(PdfName.AP)?.Get(PdfName.N)) is not null) continue;
+                if (Opcional(() => ReadLineEndpoints(line)) is { } ends) yield return (line, ends);
+            }
     }
 
     public byte[] RemoveAnnotation(byte[] pdf, string annotationId)
@@ -379,8 +656,9 @@ internal sealed class PdfEditor : IPdfEditor
     /// empírica (probe project isolado, mesmo método da Task 8/9 do Plano 3a; ver task-2-report.md,
     /// Plano 3b): `SetRotation(int)` é ABSOLUTO, NÃO aditivo — chamar `SetRotation(90)` duas vezes
     /// seguidas (em 2 saves separados) grava `/Rotate 90` as DUAS vezes, nunca 180. Por isso este
-    /// método LÊ a rotação existente (`GetRotation()`) antes de escrever, soma `degreesClockwise` e
-    /// normaliza `% 360` — uma rotação dupla de 90+90 (2 chamadas separadas a RotatePages) dá 180,
+    /// método LÊ a rotação existente antes de escrever — a que o PDFium EXIBE (`PageFrame.Rotation`, regra do
+    /// PDFium sobre o /Rotate cru, já em 0/90/180/270), não o `GetRotation()` do iText —, soma `degreesClockwise`
+    /// e grava `% 360` — uma rotação dupla de 90+90 (2 chamadas separadas a RotatePages) dá 180,
     /// confirmado empiricamente e coberto por teste (RotatePages_DoubleRotate90Plus90_Is180).
     public byte[] RotatePages(byte[] pdf, IReadOnlyList<int> pageIndexes, int degreesClockwise)
     {
@@ -410,7 +688,11 @@ internal sealed class PdfEditor : IPdfEditor
                 foreach (var idx in distinct)
                 {
                     var page = doc.GetPage(idx + 1); // iText é 1-based; contrato é 0-based
-                    int existing = page.GetRotation();
+                    // Fix round 1 (páginas giradas): parte da rotação que o PDFium EXIBE (`PageFrame.Rotation`,
+                    // regra do PDFium sobre o /Rotate cru) — com /Rotate fora de múltiplo de 90 o `% 360` do
+                    // iText partia de outro valor (−135 exibe 270, mas GetRotation() dá 225 -> 225+90 = 315,
+                    // que o PDFium ainda exibe como 270). Múltiplos de 90: idêntico ao de antes.
+                    int existing = PageFrame.Rotation(page);
                     page.SetRotation((existing + degreesClockwise) % 360);
                 }
             }
@@ -418,29 +700,6 @@ internal sealed class PdfEditor : IPdfEditor
         catch (BadPasswordException ex) { throw WrapPassword(ex); }
         catch (ITextException ex) { throw WrapGeneric(ex); }
         return output.ToArray();
-    }
-
-    /// Costura de rotação (Task 3, Plano 3b — ver XML doc em Contract.cs): leitura pura de `/Rotate` por
-    /// página, normalizada para 0/90/180/270. `GetRotation()` já devolve um valor não-negativo neste
-    /// codebase (`RotatePages` só escreve somas de 90/180/270 sobre um valor existente também
-    /// não-negativo, sempre `% 360`) — a normalização `((raw % 360) + 360) % 360` aqui é defesa em
-    /// profundidade contra um `/Rotate` de origem EXTERNA fora desse invariante (o spec PDF permite
-    /// múltiplos negativos de 90), não uma correção de um caso observado neste módulo.
-    public IReadOnlyList<int> GetPageRotations(byte[] pdf)
-    {
-        try
-        {
-            using var doc = new PdfDocument(new PdfReader(new MemoryStream(pdf)));
-            var result = new int[doc.GetNumberOfPages()];
-            for (int i = 0; i < result.Length; i++)
-            {
-                int raw = doc.GetPage(i + 1).GetRotation();
-                result[i] = ((raw % 360) + 360) % 360;
-            }
-            return result;
-        }
-        catch (BadPasswordException ex) { throw WrapPassword(ex); }
-        catch (ITextException ex) { throw WrapGeneric(ex); }
     }
 
     /// Limite de profundidade de recursão de `BuildOutlineNode` (revisão pós-Task 5, Important): o
@@ -671,7 +930,12 @@ internal sealed class PdfEditor : IPdfEditor
                                 xobj = srcDoc.GetPage(c.PaginaFonte + 1).CopyAsFormXObject(destDoc);
                                 cache[c.PaginaFonte] = xobj;
                             }
-                            var m = MatrizImposicao(xobj, c, folhaAlturaPt);
+                            var frame = PageFrame.Frame(srcDoc.GetPage(c.PaginaFonte + 1));
+                            // Revisão F1 (E8): TODAS as rotações pela caixa EXIBIDA (CropBox ∩ MediaBox, o que o App
+                            // mediu). A rotação 0 usava `xobj.GetBBox()` (CropBox crua): CropBox maior que a MediaBox
+                            // saía encolhida e fora do slot. Com CropBox ⊆ MediaBox a matriz é a mesma de antes (pin
+                            // ImposicaoCropBoxTests.CropDentroDaMedia_MatrizIgualAAntes).
+                            var m = MatrizImposicaoExibida(frame, c, folhaAlturaPt);
                             canvas.AddXObjectWithTransformationMatrix(xobj, m[0], m[1], m[2], m[3], m[4], m[5]);
                         }
                     }
@@ -683,23 +947,40 @@ internal sealed class PdfEditor : IPdfEditor
         return StripSignatures(output.ToArray());
     }
 
-    /// Matriz [a b c d e f] que mapeia o XObject (bbox = página-fonte) no retângulo destino, com rotação
-    /// HORÁRIA, convertendo a origem topo-esquerda (Y p/ baixo) da imposição para a origem inferior-
-    /// esquerda (Y p/ cima) do PDF. Proporção preservada pela imposição (s = destino/lado-correto).
-    private static float[] MatrizImposicao(PdfFormXObject xobj, ColocacaoFolha c, double folhaAlturaPt)
+    /// Páginas giradas (Task 6): `CopyAsFormXObject` copia o conteúdo no espaço do usuário NÃO-rotacionado e
+    /// descarta o /Rotate, mas o App calcula a imposição com os tamanhos EXIBIDOS do PDFium (já girados). Compõe
+    /// usuário→exibido (`DisplayFrame.ToDisplayed`, conteúdo fica em pé numa caixa exibida [0 0 DW DH]) com a
+    /// matriz de imposição dessa caixa — a página cai na folha exatamente como é exibida. Rotação 0 (revisão F1/E8):
+    /// `UserToDisplayedMatrix` é a translação −origem da caixa exibida — mesmo resultado da fórmula antiga com a bbox
+    /// do XObject quando CropBox ⊆ MediaBox.
+    private static float[] MatrizImposicaoExibida(DisplayFrame f, ColocacaoFolha c, double folhaAlturaPt)
     {
-        var bbox = xobj.GetBBox().ToRectangle();
-        double bx = bbox.GetX(), by = bbox.GetY(), sw = bbox.GetWidth(), sh = bbox.GetHeight();
+        var r = f.UserToDisplayedMatrix(); // usuário absoluto → exibido, [a b c d e f] (a álgebra de `ToDisplayed`)
+        var i = MatrizImposicao(0, 0, f.DisplayedWidth, f.DisplayedHeight, c, folhaAlturaPt);
+        // Composição "primeiro r, depois i" (vetor-linha do PDF: r × i).
+        return
+        [
+            (float)(r[0] * i[0] + r[1] * i[2]), (float)(r[0] * i[1] + r[1] * i[3]),
+            (float)(r[2] * i[0] + r[3] * i[2]), (float)(r[2] * i[1] + r[3] * i[3]),
+            (float)(r[4] * i[0] + r[5] * i[2] + i[4]), (float)(r[4] * i[1] + r[5] * i[3] + i[5]),
+        ];
+    }
+
+    /// Matriz [a b c d e f] que mapeia a caixa (bx,by,sw,sh) no retângulo destino, com rotação HORÁRIA, convertendo a
+    /// origem topo-esquerda (Y p/ baixo) da imposição para a origem inferior-esquerda (Y p/ cima) do PDF. Proporção
+    /// preservada pela imposição (s = destino/lado-correto).
+    private static double[] MatrizImposicao(double bx, double by, double sw, double sh, ColocacaoFolha c, double folhaAlturaPt)
+    {
         double dx = c.XPt;                                 // borda ESQUERDA do destino
         double dy = folhaAlturaPt - (c.YPt + c.AlturaPt);  // borda INFERIOR do destino (converte Y p/ cima)
         double s = (c.Rotacao is 90 or 270) ? c.LarguraPt / sh : c.LarguraPt / sw;
 
         return c.Rotacao switch
         {
-            90  => [0f, (float)(-s), (float)s, 0f, (float)(dx - s * by), (float)(dy + s * sw + s * bx)],
-            180 => [(float)(-s), 0f, 0f, (float)(-s), (float)(dx + s * sw + s * bx), (float)(dy + s * sh + s * by)],
-            270 => [0f, (float)s, (float)(-s), 0f, (float)(dx + s * sh + s * by), (float)(dy - s * bx)],
-            _   => [(float)s, 0f, 0f, (float)s, (float)(dx - s * bx), (float)(dy - s * by)],
+            90  => [0, (-s), s, 0, (dx - s * by), (dy + s * sw + s * bx)],
+            180 => [(-s), 0, 0, (-s), (dx + s * sw + s * bx), (dy + s * sh + s * by)],
+            270 => [0, s, (-s), 0, (dx + s * sh + s * by), (dy - s * bx)],
+            _   => [s, 0, 0, s, (dx - s * bx), (dy - s * by)],
         };
     }
 
@@ -951,6 +1232,12 @@ internal sealed class PdfEditor : IPdfEditor
     internal static PdfEditingException WrapGeneric(ITextException ex) =>
         new("Não foi possível processar o PDF.", ex);
 
+    /// Revisão F2, fix round 2: entrada malformada que o iText não traduz em `ITextException` — ex.: conteúdo de página
+    /// que usa `/F99` ausente de /Resources faz o `PdfCanvasProcessor` lançar `NullReferenceException` CRUA (o PDFium
+    /// tolera; o texto é selecionável). Mesma mensagem honesta de `WrapGeneric`; a causa fica em `InnerException`.
+    internal static PdfEditingException WrapMalformado(Exception ex) =>
+        new("Não foi possível processar o PDF.", ex);
+
     /// Task 8 (Plano 3a): Ink/Rectangle/Line entraram no mapeamento (Square -> Rectangle, mesma
     /// convenção de nome já usada por Highlight/Underline/etc.). Arrow é o caso especial — o spec PDF
     /// NÃO define um subtype `/Arrow` próprio; é um `/Line` cujo `/LE` (line ending styles) termina
@@ -1022,12 +1309,12 @@ internal sealed class PdfEditor : IPdfEditor
     /// (não existe overload sem ela, ao contrário de Highlight/StickyNote). Arrow reusa o MESMO ctor de
     /// Line, só acrescentando `SetLineEndingStyles([None, OpenArrow])` — confirmado que isso grava
     /// `/LE [/None /OpenArrow]` sem alterar `/L`.
-    private static PdfMarkupAnnotation BuildAnnotation(AnnotationData a, Rectangle bbox) =>
+    private static PdfMarkupAnnotation BuildAnnotation(AnnotationData a, Rectangle bbox, float[]? quadPoints = null) =>
         a.Kind switch
         {
-            AnnotationKind.Highlight => PdfTextMarkupAnnotation.CreateHighLight(bbox, BuildQuadPoints(a)),
-            AnnotationKind.Underline => PdfTextMarkupAnnotation.CreateUnderline(bbox, BuildQuadPoints(a)),
-            AnnotationKind.Strikeout => PdfTextMarkupAnnotation.CreateStrikeout(bbox, BuildQuadPoints(a)),
+            AnnotationKind.Highlight => PdfTextMarkupAnnotation.CreateHighLight(bbox, quadPoints ?? BuildQuadPoints(a)),
+            AnnotationKind.Underline => PdfTextMarkupAnnotation.CreateUnderline(bbox, quadPoints ?? BuildQuadPoints(a)),
+            AnnotationKind.Strikeout => PdfTextMarkupAnnotation.CreateStrikeout(bbox, quadPoints ?? BuildQuadPoints(a)),
             AnnotationKind.StickyNote => new PdfTextAnnotation(bbox),
             AnnotationKind.FreeText => new PdfFreeTextAnnotation(bbox, new PdfString(a.Content ?? string.Empty)),
             AnnotationKind.Ink => new PdfInkAnnotation(bbox, BuildInkList(a)),
@@ -1083,6 +1370,280 @@ internal sealed class PdfEditor : IPdfEditor
         le.Add(PdfName.OpenArrow);
         line.SetLineEndingStyles(le);
         return line;
+    }
+
+    /// Quads de marcação de texto no frame do chamador; sem `Quads`, o próprio bbox (mesma regra de
+    /// `BuildQuadPoints`).
+    private static IReadOnlyList<PdfQuad> MarkupQuads(AnnotationData a) =>
+        a.Quads is { Count: > 0 } q ? q : new[] { new PdfQuad(a.LeftPt, a.BottomPt, a.RightPt, a.TopPt) };
+
+    /// `ConteudoRotacaoGraus` normalizado a 0/90/180/270 — só para os kinds com conteúdo orientado (0 nos demais).
+    private static int ContentRotation(AnnotationData a) =>
+        a.Kind is AnnotationKind.FreeText or AnnotationKind.ImageStamp or AnnotationKind.StickyNote
+            or AnnotationKind.Underline or AnnotationKind.Strikeout && a.ConteudoRotacaoGraus is { } g
+            ? PageFrame.NormalizeRotation(g) // múltiplo de 90 (validado no início de AddAnnotation): = ((g % 360) + 360) % 360
+            : 0;
+
+    /// Caixa de texto com o conteúdo girado na tela: cresce para "baixo" DO CONTEÚDO (o topo do texto fica parado) —
+    /// 90° = para a esquerda na tela, 180° = para cima, 270° = para a direita —, limitada à página exibida.
+    private static AnnotationData GrowRotatedFreeText(PdfDocument doc, AnnotationData d, int contentRot, DisplayFrame frame)
+    {
+        var (cw, ch) = DisplayFrame.ContentSize(contentRot, d.RightPt - d.LeftPt, d.TopPt - d.BottomPt);
+        var box = new Rectangle(0, 0, (float)cw, (float)ch);
+        var grown = GrowFreeTextBoxToFitText(doc, d, box, float.MinValue);
+        if (ReferenceEquals(grown, box)) return d;
+        double extra = grown.GetHeight() - ch;
+        return contentRot switch
+        {
+            90 => d with { LeftPt = Math.Max(0, d.LeftPt - extra) },
+            180 => d with { TopPt = Math.Min(frame.DisplayedHeight, d.TopPt + extra) },
+            _ => d with { RightPt = Math.Min(frame.DisplayedWidth, d.RightPt + extra) },
+        };
+    }
+
+    /// Folga até a borda da página exibida quando a caixa de texto alarga (`AjustarLarguraAoTexto`).
+    internal const double MargemCaixaTextoPt = 18;
+
+    /// Caixa de texto (frame EXIBIDO) alargada na direção da LEITURA para caber a linha mais longa — 0° = para a
+    /// direita na tela, 90° = para baixo, 180° = para a esquerda, 270° = para cima —, até a borda da página exibida
+    /// menos `MargemCaixaTextoPt`. Nunca estreita (uma caixa já larga, ou já além do limite, fica como está).
+    private static AnnotationData AlargarCaixaDeTexto(PdfDocument doc, AnnotationData d, int contentRot, DisplayFrame frame)
+    {
+        var (cw, _) = DisplayFrame.ContentSize(contentRot, d.RightPt - d.LeftPt, d.TopPt - d.BottomPt);
+        const double m = MargemCaixaTextoPt;
+        double disponivel = contentRot switch
+        {
+            90 => d.TopPt - m,
+            180 => d.RightPt - m,
+            270 => frame.DisplayedHeight - m - d.BottomPt,
+            _ => frame.DisplayedWidth - m - d.LeftPt,
+        };
+        double w = LarguraParaCaberTexto(doc, d, cw, disponivel);
+        if (w <= cw) return d;
+        return contentRot switch
+        {
+            90 => d with { BottomPt = d.TopPt - w },
+            180 => d with { LeftPt = d.RightPt - w },
+            270 => d with { TopPt = d.BottomPt + w },
+            _ => d with { RightPt = d.LeftPt + w },
+        };
+    }
+
+    /// Largura (pt) em que o texto da caixa cabe SEM quebra automática — a largura máxima do mesmo Paragraph do /AP
+    /// (fonte/tamanho/padding; quebras explícitas respeitadas), + 1 pt de folga de arredondamento —, limitada a
+    /// `disponivel` e nunca menor que `atual`.
+    private static double LarguraParaCaberTexto(PdfDocument doc, AnnotationData a, double atual, double disponivel)
+    {
+        double natural = MedirLinhaMaisLonga(doc, a);
+        if (natural <= 0) return atual;
+        double desejada = natural + 1;
+        if (desejada <= atual) return atual;
+        return Math.Max(atual, Math.Min(desejada, disponivel));
+    }
+
+    /// Largura máxima (sem quebra automática) do MESMO Paragraph do /AP — fonte/tamanho/padding, texto de
+    /// `TextoDaCaixa`. 0 = texto vazio/só espaços.
+    private static double MedirLinhaMaisLonga(PdfDocument doc, AnnotationData a)
+    {
+        string content = TextoDaCaixa(a.Content);
+        if (content.Trim().Length == 0) return 0;
+        float fontSize = a.FontSizePt is > 0 ? (float)a.FontSizePt.Value : 12f;
+        var pdfFont = PdfFontFactory.CreateFont(StandardFontNameFor(a.FontFamily, a.Bold, a.Italic));
+        var para = new iText.Layout.Element.Paragraph(content)
+            .SetFont(pdfFont).SetFontSize(fontSize).SetMargin(0).SetPadding(2).SetMultipliedLeading(1.05f);
+        var measureBox = new PdfFormXObject(new Rectangle(0, 0, 1, 1)); // não referenciado: o escritor não o serializa
+        using var canvas = new iText.Layout.Canvas(measureBox, doc);
+        var renderer = (iText.Layout.Renderer.AbstractRenderer)para.CreateRendererSubTree().SetParent(canvas.GetRenderer());
+        return renderer.GetMinMaxWidth().GetMaxWidth();
+    }
+
+    /// Revisão I3 — ver o doc em Contract.cs. Documento descartável só para o contexto de layout do iText.
+    public double LarguraDaLinhaMaisLonga(AnnotationData caixa)
+    {
+        ArgumentNullException.ThrowIfNull(caixa);
+        if (TextoDaCaixa(caixa.Content).Trim().Length == 0) return 0;
+        using var ms = new MemoryStream();
+        using var doc = new PdfDocument(new PdfWriter(ms));
+        doc.AddNewPage();
+        return MedirLinhaMaisLonga(doc, caixa);
+    }
+
+    /// Revisão F1 (E5): anotação de conteúdo orientado com a flag NoRotate numa página girada.
+    private static bool NoRotateGirada(int? flags, AnnotationKind kind, DisplayFrame frame) =>
+        frame.Rotation != 0 && flags is { } f && (f & PdfAnnotation.NO_ROTATE) != 0
+        && kind is AnnotationKind.FreeText or AnnotationKind.ImageStamp or AnnotationKind.StickyNote;
+
+    /// NoRotate: o PDFium (`AnnotGetMatrix`, cpdf_annot.cpp) encaixa o /AP no /Rect e o GIRA `rot` graus ANTI-horário
+    /// (no espaço do usuário, y para cima) em torno do canto SUP.-ESQ. (L,T) do /Rect — o giro horário da página o
+    /// deixa em pé na tela. Devolve o retângulo (usuário) onde ele aparece. Medido no render (NoRotateTests): rot 90
+    /// → [L, T, L+h, T+w]; 180 → [L−w, T, L, T+h]; 270 → [L−h, T−w, L, T].
+    private static (double L, double B, double R, double T) NoRotateDesenhado(double l, double b, double r, double t, int rot)
+    {
+        double w = r - l, h = t - b;
+        return rot switch
+        {
+            90 => (l, t, l + h, t + w),
+            180 => (l - w, t, l, t + h),
+            _ => (l - h, t - w, l, t),
+        };
+    }
+
+    /// Inversa de `NoRotateDesenhado`: o retângulo (usuário) onde a anotação deve APARECER → o /Rect a gravar.
+    private static (double L, double B, double R, double T) NoRotateRect(double l, double b, double r, double t, int rot)
+    {
+        double dw = r - l, dh = t - b;
+        return rot switch
+        {
+            90 => (l, b - dw, l + dh, b),   // canto de giro = inf.-esq. do desenhado
+            180 => (r, b - dh, r + dw, b),  // = inf.-dir.
+            _ => (r, t - dw, r + dh, t),    // = sup.-dir.
+        };
+    }
+
+    /// Leitura de `ConteudoRotacaoGraus` (revisão final). FreeText/ImageStamp/StickyNote: NoRotate = em pé; /Rotate da
+    /// anotação (Acrobat) = desenhada em pé para aquela rotação; senão a /Matrix do /AP /N (sem /AP, ou sem /Matrix =
+    /// desenhada no espaço do usuário, em pé para a rotação 0 — o caso do que colocamos em página normal). Underline/
+    /// Strikeout: a direção TL→TR do 1º quad de /QuadPoints. Não reconhecida = `null` (em pé). 0 = `null`.
+    private static int? ReadContentRotation(PdfAnnotation annot, AnnotationKind kind, DisplayFrame frame)
+    {
+        int? r = null;
+        var dict = annot.GetPdfObject();
+        if (kind is AnnotationKind.Underline or AnnotationKind.Strikeout)
+        {
+            var qp = dict.GetAsArray(PdfName.QuadPoints);
+            // Só confia na direção P1→P2 quando P3→P4 aponta para o MESMO lado (a nossa ordem TL,TR,BL,BR e a do
+            // Acrobat). Ordens anti-horárias de outros programas (TL,BL,BR,TR ou BL,BR,TR,TL) têm P3→P4 oposto ou
+            // perpendicular — aí não dá para saber a direção do texto: `null` (em pé), como antes desta revisão.
+            // Revisão F1 (E3): e P1/P2 têm de ser a borda de CIMA do texto (P1→P2 × P1→P3 < 0, o sinal de
+            // TL,TR,BL,BR — rotação preserva o sinal, então vale em qualquer /Rotate). Sem isto as ordens ESPELHADAS
+            // (TR,TL,BR,BL → 180; TL,BL,TR,BR → 90; BL,TL,BR,TR → 270...) passavam e recolorir um sublinhado de
+            // outro programa o virava "overline" ou um tique vertical. Não reconhecida = em pé (o PDFium usa só P3/P2).
+            if (qp is { } && qp.Size() >= 8)
+            {
+                var f = qp.ToDoubleArray();
+                var a = frame.ContentRotationOfAdvance(f[2] - f[0], f[3] - f[1]);
+                var b = frame.ContentRotationOfAdvance(f[6] - f[4], f[7] - f[5]);
+                double cross = (f[2] - f[0]) * (f[5] - f[1]) - (f[3] - f[1]) * (f[4] - f[0]);
+                r = a == b && cross < 0 ? a : null;
+            }
+        }
+        else if (kind is AnnotationKind.FreeText or AnnotationKind.ImageStamp or AnnotationKind.StickyNote)
+        {
+            if ((annot.GetFlags() & PdfAnnotation.NO_ROTATE) != 0) return null;
+            var ap = dict.GetAsDictionary(PdfName.AP);
+            if (dict.GetAsNumber(PdfName.Rotate) is { } rot)
+                r = (frame.Rotation - PageFrame.NormalizeRotation(rot.IntValue()) + 360) % 360;
+            else if (ap is null)
+                r = frame.Rotation;
+            else if (ap.GetAsStream(PdfName.N) is { } n)
+            {
+                var m = n.GetAsArray(PdfName.Matrix);
+                if (m is null) r = frame.Rotation;
+                else if (m.Size() >= 4)
+                {
+                    var f = m.ToDoubleArray();
+                    r = frame.ContentRotationOfMatrix(f[0], f[1], f[2], f[3]);
+                }
+            }
+        }
+        return r is 0 ? null : r;
+    }
+
+    /// Páginas giradas: form XObject de /AP desenhado no FRAME EXIBIDO — BBox `[0 0 w h]` nas dimensões
+    /// EXIBIDAS da caixa e `/Matrix [a b c d 0 0]` = `DisplayFrame.ContentMatrix`. O algoritmo do spec (§12.5.5:
+    /// BBox transformada pela /Matrix e encaixada no /Rect) leva esse conteúdo ao /Rect do usuário GIRADO junto
+    /// com a página — ou seja, em pé para o leitor (sondas "FreeText V2"/"img V2": em pé e no lugar nas 4
+    /// rotações). NÃO usar a flag NoRotate: o PDFium a honra ancorando no canto sup.-esq. do /Rect (desloca).
+    ///
+    /// Revisão final: `rotation` = a rotação de página para a qual o conteúdo é desenhado EM PÉ (`página − conteúdo`
+    /// girado na tela, ver `AnnotationData.ConteudoRotacaoGraus`); a BBox fica nas dimensões em pé do CONTEÚDO.
+    private static PdfFormXObject UprightAppearance(int rotation, Rectangle userBox)
+    {
+        // BBox nas dimensões EM PÉ do conteúdo: a troca de eixos de 90/270 é a de `DisplayFrame.ContentSize`
+        // (float -> double -> float é exato: mesmos bytes de antes).
+        var (w, h) = DisplayFrame.ContentSize(rotation, userBox.GetWidth(), userBox.GetHeight());
+        var form = new PdfFormXObject(new Rectangle(0, 0, (float)w, (float)h));
+        var (a, b, c, d) = new DisplayFrame(rotation, 0, 0).ContentMatrix;
+        form.GetPdfObject().Put(PdfName.Matrix, new PdfArray(new[] { (float)a, (float)b, (float)c, (float)d, 0f, 0f }));
+        return form;
+    }
+
+    /// Ícone de nota (balão) — o MESMO desenho que o PDFium gera para `/Text` sem /AP (medido no render em
+    /// rotação 0: 20×20 no canto sup.-esq. do /Rect, corpo com contorno preto de 1 pt, "rabicho" embaixo à
+    /// esquerda, 3 linhas de texto), com o corpo SEMPRE amarelo (1 1 0): o gerador do PDFium IGNORA /C no
+    /// preenchimento (medido: /C azul, vermelho ou laranja -> 255,255,0 em rotação 0). Task 6 (app real): pintar
+    /// com /C fazia a MESMA nota mudar de cor conforme a rotação da página. `box` = BBox exibida.
+    private static void DrawNoteIcon(PdfCanvas canvas, Rectangle box)
+    {
+        float x = box.GetLeft(), y = box.GetTop() - 20f;
+        canvas.SaveState()
+            .SetFillColor(new DeviceRgb(255, 255, 0)).SetStrokeColor(new DeviceRgb(0, 0, 0)).SetLineWidth(1f)
+            .MoveTo(x + 0.5, y + 19.5).LineTo(x + 19.5, y + 19.5).LineTo(x + 19.5, y + 5.5).LineTo(x + 9.5, y + 5.5)
+            .LineTo(x + 6, y + 0.5).LineTo(x + 4, y + 5.5).LineTo(x + 0.5, y + 5.5).ClosePathFillStroke();
+        foreach (var ly in new[] { 16.0, 12.25, 8.25 })
+            canvas.MoveTo(x + 2.5, y + ly).LineTo(x + 17.5, y + ly);
+        canvas.Stroke().RestoreState();
+    }
+
+    /// Traço de Underline/Strikeout como o PDFium o gera (1 pt; base+1 ou meio de cada quad), no frame EXIBIDO
+    /// relativo ao canto inf.-esq. do bbox exibido (= origem da BBox de `UprightAppearance`). Texto girado na tela
+    /// (`contentRot`, revisão final M2): cada quad vai ao frame do CONTEÚDO e o traço segue a direção do texto.
+    private static void DrawMarkupLines(PdfCanvas canvas, AnnotationData displayed, int contentRot, uint? colorArgb)
+    {
+        double x0 = Math.Min(displayed.LeftPt, displayed.RightPt), y0 = Math.Min(displayed.BottomPt, displayed.TopPt);
+        double dw = Math.Abs(displayed.RightPt - displayed.LeftPt), dh = Math.Abs(displayed.TopPt - displayed.BottomPt);
+        var (r, g, b) = colorArgb is { } c ? ArgbToRgb(c) : (0, 0, 0);
+        canvas.SaveState().SetStrokeColor(new DeviceRgb(r, g, b)).SetLineWidth(1f);
+        foreach (var q in MarkupQuads(displayed))
+        {
+            var rel = new PdfQuad(Math.Min(q.LeftPt, q.RightPt) - x0, Math.Min(q.BottomPt, q.TopPt) - y0,
+                Math.Max(q.LeftPt, q.RightPt) - x0, Math.Max(q.BottomPt, q.TopPt) - y0);
+            var k = DisplayFrame.DisplayedToContent(rel, contentRot, dw, dh);
+            double y = displayed.Kind == AnnotationKind.Underline ? k.BottomPt + 1 : (k.BottomPt + k.TopPt) / 2;
+            canvas.MoveTo(k.LeftPt, y).LineTo(k.RightPt, y);
+        }
+        canvas.Stroke().RestoreState();
+    }
+
+    /// /AP de Line/Arrow (o iText não gera e o PDFium não sintetiza — sem isto a linha é invisível). Desenhado
+    /// no ESPAÇO DO USUÁRIO (`a` já convertida): BBox = /Rect, /Matrix identidade, então vale para qualquer
+    /// /Rotate (geometria pura gira junto com a página, como o PDFium faz com Ink/Square). Traço na cor `/C` e na
+    /// espessura da borda (mesma regra "sem cor = largura 0" do `/Border`), pontas redondas; Arrow = ponta ABERTA
+    /// (`/LE /OpenArrow`) no ponto final: 2 abas de `max(8, 3·w)` pt a ±30°. O /Rect ganha margem (meia
+    /// espessura + ponta + 1) — `ReadAnnotations` devolve o bbox a partir do /L (envelope dos 2 pontos).
+    private static void SetLineAppearance(PdfDocument doc, PdfLineAnnotation line, AnnotationData a)
+    {
+        var s = a.LineStartPt!.Value;
+        var e = a.LineEndPt!.Value;
+        double w = a.ColorArgb is null ? 0 : Math.Max(0, a.StrokeWidthPt ?? StrokeWidthPt);
+        bool arrow = a.Kind == AnnotationKind.Arrow;
+        double head = arrow ? Math.Max(8.0, 3.0 * w) : 0;
+        double m = w / 2 + head + 1;
+        var rect = new Rectangle(
+            (float)(Math.Min(s.XPt, e.XPt) - m), (float)(Math.Min(s.YPt, e.YPt) - m),
+            (float)(Math.Abs(e.XPt - s.XPt) + 2 * m), (float)(Math.Abs(e.YPt - s.YPt) + 2 * m));
+        line.SetRectangle(new PdfArray(rect));
+
+        var form = new PdfFormXObject(rect);
+        if (w > 0)
+        {
+            var (r, g, b) = ArgbToRgb(a.ColorArgb!.Value);
+            var cv = new PdfCanvas(form, doc);
+            cv.SaveState().SetStrokeColor(new DeviceRgb(r, g, b)).SetLineWidth((float)w)
+                .SetLineCapStyle(PdfCanvasConstants.LineCapStyle.ROUND).SetLineJoinStyle(PdfCanvasConstants.LineJoinStyle.ROUND)
+                .MoveTo(s.XPt, s.YPt).LineTo(e.XPt, e.YPt);
+            double len = Math.Sqrt((e.XPt - s.XPt) * (e.XPt - s.XPt) + (e.YPt - s.YPt) * (e.YPt - s.YPt));
+            if (arrow && len > 0)
+            {
+                double ux = (e.XPt - s.XPt) / len, uy = (e.YPt - s.YPt) / len;
+                double cos = Math.Cos(Math.PI / 6), sin = Math.Sin(Math.PI / 6);
+                cv.MoveTo(e.XPt - head * (ux * cos - uy * sin), e.YPt - head * (ux * sin + uy * cos))
+                  .LineTo(e.XPt, e.YPt)
+                  .LineTo(e.XPt - head * (ux * cos + uy * sin), e.YPt - head * (-ux * sin + uy * cos));
+            }
+            cv.Stroke().RestoreState();
+        }
+        line.SetNormalAppearance(form.GetPdfObject());
     }
 
     /// HIPÓTESE reconciliada por reflexão contra itext.kernel.dll 9.7.0: QuadPoints de markup
@@ -1216,7 +1777,7 @@ internal sealed class PdfEditor : IPdfEditor
     /// nada (só serve de parent de layout) — objeto inalcançável, o escritor do iText não o serializa.
     private static Rectangle GrowFreeTextBoxToFitText(PdfDocument doc, AnnotationData a, Rectangle bbox, float minBottom)
     {
-        string content = a.Content ?? string.Empty;
+        string content = TextoDaCaixa(a.Content);
         float width = bbox.GetWidth();
         if (content.Length == 0 || width <= 0f) return bbox;
 
@@ -1233,7 +1794,12 @@ internal sealed class PdfEditor : IPdfEditor
             var renderer = para.CreateRendererSubTree().SetParent(canvas.GetRenderer());
             var result = renderer.Layout(new iText.Layout.Layout.LayoutContext(
                 new iText.Layout.Layout.LayoutArea(1, new Rectangle(0, 0, width, infinite))));
-            needed = result.GetOccupiedArea().GetBBox().GetHeight();
+            // Revisão F1 (E2): nem um glifo + o padding cabe na largura (caixa estreita; conteúdo girado 90/270
+            // redimensionado à altura exibida mínima) → o iText devolve NOTHING sem área ocupada. Nada a medir: a
+            // caixa fica como está (o /AP recorta o que não couber) — nunca uma NullReferenceException crua.
+            var area = result.GetStatus() == iText.Layout.Layout.LayoutResult.NOTHING ? null : result.GetOccupiedArea();
+            if (area is null) return bbox;
+            needed = area.GetBBox().GetHeight();
         }
 
         if (needed <= bbox.GetHeight()) return bbox;
@@ -1242,32 +1808,95 @@ internal sealed class PdfEditor : IPdfEditor
         return new Rectangle(bbox.GetLeft(), newBottom, width, top - newBottom);
     }
 
-    /// Equivalente para o `/DA` (enum `StandardAnnotationFont` do iText) — família + negrito + itálico.
-    private static StandardAnnotationFont DaFontFor(string? family, bool bold, bool italic) =>
-        NormalizeFamily(family) switch
+    /// Texto que a caixa DESENHA e MEDE (revisão M3): espaços no FIM de cada linha saem — o iText os mede ("abc" + 200
+    /// espaços alargava a caixa até a margem) e os quebra em linhas em branco que empurravam o resto para baixo. São
+    /// invisíveis; o `/Contents` guarda o texto exatamente como digitado.
+    private static string TextoDaCaixa(string? content) =>
+        string.Join("\n", (content ?? string.Empty).Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None)
+            .Select(l => l.TrimEnd()));
+
+    /// `/DA` do FreeText: `/<fonte padrão-14> <tamanho> Tf <r> <g> <b> rg` (cor em 0..1).
+    private static string BuildFreeTextDa(string fontName, float size, int r, int g, int b)
+    {
+        static string N(double v) => v.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+        return $"/{fontName} {N(size)} Tf {N(r / 255.0)} {N(g / 255.0)} {N(b / 255.0)} rg";
+    }
+
+    /// Nomes curtos de fonte que o Acrobat grava no /DA (com o /DR do AcroForm) → família/negrito/itálico.
+    private static readonly Dictionary<string, (string Family, bool Bold, bool Italic)> AcrobatShortFonts = new(StringComparer.Ordinal)
+    {
+        ["Helv"] = ("Helvetica", false, false), ["HeBo"] = ("Helvetica", true, false),
+        ["HeOb"] = ("Helvetica", false, true), ["HeBO"] = ("Helvetica", true, true),
+        ["TiRo"] = ("Times", false, false), ["TiBo"] = ("Times", true, false),
+        ["TiIt"] = ("Times", false, true), ["TiBI"] = ("Times", true, true),
+        ["Cour"] = ("Courier", false, false), ["CoBo"] = ("Courier", true, false),
+        ["CoOb"] = ("Courier", false, true), ["CoBO"] = ("Courier", true, true),
+    };
+
+    /// Nome de fonte (padrão-14, curto do Acrobat ou qualquer outro) → família canônica ("Helvetica"/"Times"/
+    /// "Courier", as do diálogo) + negrito + itálico. Melhor esforço: o que não é serifada nem mono vira Helvetica.
+    private static (string Family, bool Bold, bool Italic) FontNameToFormat(string name)
+    {
+        if (AcrobatShortFonts.TryGetValue(name, out var curto)) return curto;
+        var n = name.ToLowerInvariant();
+        string family = n.Contains("courier") || n.Contains("mono") ? "Courier"
+            : n.Contains("times") || (n.Contains("serif") && !n.Contains("sans")) ? "Times"
+            : "Helvetica";
+        return (family, n.Contains("bold"), n.Contains("italic") || n.Contains("oblique"));
+    }
+
+    /// Fix round 2: formatação do FreeText lida de volta. Família/negrito/itálico: a fonte do /AP /N que NÓS
+    /// desenhamos (`/BaseFont` padrão-14 — a que aparece na tela; também conserta documentos da v2.16, cujo /DA
+    /// dizia "/Courier-Oblique" para Helvetica itálico), senão o nome da fonte do /DA (outros programas, nomes
+    /// curtos do Acrobat). Tamanho: o `Tf` do /DA (0 = automático = null). Cor do texto: a do /DA (`rg`/`g`,
+    /// preto = `null`); /C = o espelho dela (caixa do mPDF) ou o FUNDO (`FillArgb`, revisão F1/E4). Nada legível = defaults.
+    private static AnnotationData WithFreeTextFormat(AnnotationData data, PdfAnnotation annot)
+    {
+        var dict = annot.GetPdfObject();
+        string? daFont = null; double? size = null; uint? daColor = null;
+        if (dict.GetAsString(PdfName.DA)?.ToUnicodeString() is { } da)
         {
-            FontFamilyKind.Times => (bold, italic) switch
+            var t = da.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            bool Num(int i, out double v) { v = 0; return i >= 0 && i < t.Length && double.TryParse(t[i], System.Globalization.NumberStyles.Float, inv, out v); }
+            for (int i = 0; i < t.Length; i++)
             {
-                (true, true) => StandardAnnotationFont.TimesBoldItalic,
-                (true, false) => StandardAnnotationFont.TimesBold,
-                (false, true) => StandardAnnotationFont.TimesItalic,
-                _ => StandardAnnotationFont.TimesRoman,
-            },
-            FontFamilyKind.Courier => (bold, italic) switch
-            {
-                (true, true) => StandardAnnotationFont.CourierBoldOblique,
-                (true, false) => StandardAnnotationFont.CourierBold,
-                (false, true) => StandardAnnotationFont.CourierOblique,
-                _ => StandardAnnotationFont.Courier,
-            },
-            _ => (bold, italic) switch
-            {
-                (true, true) => StandardAnnotationFont.HelveticaBoldOblique,
-                (true, false) => StandardAnnotationFont.HelveticaBold,
-                (false, true) => StandardAnnotationFont.HelveticaOblique,
-                _ => StandardAnnotationFont.Helvetica,
-            },
+                if (t[i] == "Tf" && i >= 2 && t[i - 2].StartsWith('/') && Num(i - 1, out var sz))
+                { daFont = t[i - 2][1..]; size = sz > 0 ? sz : null; }
+                else if (t[i] == "rg" && Num(i - 3, out var r) && Num(i - 2, out var g) && Num(i - 1, out var b))
+                    daColor = Argb(r, g, b);
+                else if (t[i] == "g" && Num(i - 1, out var gray))
+                    daColor = Argb(gray, gray, gray);
+            }
+        }
+        string? apFont = null;
+        var fonts = dict.GetAsDictionary(PdfName.AP)?.GetAsStream(PdfName.N)?.GetAsDictionary(PdfName.Resources)?.GetAsDictionary(PdfName.Font);
+        if (fonts is not null)
+            foreach (var key in fonts.KeySet())
+                if (fonts.GetAsDictionary(key)?.GetAsName(PdfName.BaseFont)?.GetValue() is { } bf && StandardFonts.IsStandardFont(bf))
+                { apFont = bf; break; }
+
+        var nome = apFont ?? daFont;
+        var fmt = nome is null ? ((string?)null, false, false) : FontNameToFormat(nome);
+        // Revisão F1 (E4): cor do TEXTO = /DA (`rg`/`g`; preto = null, o default). /C: o espelho da cor do texto que o
+        // mPDF grava (= a cor do /DA) continua sendo a cor do texto; qualquer outro /C é o FUNDO da caixa (Acrobat/
+        // PDFBox) e vai para `FillArgb` — antes virava a cor do texto e o fundo sumia no lift.
+        uint? texto = daColor is 0xFF000000u ? null : daColor;
+        uint? c = data.ColorArgb; // /C cru (ReadColorArgb)
+        bool espelho = c is not null && daColor == c;
+        return data with
+        {
+            FontFamily = fmt.Item1, Bold = fmt.Item2, Italic = fmt.Item3, FontSizePt = size,
+            ColorArgb = espelho ? c : texto,
+            FillArgb = espelho ? null : c,
         };
+
+        static uint Argb(double r, double g, double b)
+        {
+            static uint C(double v) => (uint)Math.Round(Math.Clamp(v, 0, 1) * 255);
+            return 0xFF000000u | (C(r) << 16) | (C(g) << 8) | C(b);
+        }
+    }
 
     /// Sentinela (pós-M7): `null` quando `/C` está ausente OU vazio (0 componentes — spec PDF usa
     /// array vazio para "sem cor"/transparente), em vez do preto opaco presumido antes da revisão.
@@ -1501,7 +2130,7 @@ internal sealed class PdfEditor : IPdfEditor
     }
 
     /// `WidgetRect`/`PageIndex`: retângulo e página do PRIMEIRO widget do campo (`GetWidgets()[0]`),
-    /// no frame NÃO-ROTACIONADO — ver decisão de contrato em `FormFieldData.WidgetRect`
+    /// no frame EXIBIDO (rotação + CropBox) — ver decisão de contrato em `FormFieldData.WidgetRect`
     /// (Contract.cs). `GetWidgets()` cobre tanto o caso "campo terminal = o próprio widget" (Text/
     /// Checkbox/Combo — `GetKids()` nulo) quanto "campo com kids-widget" (Radio — `GetKids()` tem os
     /// botões) numa só chamada, mesmo pra Radio onde `GetKids()` sozinho não bastaria.
@@ -1521,9 +2150,16 @@ internal sealed class PdfEditor : IPdfEditor
             // Frame EXIBIDO (fix/markup-cropbox): relativo à origem da CropBox ∩ MediaBox (ver `PageFrame`
             // e AnnotationData) — o App desenha o destaque do campo nesse frame. Sem página resolvida
             // (residual), fica no espaço do usuário como antes.
-            var (ox, oy) = page is not null ? PageFrame.DisplayedOrigin(page) : (0d, 0d);
+            // Páginas giradas (Task 3 do plano páginas-giradas): o /Rect do widget está no espaço do usuário;
+            // `DisplayFrame` o leva ao frame EXIBIDO (rotação + origem). Rotação 0 = `rel - origem`, como antes.
             if (rect is not null)
-                widgetRect = new PdfQuad(rect.GetLeft() - ox, rect.GetBottom() - oy, rect.GetRight() - ox, rect.GetTop() - oy);
+            {
+                var userRect = new PdfQuad(rect.GetLeft(), rect.GetBottom(), rect.GetRight(), rect.GetTop());
+                if (page is not null)
+                    widgetRect = PageFrame.Frame(page).ToDisplayed(userRect);
+                else
+                    widgetRect = userRect;
+            }
             if (page is not null)
             {
                 int pageNumber = doc.GetPageNumber(page);
@@ -1671,12 +2307,11 @@ internal sealed class PdfEditor : IPdfEditor
         int rotation = isJpeg ? ReadJpegExifOrientationRotation(image) : 0;
 
         // I3 (revisão pré-merge, task-1-report.md "## Fix" — "o /Rotate collision"): a página do PDF
-        // resultante NUNCA gira (/Rotate fica 0 SEMPRE) — GetPageRotations(resultado)[0] == 0 é
-        // invariante ASSERTADO por teste. Girar a página (abordagem anterior, `PdfPage.SetRotation`)
-        // fazia o gate de rotação do Plano 3b (ver XML doc de `GetPageRotations`/`IPdfEditor` em
-        // Contract.cs: "interação de anotação fica DESLIGADA em página girada") bloquear anotação/
-        // assinatura em QUALQUER foto de celular convertida com EXIF != 1 — quebrando exatamente o
-        // fluxo "foto do WhatsApp -> assinar" que este motor existe pra habilitar. Fix por CONSTRUÇÃO:
+        // resultante NUNCA gira (/Rotate fica 0 SEMPRE) — invariante ASSERTADO por teste. Girar a página
+        // (abordagem anterior, `PdfPage.SetRotation`) fazia, na época, o gate de rotação do Plano 3b
+        // bloquear anotação/assinatura em QUALQUER foto de celular convertida com EXIF != 1 (gate REMOVIDO
+        // depois, no plano páginas-giradas). Continua valendo: a foto vira uma página COMUM, sem /Rotate que
+        // o usuário teria de "desgirar" no Organizar ou que imposição/OCR teriam de compensar. Fix por CONSTRUÇÃO:
         // a correção de EXIF é aplicada via MATRIZ DE TRANSFORMAÇÃO no desenho da imagem
         // (`PdfCanvas.ConcatMatrix`), nunca via `PdfPage.SetRotation` — ver `ComputeRotationMatrix` pra
         // derivação explícita. A página nasce DIRETO no tamanho CORRIGIDO (upright); só o desenho da
@@ -1866,8 +2501,8 @@ internal sealed class PdfEditor : IPdfEditor
 
     /// Grava a camada de texto invisível (render mode 3) por página. GATE de assinatura + validação
     /// de TODOS os `PageIndex` ANTES de gravar qualquer coisa (mesmo espírito de RotatePages/
-    /// SetFormFields — nunca aplica metade de um pedido). O MAPEAMENTO px→pt e a rotação estão em
-    /// `ComputeOcrTextMatrix` (ver derivação lá).
+    /// SetFormFields — nunca aplica metade de um pedido). A rotação (baseline EXIBIDA -> `Tm` no espaço do
+    /// usuário, texto em pé) está em `DisplayFrame.TextMatrix` (PageFrame.cs — tabela da derivação lá).
     public byte[] ApplyOcrTextLayer(byte[] pdf, IReadOnlyList<OcrTextLayer> layers)
     {
         using var input = new MemoryStream(pdf);
@@ -1897,18 +2532,14 @@ internal sealed class PdfEditor : IPdfEditor
                     // fix/markup-cropbox: o bitmap do OCR é a página EXIBIDA — o PDFium rasteriza a
                     // CropBox recortada pela MediaBox, não a MediaBox. Escala e origem vêm dessa caixa
                     // (`PageFrame`); sem /CropBox é a própria MediaBox (comportamento intocado).
-                    var mediaBox = PageFrame.DisplayedBox(page);
-                    double llx = mediaBox.GetLeft(), lly = mediaBox.GetBottom();
-                    double wPt = mediaBox.GetWidth(), hPt = mediaBox.GetHeight();
-                    // `/Rotate` normalizado 0/90/180/270 (mesma normalização de GetPageRotations —
-                    // defesa contra um `/Rotate` de origem externa negativo/fora de faixa).
-                    int rotation = ((page.GetRotation() % 360) + 360) % 360;
+                    // Páginas giradas (2026-10-13): o frame (caixa + origem + `/Rotate` normalizado) vem da
+                    // transformação ÚNICA exibido↔usuário (`DisplayFrame`, PageFrame.cs).
+                    var frame = PageFrame.Frame(page);
 
                     // O bitmap de OCR foi rasterizado NA orientação EXIBIDA (PDFium já aplica /Rotate):
                     // para 90/270 a largura-exibida corresponde à ALTURA do MediaBox e vice-versa.
-                    bool swap = rotation is 90 or 270;
-                    double dispWpt = swap ? hPt : wPt;
-                    double dispHpt = swap ? wPt : hPt;
+                    double dispWpt = frame.DisplayedWidth;
+                    double dispHpt = frame.DisplayedHeight;
                     double fatorX = dispWpt / layer.SourceWidthPx;
                     double fatorY = dispHpt / layer.SourceHeightPx;
 
@@ -1928,7 +2559,8 @@ internal sealed class PdfEditor : IPdfEditor
                         double fontSize = box.HeightPx * fatorY; // altura da caixa em pt (exibido)
                         if (fontSize <= 0) continue;
 
-                        var m = ComputeOcrTextMatrix(rotation, wPt, hPt, xbDisp, ybDisp, llx, lly);
+                        // Baseline exibida -> usuário com o texto EM PÉ para o leitor (ver DisplayFrame.TextMatrix).
+                        var m = frame.TextMatrix(new PdfPoint(xbDisp, ybDisp));
                         // Largura-alvo = a da caixa do OCR no frame EXIBIDO (fatorX) — ver EscreverPalavraOcrInvisivel.
                         EscreverPalavraOcrInvisivel(canvas, font, box.Text, fontSize, box.WidthPx * fatorX, m);
                     }
@@ -1950,7 +2582,7 @@ internal sealed class PdfEditor : IPdfEditor
     /// (OutputIntent sRGB embutido, título/autor sincronizados no XMP pelo próprio `PdfADocument`).
     /// Se `pag.Texto` tiver caixas, desenha por cima uma camada de texto INVISÍVEL (render mode 3)
     /// com a fonte embutida `fonteInvisivelTtf` — reusa a MESMA matemática px→pt de
-    /// `ComputeOcrTextMatrix` (rotação 0, já que estas páginas são recém-criadas, nunca giradas) e a MESMA
+    /// `DisplayFrame.TextMatrix` (rotação 0, já que estas páginas são recém-criadas, nunca giradas) e a MESMA
     /// escrita por palavra `EscreverPalavraOcrInvisivel` (largura da caixa do OCR via `Tz`, só comprime).
     /// `PdfADocument` RECUSA gerar bytes fora das regras do PDF/A (lança em vez de devolver um
     /// documento inválido) — se este método retorna, o documento é válido por construção.
@@ -2016,7 +2648,7 @@ internal sealed class PdfEditor : IPdfEditor
                     {
                         // Página recém-criada: sem /Rotate (rotação 0), MediaBox começa em (0,0) —
                         // dispensa a reconciliação de orientação-exibida de ApplyOcrTextLayer, mas
-                        // REUSA a MESMA `ComputeOcrTextMatrix` (rotation:0, llx:0, lly:0) pra manter
+                        // REUSA a MESMA `DisplayFrame.TextMatrix` (rotação 0, origem 0,0) pra manter
                         // uma única fonte de verdade do mapeamento px->pt (fator = pt/px da própria
                         // página, igual à derivação de fatorX/fatorY em ApplyOcrTextLayer).
                         double fatorX = pag.LarguraPt / pag.FonteLarguraPx;
@@ -2035,7 +2667,7 @@ internal sealed class PdfEditor : IPdfEditor
                             double fontSize = box.HeightPx * fatorY;
                             if (fontSize <= 0) continue;
 
-                            var m = ComputeOcrTextMatrix(0, pag.LarguraPt, pag.AlturaPt, xbDisp, ybDisp, 0, 0);
+                            var m = new DisplayFrame(0, pag.LarguraPt, pag.AlturaPt).TextMatrix(new PdfPoint(xbDisp, ybDisp));
                             EscreverPalavraOcrInvisivel(canvas, fonteInv, box.Text, fontSize, box.WidthPx * fatorX, m);
                         }
                         canvas.RestoreState();
@@ -2093,52 +2725,6 @@ internal sealed class PdfEditor : IPdfEditor
     private static string ResolveIccResourceName() =>
         typeof(PdfEditor).Assembly.GetManifestResourceNames()
             .Single(n => n.EndsWith("sRGB2014.icc"));
-
-    /// Matriz de TEXTO (`Tm` — `SetTextMatrix`, convenção PDF `[a b c d e f]`: `x' = a*x + c*y + e`,
-    /// `y' = b*x + d*y + f`) que posiciona a baseline da palavra no frame NÃO-ROTACIONADO do MediaBox,
-    /// aplicando a rotação INVERSA de `/Rotate` para o texto aparecer alinhado quando o leitor exibe a
-    /// página girada. Mesma disciplina de frame do carimbo do Plano 3b/4 (`/Rotate` é EXIBIÇÃO; o
-    /// conteúdo é gravado não-rotacionado). A escala do glifo vem SÓ do `SetFontAndSize` (fontSize) —
-    /// esta matriz carrega apenas rotação + translação (parte linear com determinante ±1).
-    ///
-    /// Derivação. Seja a transformação de EXIBIÇÃO `T_θ` que leva um ponto não-rotacionado `(x,y)`
-    /// (y para cima, origem 0) ao ponto exibido `(X,Y)` (idem), para uma página de dimensões
-    /// não-rotacionadas `W×H` (`W=wPt`, `H=hPt`):
-    ///   θ=0:   (X,Y) = (x,          y)           [exibida W×H]
-    ///   θ=90:  (X,Y) = (y,          W - x)        [exibida H×W]  (giro horário de 90°)
-    ///   θ=180: (X,Y) = (W - x,      H - y)        [exibida W×H]
-    ///   θ=270: (X,Y) = (H - y,      x)            [exibida H×W]
-    /// A translação `(e,f)` é a IMAGEM INVERSA (`T_θ⁻¹`) da baseline exibida `(xbDisp, ybDisp)`, mais o
-    /// deslocamento da origem do MediaBox `(llx,lly)`:
-    ///   θ=0:   (xbDisp,        ybDisp)
-    ///   θ=90:  (W - ybDisp,    xbDisp)
-    ///   θ=180: (W - xbDisp,    H - ybDisp)
-    ///   θ=270: (ybDisp,        H - xbDisp)
-    /// A parte linear `(a,b,c,d)` é a imagem, por `T_θ⁻¹`, dos vetores de direção do texto (avanço
-    /// `+X`, subida `+Y` no espaço exibido) — o que rotaciona o glifo em `-θ`:
-    ///   θ=0:   (1, 0, 0, 1)      θ=90:  (0, 1, -1, 0)
-    ///   θ=180: (-1,0, 0,-1)      θ=270: (0,-1,  1, 0)
-    /// Prova end-to-end nas 4 rotações (extração da baseline real via iText + reaplicação independente
-    /// de `T_θ` no teste, batendo na baseline exibida esperada): ver `ApplyOcrTextLayerTests`.
-    private static (double A, double B, double C, double D, double E, double F) ComputeOcrTextMatrix(
-        int rotation, double wPt, double hPt, double xbDisp, double ybDisp, double llx, double lly)
-    {
-        (double a, double b, double c, double d) = rotation switch
-        {
-            90 => (0, 1, -1, 0),
-            180 => (-1, 0, 0, -1),
-            270 => (0, -1, 1, 0),
-            _ => (1, 0, 0, 1),
-        };
-        (double tx, double ty) = rotation switch
-        {
-            90 => (wPt - ybDisp, xbDisp),
-            180 => (wPt - xbDisp, hPt - ybDisp),
-            270 => (ybDisp, hPt - xbDisp),
-            _ => (xbDisp, ybDisp),
-        };
-        return (a, b, c, d, tx + llx, ty + lly);
-    }
 
     /// Lê largura/altura direto do chunk IHDR de um PNG — offsets FIXOS pelo spec (assinatura de 8
     /// bytes; depois `length`(4, ignorado aqui) + `"IHDR"`(4) + `width`(4, big-endian) +

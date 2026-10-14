@@ -58,6 +58,20 @@ internal sealed class FakePdfEditor : IPdfEditor
         return Fixtures.ThirtyPages();
     }
 
+    // Revisão F1 (E9): a ligação no App (chamar ao abrir) vem na próxima rodada — o fake não tem nada a regenerar.
+    public byte[]? RegenerarAparenciasAusentes(byte[] pdf) => null;
+
+    // Revisão F2 (A3): o fake não tem frames — a anotação volta intacta (o mapeamento real é testado com o motor).
+    public AnnotationData MapearParaOutraVersao(byte[] pdfOrigem, byte[] pdfDestino, AnnotationData a) => a;
+    // Revisão F2 (A9): aviso da imposição — o fake não tem conteúdo interativo.
+    public bool TemConteudoInterativo(byte[] pdf) => false;
+    // Fix round 1 (A1): direção do texto — configurável; null = em pé.
+    public int? DirecaoDoTextoResult { get; set; }
+    public int? DirecaoDoTexto(byte[] pdf, int pageIndex, IReadOnlyList<PdfQuad> quads) => DirecaoDoTextoResult;
+    // Revisão I3: medida do texto da caixa — o fake devolve o comprimento (só a comparação velho×novo importa).
+    public double LarguraDaLinhaMaisLonga(AnnotationData caixa) =>
+        (caixa.Content ?? string.Empty).Split('\n').Max(l => l.TrimEnd().Length);
+
     // Corrigir texto: o fake devolve o que o teste configurar e registra a chamada.
     public TextStyleProbe? ProbeResult { get; set; }
     public TextCorrection? LastCorrection { get; private set; }
@@ -100,7 +114,7 @@ internal sealed class FakePdfEditor : IPdfEditor
     // C1 (revisão final pré-merge, Plano 3b): configurável pros testes de aviso "documento de origem
     // assinado" (OrganizerViewModel.ExtractSelected/MainViewModel.Merge/Split) — default `false`
     // preserva o comportamento de todo teste PRÉ-EXISTENTE que nunca configura `HasSignaturesResult`
-    // (mesmo espírito de `PageRotationsResult`/`ReadOutlineResult` acima).
+    // (mesmo espírito de `ReadOutlineResult` abaixo).
     public bool HasSignaturesResult { get; set; }
     public int HasSignaturesCallCount { get; private set; }
     public Exception? ThrowOnHasSignatures { get; set; }
@@ -230,21 +244,7 @@ internal sealed class FakePdfEditor : IPdfEditor
     public byte[] ImporEmFolhas(byte[] pdf, IReadOnlyList<ColocacaoFolha> colocacoes, double folhaLarguraPt, double folhaAlturaPt)
         => Fixtures.A4();
 
-    /// Costura de rotação (Task 3, Plano 3b) — default TODAS as páginas em 0 (não giradas), mesmo
-    /// espírito de `ReadAnnotationsResult`/`HasSignatures` acima: preserva o comportamento de todo
-    /// teste PRÉ-EXISTENTE que nunca configura rotação (nunca lança, nunca bloqueia nada) — só os
-    /// testes da costura de rotação (abaixo) configuram `PageRotationsResult`.
-    public IReadOnlyList<int>? PageRotationsResult { get; set; }
-    public int GetPageRotationsCallCount { get; private set; }
-
-    public IReadOnlyList<int> GetPageRotations(byte[] pdf)
-    {
-        GetPageRotationsCallCount++;
-        return PageRotationsResult ?? Array.Empty<int>();
-    }
-
-    /// Sumário (Task 5, Plano 3b) — default lista VAZIA (mesmo espírito de `PageRotationsResult`, não
-    /// de `ReadAnnotationsResult`): preserva o comportamento de todo teste PRÉ-EXISTENTE que nunca
+    /// Sumário (Task 5, Plano 3b) — default lista VAZIA (não o `null`-lança de `ReadAnnotationsResult`): preserva o comportamento de todo teste PRÉ-EXISTENTE que nunca
     /// configura `ReadOutlineResult` — `RefreshOutlineAsync` sempre TERMINA sem lançar, `Outline` fica
     /// vazio (`HasOutline = false`), nunca precisa de configuração pra não quebrar testes alheios.
     public IReadOnlyList<OutlineNode>? ReadOutlineResult { get; set; }
@@ -428,12 +428,20 @@ internal sealed class FakeAnnotationTextDialogService : IAnnotationTextDialogSer
         return Result;
     }
 
-    public AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null)
+    /// Formatação inicial recebida (edição pré-preenchida).
+    public AnnotationTextResult? LastInitialFormat { get; private set; }
+    /// Se não-nulo (e `FormatResult` nulo): devolve a formatação INICIAL recebida com este texto (simula o
+    /// usuário que só troca o texto e confirma).
+    public string? EchoInitialFormat { get; set; }
+
+    public AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null, AnnotationTextResult? initialFormat = null)
     {
         CallCount++;
         LastTitle = title;
         LastInitialText = initialText;
+        LastInitialFormat = initialFormat;
         if (FormatResult is not null) return FormatResult;
+        if (EchoInitialFormat is not null && initialFormat is not null) return initialFormat with { Text = EchoInitialFormat };
         return Result is null ? null : new AnnotationTextResult(Result, 12, false, false, "Helvetica", 0xFF000000);
     }
 }
@@ -493,8 +501,13 @@ internal sealed class SpyExportImageDialogService : IExportImageDialogService
     public void ShowExportImageDialog(ExportImageViewModel viewModel) { CallCount++; LastViewModel = viewModel; }
 }
 
-public class DocumentViewModelTests
+public class DocumentViewModelTests : IDisposable
 {
+    // Pastas de AppConfig criadas pelos builders desta classe — apagadas no Dispose (uma instância por teste).
+    private readonly PastasDeConfigTemporarias _cfgs = new();
+
+    public void Dispose() => _cfgs.Dispose();
+
     [Fact] // 30 páginas viram 30 PageViewModels com tamanho A4 em pixels de tela (zoom 1.0)
     public void Ctor_CreatesPageViewModels_WithDisplaySizes()
     {
@@ -879,10 +892,10 @@ public class DocumentViewModelTests
 
     // ---- Task 6 (Plano 3a): ApplyMarkupCommand (marca-texto/sublinhado/riscado) --------------------
 
-    private static (DocumentViewModel doc, FakePdfEditor fake, List<string> errors) BuildForMarkup(
+    private (DocumentViewModel doc, FakePdfEditor fake, List<string> errors) BuildForMarkup(
         string autor = "Autor de Teste")
     {
-        var configDir = Path.Combine(Path.GetTempPath(), $"mpdf-markup-cfg-{Guid.NewGuid():N}");
+        var configDir = _cfgs.Nova("markup");
         var fake = new FakePdfEditor();
         var errors = new List<string>();
         var doc = new DocumentViewModel(
@@ -1100,10 +1113,10 @@ public class DocumentViewModelTests
 
     // ==== Task 7 (Plano 3a): Nota adesiva + caixa de texto (criar/editar/mover/excluir + lift) ======
 
-    private static (DocumentViewModel doc, FakePdfEditor fake, FakeAnnotationTextDialogService dialog, List<string> errors) BuildForAnnotations(
+    private (DocumentViewModel doc, FakePdfEditor fake, FakeAnnotationTextDialogService dialog, List<string> errors) BuildForAnnotations(
         string autor = "Autor de Teste", IFileDialogService? dialogs = null)
     {
-        var configDir = Path.Combine(Path.GetTempPath(), $"mpdf-annot-cfg-{Guid.NewGuid():N}");
+        var configDir = _cfgs.Nova("annot");
         var fake = new FakePdfEditor();
         var dialog = new FakeAnnotationTextDialogService();
         var errors = new List<string>();
@@ -1119,8 +1132,8 @@ public class DocumentViewModelTests
 
     // Grava `bytes` num arquivo TEMPORÁRIO de verdade (Task 3, Plano 7 — "🖼 Imagem") — ToggleImageTool
     // lê o caminho devolvido pelo diálogo via `File.ReadAllBytes` de verdade (não seamado), mesmo
-    // padrão de `ImageImportTests.WriteFile`. Sem limpeza explícita (mesmo espírito de `configDir` em
-    // BuildForAnnotations acima — resíduo de %TEMP% aceito, nunca tocado pela suíte de novo).
+    // padrão de `ImageImportTests.WriteFile`. Sem limpeza explícita (resíduo de %TEMP% aceito, nunca tocado
+    // pela suíte de novo; a pasta de config dos builders desta classe, essa sim, é apagada no Dispose).
     private static string WriteTempImageFile(byte[] bytes, string ext = ".png")
     {
         var path = Path.Combine(Path.GetTempPath(), $"mpdf-imgtool-{Guid.NewGuid():N}{ext}");
@@ -1362,52 +1375,90 @@ public class DocumentViewModelTests
         Assert.Null(d.SelectedAnnotation);
     }
 
-    // ---- COSTURA DE ROTAÇÃO (Task 3, Plano 3b — requisito de 1ª ordem) ------------------------------
-    // PDFium relata o quadro ROTACIONADO (PageSizes/hit-tests/drags) enquanto os retângulos de
-    // AnnotationData do iText ficam SEMPRE no quadro NÃO-ROTACIONADO (provado no Task 2). v1: interação
-    // de anotação DESLIGA em página girada (ver doc XML de DocumentViewModel.IsPageRotated) em vez de
-    // compor a transformação — os testes abaixo provam o gate (hit-test nulo + no-op com aviso) e um
-    // controle NEGATIVO (página SEM rotação continua funcionando normalmente).
+    // ---- PÁGINAS GIRADAS: a cobertura de rotação está TODA em PaginasGiradasVmTests (motor + PDFium reais, página
+    // com /Rotate de verdade), SignaturePanelTests/SignCommandTests (carimbo) e CorrigirTexto*Tests. Os antigos testes
+    // "_PageRotated_" desta classe usavam o FakePdfEditor com uma rotação que nenhum código lê sobre um documento
+    // retrato — eram idênticos aos gêmeos não girados e foram removidos ou convertidos (Fix F3/T1).
 
-    [Fact]
-    public async Task HitTestAnnotation_PageRotated_ReturnsNullEvenIfGeometricallyInsideRect()
+    // ---- Tolerância de traço (Task 5): bbox de Linha/Seta = os 2 pontos (Task 2), sem folga de espessura ----
+
+    public static IEnumerable<object[]> TracosFinos() => new[]
+    {
+        // kind, bbox (L, B, R, T): horizontal (altura 0), vertical (largura 0), tinta de 1 traço horizontal
+        new object[] { AnnotationKind.Line, 100.0, 200.0, 300.0, 200.0 },
+        new object[] { AnnotationKind.Arrow, 150.0, 100.0, 150.0, 400.0 },
+        new object[] { AnnotationKind.Ink, 100.0, 300.0, 300.0, 300.0 },
+    };
+
+    [Theory]
+    [MemberData(nameof(TracosFinos))]
+    public async Task HitTestAnnotation_TracoFino_AceitaCliquePertoDaLinha(AnnotationKind kind, double l, double b, double r, double t)
     {
         var (doc, fake, _, _) = BuildForAnnotations();
         using var d = doc;
-        var a1 = new AnnotationData { Id = "a1", Kind = AnnotationKind.StickyNote, PageIndex = 0, LeftPt = 10, BottomPt = 10, RightPt = 30, TopPt = 30 };
-        fake.ReadAnnotationsResult = new[] { a1 };
-        fake.PageRotationsResult = new[] { 90 };
+        var a = new AnnotationData { Id = "traco", Kind = kind, PageIndex = 0, LeftPt = l, BottomPt = b, RightPt = r, TopPt = t };
+        fake.ReadAnnotationsResult = new[] { a };
         await d.RefreshAnnotationsByPageAsync();
+        bool horizontal = t - b < 1;
+        double cx = (l + r) / 2, cy = (b + t) / 2;
+        // Folga = StrokeHitTolerancePx px de TELA: em pt depende do zoom.
+        double tolPt = DocumentViewModel.StrokeHitTolerancePx / (d.Zoom * PageViewModel.PtToPx);
+        double perto = tolPt * 0.6, longe = tolPt * 1.6;
+        (double X, double Y) Desloca(double off) => horizontal ? (cx, cy + off) : (cx + off, cy);
 
-        Assert.Null(d.HitTestAnnotation(0, 20, 20)); // geometricamente dentro do retângulo — mesmo assim null
+        Assert.Equal("traco", d.HitTestAnnotation(0, Desloca(perto).X, Desloca(perto).Y)?.Id);
+        Assert.Equal("traco", d.HitTestAnnotation(0, Desloca(-perto).X, Desloca(-perto).Y)?.Id);
+        Assert.Null(d.HitTestAnnotation(0, Desloca(longe).X, Desloca(longe).Y));
+        // Ao longo da linha a folga também vale nas pontas (clique logo antes do início).
+        Assert.Equal("traco", horizontal ? d.HitTestAnnotation(0, l - perto, cy)?.Id : d.HitTestAnnotation(0, cx, b - perto)?.Id);
     }
 
-    [Fact] // controle negativo: página SEM rotação (0°) continua com hit-test normal — o gate não
-    // over-bloqueia página nenhuma que não esteja de fato girada.
+    [Fact] // a folga é de TELA: com zoom 2x, a mesma distância em pt que pegava em 1x passa a ficar de fora.
+    public async Task HitTestAnnotation_TracoFino_FolgaAcompanhaOZoom()
+    {
+        var (doc, fake, _, _) = BuildForAnnotations();
+        using var d = doc;
+        fake.ReadAnnotationsResult = new[] { new AnnotationData { Id = "linha", Kind = AnnotationKind.Line, PageIndex = 0, LeftPt = 100, BottomPt = 200, RightPt = 300, TopPt = 200 } };
+        await d.RefreshAnnotationsByPageAsync();
+        d.Zoom = 1.0;
+        double tol1 = DocumentViewModel.StrokeHitTolerancePx / PageViewModel.PtToPx;
+        Assert.Equal("linha", d.HitTestAnnotation(0, 200, 200 + tol1 * 0.8)?.Id);
+
+        d.Zoom = 2.0;
+        Assert.Null(d.HitTestAnnotation(0, 200, 200 + tol1 * 0.8)); // em 2x a folga em pt é a metade
+        Assert.Equal("linha", d.HitTestAnnotation(0, 200, 200 + tol1 * 0.4)?.Id);
+    }
+
+    [Fact] // controle negativo: kinds de ÁREA (nota, caixa, retângulo, marcação) continuam com o bbox exato.
+    public async Task HitTestAnnotation_KindsDeArea_SemFolga()
+    {
+        var (doc, fake, _, _) = BuildForAnnotations();
+        using var d = doc;
+        fake.ReadAnnotationsResult = new[] { new AnnotationData { Id = "ret", Kind = AnnotationKind.Rectangle, PageIndex = 0, LeftPt = 100, BottomPt = 100, RightPt = 200, TopPt = 200 } };
+        await d.RefreshAnnotationsByPageAsync();
+
+        Assert.Equal("ret", d.HitTestAnnotation(0, 150, 199.9)?.Id);
+        Assert.Null(d.HitTestAnnotation(0, 150, 201));
+    }
+
+    [Fact] // controle: página SEM rotação continua com hit-test normal.
     public async Task HitTestAnnotation_PageNotRotated_StillHitTestsNormally()
     {
         var (doc, fake, _, _) = BuildForAnnotations();
         using var d = doc;
         var a1 = new AnnotationData { Id = "a1", Kind = AnnotationKind.StickyNote, PageIndex = 0, LeftPt = 10, BottomPt = 10, RightPt = 30, TopPt = 30 };
         fake.ReadAnnotationsResult = new[] { a1 };
-        fake.PageRotationsResult = new[] { 0 };
         await d.RefreshAnnotationsByPageAsync();
 
         Assert.Equal("a1", d.HitTestAnnotation(0, 20, 20)?.Id);
     }
 
-    [Fact] // M2 (revisão Opus) — controle negativo pro GATE DE ESCRITA (não só o de leitura acima):
-    // `PageRotationsResult` explícito `new[] { 0 }` — NÃO o array vazio que só o padrão "cache ainda
-    // não carregou" da fake usa por default — prova que `IsPageRotated` avalia corretamente um array
-    // do TAMANHO REAL que `GetPageRotations` de produção sempre devolve (nunca vazio pra um documento
-    // com páginas), não só o fallback "desconhecido = não girada" que um array vazio dispararia por
-    // acidente e deixaria este caminho sem cobertura real.
+    [Fact]
     public async Task PlaceAnnotationAtAsync_PageNotRotated_StillPlaces()
     {
         var (doc, fake, dialog, errors) = BuildForAnnotations();
         using var d = doc;
         fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 0 };
         await d.RefreshAnnotationsByPageAsync();
         dialog.Result = "texto qualquer";
         d.ToggleStickyNoteToolCommand.Execute(null);
@@ -1419,105 +1470,24 @@ public class DocumentViewModelTests
         Assert.Equal(AnnotationTool.None, d.ActiveTool); // one-shot: ferramenta desativa após sucesso
     }
 
-    [Fact] // I1 (revisão Opus) — MUTATION-PROOF: sem `await EnsureRotationCacheFreshAsync()` antes do
-    // gate (ver doc XML de `IsPageRotated`/`EnsureRotationCacheFreshAsync`), este teste FALHARIA — a
-    // escrita passaria despercebida numa página que ACABOU de virar rotacionada. Simula a JANELA DE
-    // OBSOLESCÊNCIA que Delete/Move (organizador, Task 3) introduzem ao RE-INDEXAR páginas: um
-    // `Session.Apply` troca `Session.Snapshot` SEM deixar o refresh fire-and-forget de
-    // `OnSessionApplied` alcançar (xUnit puro não bombeia `Dispatcher` — mesmo padrão já documentado em
-    // `HitTestAnnotation_StaleCache_ReturnsNullEvenIfGeometricallyInsideRect` acima) — o cache de
-    // rotação fica preso no snapshot ANTIGO até este teste forçar a escrita a lidar com isso sozinha.
-    public async Task PlaceAnnotationAtAsync_StaleRotationCacheAfterApply_RefreshesBeforeGating()
+    [Fact] // antes: "StaleRotationCacheAfterApply_RefreshesBeforeGating" (I1, revisão Opus; o cache de rotação não existe
+    // mais). Uma escrita logo depois de um Apply (cache de anotações obsoleto, refresh fire-and-forget não alcançado)
+    // coloca normalmente.
+    public async Task PlaceAnnotationAtAsync_AfterApplyWithStaleCache_StillPlaces()
     {
         var (doc, fake, dialog, errors) = BuildForAnnotations();
         using var d = doc;
         fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 0 }; // documento ORIGINAL: página 0 NÃO girada
         await d.RefreshAnnotationsByPageAsync();
-        Assert.Equal(1, fake.GetPageRotationsCallCount);
 
-        // Session.Apply troca o snapshot SEM disparar (de verdade) o refresh fire-and-forget de
-        // OnSessionApplied — cache fica OBSOLETO aqui, de propósito.
-        d.Session.Apply(Fixtures.ThirtyPages());
-        // Cenário do achado do revisor: no documento NOVO, a página 0 (que antes NÃO era) agora ESTÁ
-        // rotacionada (ex.: era a antiga página 1, deslocada pro índice 0 por um Delete/Move).
-        fake.PageRotationsResult = new[] { 90 };
-
+        d.Session.Apply(Fixtures.ThirtyPages()); // troca o snapshot sem o refresh alcançar (xUnit não bombeia Dispatcher)
         dialog.Result = "texto qualquer";
         d.ToggleStickyNoteToolCommand.Execute(null);
 
         await d.PlaceAnnotationAtAsync(0, 100, 100);
 
-        Assert.True(fake.GetPageRotationsCallCount >= 2,
-            "EnsureRotationCacheFreshAsync deveria ter disparado um refresh novo (cache estava obsoleto)");
-        Assert.Equal(0, fake.AddAnnotationCallCount); // gateado com dado FRESCO (rotacionado), não o velho
-        Assert.Contains(errors, e => e.Contains("Página girada"));
-    }
-
-    [Fact]
-    public async Task PlaceAnnotationAtAsync_PageRotated_NotifiesAndDoesNotAddAnnotation()
-    {
-        var (doc, fake, dialog, errors) = BuildForAnnotations();
-        using var d = doc;
-        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>(); // Read/GetPageRotations = MESMO refresh (ver doc XML)
-        fake.PageRotationsResult = new[] { 90 };
-        await d.RefreshAnnotationsByPageAsync();
-        dialog.Result = "texto qualquer";
-        d.ToggleStickyNoteToolCommand.Execute(null);
-
-        await d.PlaceAnnotationAtAsync(0, 100, 100);
-
-        Assert.Equal(0, fake.AddAnnotationCallCount);
-        Assert.Contains(errors, e => e.Contains("Página girada"));
-        Assert.Equal(AnnotationTool.StickyNote, d.ActiveTool); // ferramenta continua ativa (no-op, não falha)
-    }
-
-    [Fact]
-    public async Task PlaceStampAtAsync_PageRotated_NotifiesAndDoesNotAddAnnotation()
-    {
-        var (doc, fake, _, errors) = BuildForAnnotations();
-        using var d = doc;
-        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 180 };
-        await d.RefreshAnnotationsByPageAsync();
-        d.ToggleStampTool(Fixtures.OnePixelPng());
-
-        await d.PlaceStampAtAsync(0, 100, 100);
-
-        Assert.Equal(0, fake.AddAnnotationCallCount);
-        Assert.Contains(errors, e => e.Contains("Página girada"));
-    }
-
-    [Fact]
-    public async Task CommitDrawingAsync_PageRotated_NotifiesAndDoesNotAddAnnotation()
-    {
-        var (doc, fake, _, errors) = BuildForAnnotations();
-        using var d = doc;
-        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 270 };
-        await d.RefreshAnnotationsByPageAsync();
-        d.ToggleRectangleToolCommand.Execute(null);
-
-        await d.CommitDrawingAsync(0, new[] { new PdfPoint(10, 10), new PdfPoint(50, 50) });
-
-        Assert.Equal(0, fake.AddAnnotationCallCount);
-        Assert.Contains(errors, e => e.Contains("Página girada"));
-    }
-
-    [Fact]
-    public async Task ApplyMarkup_PageRotated_NotifiesAndDoesNotAddAnnotation()
-    {
-        var (doc, fake, errors) = BuildForMarkup();
-        using var d = doc;
-        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 90 };
-        await d.RefreshAnnotationsByPageAsync();
-        SelectSomeText(d.Pages[0]);
-
-        await d.ApplyMarkupCommand.ExecuteAsync(AnnotationKind.Highlight);
-
-        Assert.Equal(0, fake.AddAnnotationCallCount);
-        Assert.Contains(errors, e => e.Contains("Página girada"));
+        Assert.Equal(1, fake.AddAnnotationCallCount);
+        Assert.Empty(errors);
     }
 
     // ---- Del exclui -----------------------------------------------------------------------------
@@ -2200,29 +2170,6 @@ public class DocumentViewModelTests
         Assert.Equal(0, fake.RemoveAnnotationCallCount); // nunca tentou o lift
     }
 
-    [Fact] // página GIRADA: mesmo gate silencioso de MoveSelectedAnnotationAsync/CommitDrawingAsync —
-    // aqui SEM aviso (_notifyError) porque o comando sempre teve efeito (mudou o padrão), diferente dos
-    // 4 pontos de ESCRITA que avisam "Página girada" por não terem feito nada de jeito nenhum.
-    // `HitTestAnnotation`/`SelectAnnotationAt` já são gateados por rotação (nunca devolvem uma anotação
-    // de página girada — ver doc XML de IsPageRotated) — este teste seta `SelectedAnnotation` DIRETO
-    // (setter público, mesmo cenário M1 documentado em MoveSelectedAnnotationAsync) pra alcançar o guard
-    // de dentro de SelectFillAsync mesmo assim.
-    public async Task SelectFillCommand_RotatedPage_ChangesDefault_NoLift_NoNotice()
-    {
-        var (doc, fake, _, errors) = BuildForAnnotations();
-        using var d = doc;
-        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 90 };
-        await d.RefreshAnnotationsByPageAsync();
-        d.SelectedAnnotation = new AnnotationData { Id = "caixa-1", Kind = AnnotationKind.Rectangle, PageIndex = 0, LeftPt = 10, BottomPt = 10, RightPt = 30, TopPt = 30 };
-
-        await d.SelectFillVerdeCommand.ExecuteAsync(null);
-
-        Assert.Equal(DocumentViewModel.ColorVerde, d.SelectedFillColorArgb);
-        Assert.Equal(0, fake.RemoveAnnotationCallCount);
-        Assert.Empty(errors); // no-op silencioso — ver doc XML de SelectFillAsync
-    }
-
     [Fact] // seleção existe mas NÃO é Rectangle (ex.: StickyNote) -> no-op, mesmo espírito do filtro de
     // EditSelectedAnnotationCommand acima (Task 1: FillArgb só tem efeito em Rectangle).
     public async Task SelectFillCommand_NonRectangleSelected_NoLift()
@@ -2482,24 +2429,6 @@ public class DocumentViewModelTests
         Assert.Empty(errors);
         Assert.Equal(DocumentViewModel.ColorAzul, d.SelectedMarkupColorArgb);
         Assert.Equal(0, fake.RemoveAnnotationCallCount); // nunca tentou o lift
-    }
-
-    [Fact] // página GIRADA: mesmo gate silencioso de SelectFillCommand_RotatedPage_ChangesDefault_NoLift_NoNotice
-    // — padrão muda, nenhum lift, SEM aviso (_notifyError).
-    public async Task SelectEspessuraCommand_RotatedPage_ChangesDefault_NoLift_NoNotice()
-    {
-        var (doc, fake, _, errors) = BuildForAnnotations();
-        using var d = doc;
-        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 90 };
-        await d.RefreshAnnotationsByPageAsync();
-        d.SelectedAnnotation = new AnnotationData { Id = "caixa-1", Kind = AnnotationKind.Rectangle, PageIndex = 0, LeftPt = 10, BottomPt = 10, RightPt = 30, TopPt = 30 };
-
-        await d.SelectEspessuraGrossaCommand.ExecuteAsync(null);
-
-        Assert.Equal(DocumentViewModel.EspessuraGrossa, d.SelectedStrokeWidthPt);
-        Assert.Equal(0, fake.RemoveAnnotationCallCount);
-        Assert.Empty(errors); // no-op silencioso
     }
 
     [Fact] // seleção existe mas NÃO é forma (StickyNote) -> no-op, mesmo espírito de
@@ -3036,27 +2965,6 @@ public class DocumentViewModelTests
         Assert.Equal(75, sent.TopPt - sent.BottomPt, 0.5);
     }
 
-    [Fact] // costura de rotação (exemplar: PlaceStampAtAsync_PageRotated_NotifiesAndDoesNotAddAnnotation)
-    // — página girada recusa com o MESMO aviso pt-BR, ferramenta continua ativa (usuário tenta outra
-    // página), nenhuma anotação adicionada.
-    public async Task PlaceStampAtAsync_ViaPickedImageTool_PageRotated_NotifiesAndDoesNotAddAnnotation()
-    {
-        var path = WriteTempImageFile(MakePng(10, 10));
-        var dialogs = new FakePickImageDialog(path);
-        var (doc, fake, _, errors) = BuildForAnnotations(dialogs: dialogs);
-        using var d = doc;
-        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 90 };
-        await d.RefreshAnnotationsByPageAsync(); // popula o cache de rotação ANTES da ferramenta ativar
-        d.ToggleImageToolCommand.Execute(null);
-
-        await d.PlaceStampAtAsync(0, 100, 100);
-
-        Assert.Equal(0, fake.AddAnnotationCallCount);
-        Assert.Contains(errors, e => e.Contains("girada"));
-        Assert.Equal(AnnotationTool.ImageStamp, d.ActiveTool); // continua ativa — mesmo contrato do exemplar
-    }
-
     [Fact] // mesmo gate CanEdit de todo Toggle*ToolCommand (exemplar: ToolCommands_CanExecute_FalseWhenSignedDocument).
     public void ToggleImageToolCommand_CanExecute_FalseWhenSignedDocument()
     {
@@ -3355,7 +3263,7 @@ public class DocumentViewModelTests
 
     // ==== Sumário (Task 5, Plano 3b) ================================================================
     //
-    // Exemplar: testes de `GetPageRotations`/`AnnotationsByPage` acima — `RefreshOutlineAsync` é
+    // Exemplar: testes de `AnnotationsByPage` acima — `RefreshOutlineAsync` é
     // chamado EXPLICITAMENTE (`await d.RefreshOutlineAsync()`), nunca esperando o `_dispatcher.
     // BeginInvoke` fire-and-forget disparar sozinho (xUnit puro não bombeia a fila do Dispatcher —
     // mesmo motivo documentado no campo `_dispatcher` de DocumentViewModel).
@@ -4143,8 +4051,7 @@ public class DocumentViewModelTests
         var (doc, fake, _) = BuildForMarkup();
         using var d = doc;
         fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 0 };
-        await d.RefreshAnnotationsByPageAsync(); // popula _pageRotations (cache compartilhado)
+        await d.RefreshAnnotationsByPageAsync();
         var rect = new PdfQuad(10, 10, 30, 30);
         d.SeedFormFieldsCache(false, new[] { TextField(pageIndex: 0, rect: rect) });
 
@@ -4153,41 +4060,6 @@ public class DocumentViewModelTests
         var expected = PageViewModel.PointRectToScreenRect(10, 10, 30, 30, d.Zoom, d.Pages[0].HeightPt);
         Assert.True(d.Pages[0].HasFormFieldHighlight);
         Assert.Equal(expected, d.Pages[0].FormFieldHighlightRect);
-    }
-
-    [Fact] // GATE DE ROTAÇÃO (brief: "gate de rotação só no destaque, preencher continua livre") — o
-    // destaque NÃO liga numa página girada, mesmo com WidgetRect presente.
-    public async Task SelectFormField_PageRotated_DoesNotHighlight()
-    {
-        var (doc, fake, _) = BuildForMarkup();
-        using var d = doc;
-        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 90 };
-        await d.RefreshAnnotationsByPageAsync();
-        var rect = new PdfQuad(10, 10, 30, 30);
-        d.SeedFormFieldsCache(false, new[] { TextField(pageIndex: 0, rect: rect) });
-
-        d.SelectFormFieldCommand.Execute(d.FormFieldEditors[0]);
-
-        Assert.False(d.Pages[0].HasFormFieldHighlight);
-    }
-
-    [Fact] // preencher continua LIVRE de coordenadas mesmo numa página girada (brief) — Aplicar não
-    // consulta rotação nenhuma; só o destaque visual é afetado (teste acima).
-    public async Task ApplyFormValuesCommand_PageRotated_StillApplies()
-    {
-        var (doc, fake, errors) = BuildForMarkup();
-        using var d = doc;
-        fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 90 };
-        await d.RefreshAnnotationsByPageAsync();
-        d.SeedFormFieldsCache(false, new[] { TextField(pageIndex: 0) });
-        d.FormFieldEditors[0].EditedValue = "Novo Nome";
-
-        await d.ApplyFormValuesCommand.ExecuteAsync(null);
-
-        Assert.Empty(errors);
-        Assert.Equal(1, fake.SetFormFieldsCallCount);
     }
 
     [Fact] // sem WidgetRect (campo residual sem widget, ver XML doc de FormFieldData) -> sem destaque,
@@ -4213,7 +4085,6 @@ public class DocumentViewModelTests
         var (doc, fake, _) = BuildForMarkup();
         using var d = doc;
         fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 0 };
         await d.RefreshAnnotationsByPageAsync();
         var rect = new PdfQuad(10, 10, 30, 30);
         d.SeedFormFieldsCache(false, new[] { TextField("a", pageIndex: 0, rect: rect), TextField("b", pageIndex: 0, rect: rect) });
@@ -4233,7 +4104,6 @@ public class DocumentViewModelTests
         var (doc, fake, _) = BuildForMarkup();
         using var d = doc;
         fake.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-        fake.PageRotationsResult = new[] { 0 };
         await d.RefreshAnnotationsByPageAsync();
         d.SeedFormFieldsCache(false, new[] { TextField(pageIndex: 0, rect: new PdfQuad(10, 10, 30, 30)) });
         d.SelectFormFieldCommand.Execute(d.FormFieldEditors[0]);

@@ -399,7 +399,7 @@ public class BatchSignViewModelTests : IDisposable
     // ---- carimbo do lote: retângulo no frame de EXIBIÇÃO (a costura de rotação é do MOTOR) -----------
     //
     // A conversão frame-de-EXIBIÇÃO -> frame-de-CONTEÚDO por /Rotate saiu do App e virou responsabilidade
-    // ÚNICA do motor (mPdf.Signing.StampRotation, coberta por StampRotationTests + o oráculo de render
+    // ÚNICA do motor (PadesSigningEngine + `DisplayFrame`, coberta por DisplayFrameTests/StampRectPinTests + o oráculo de render
     // StampRotationRenderTests). O BatchSignViewModel só posiciona o retângulo no canto inferior-direito
     // EXIBIDO e passa ISSO pro motor, que lê o /Rotate da página sozinho. A prova ponta-a-ponta contra o
     // motor+renderer REAIS continua em Start_Integration_RotatedLastPage_... abaixo.

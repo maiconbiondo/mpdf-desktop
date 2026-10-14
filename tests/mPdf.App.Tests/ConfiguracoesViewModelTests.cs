@@ -60,8 +60,13 @@ file sealed class SpyCrashLogSink
 /// `UpdateService.VerifyAndFinalize` sobre um arquivo REAL em disco): prompt recusado -> não fecha nem
 /// instala; documentos sujos não resolvidos -> não fecha nem instala; tudo confirmado -> instalador
 /// inicia ANTES do shutdown, nesta ordem; (4) Tema/Nitidez extra: persistência + aplicação ao vivo.
-public class ConfiguracoesViewModelTests
+public class ConfiguracoesViewModelTests : IDisposable
 {
+    // Pastas de AppConfig criadas pelos builders desta classe — apagadas no Dispose (uma instância por teste).
+    private readonly PastasDeConfigTemporarias _cfgs = new();
+
+    public void Dispose() => _cfgs.Dispose();
+
     private const string ValidSha = "058cf405f778fc15284646e9d7ad8377171681366424a448b588a17bb4a1c813";
 
     // Delegates "nunca deveriam ser chamados" para os testes que não exercitam o fluxo de instalação —
@@ -95,9 +100,9 @@ public class ConfiguracoesViewModelTests
     // Task 2 (Plano 13): diretório de config TEMPORÁRIO -- mesmo padrão de AppConfigTests, nunca toca
     // %AppData%\mPDF real durante a suíte. Devolve o DIRETÓRIO junto (não só a instância) pra testes que
     // precisam reabrir uma 2ª instância sobre o MESMO config.json e provar persistência entre instâncias.
-    private static (string Dir, AppConfig Config) TempConfig()
+    private (string Dir, AppConfig Config) TempConfig()
     {
-        var dir = Path.Combine(Path.GetTempPath(), $"mpdf-config-cfg-{Guid.NewGuid():N}");
+        var dir = _cfgs.Nova("config");
         return (dir, new AppConfig(dir));
     }
 

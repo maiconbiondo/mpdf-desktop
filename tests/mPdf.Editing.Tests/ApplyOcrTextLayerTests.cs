@@ -118,7 +118,7 @@ public class ApplyOcrTextLayerTests
         // só /Rotate muda.
         byte[] pdf = Fixtures.NoText();
         if (rotation != 0) pdf = Editor.RotatePages(pdf, new[] { 0 }, rotation);
-        Assert.Equal(rotation, Editor.GetPageRotations(pdf)[0]); // sanity: a rotação-alvo foi aplicada
+        Assert.Equal(rotation, RotacaoDasPaginas.Ler(pdf)[0]); // sanity: a rotação-alvo foi aplicada
 
         // Dimensões EXIBIDAS (o bitmap de OCR seria rasterizado assim): 90/270 trocam W<->H.
         bool swap = rotation is 90 or 270;

@@ -270,8 +270,18 @@ public class AnnotationCropBoxFrameTests
         {
             var raw = RawAnnot(Editor.AddAnnotation(CropOffsetPage(ox, oy), a));
             var rect = raw.GetAsArray(PdfName.Rect).ToFloatArray();
-            Assert.Equal(a.LeftPt + ox, Math.Min(rect[0], rect[2]), 0.01);
-            Assert.Equal(a.TopPt + oy, Math.Max(rect[1], rect[3]), 0.01);
+            if (a.Kind is AnnotationKind.Line or AnnotationKind.Arrow)
+            {
+                // Páginas giradas, Task 2: o /Rect de Line/Arrow ganhou margem para a espessura/ponta do /AP
+                // (antes eram invisíveis) — contém o bbox; a geometria exata é o /L (conferido abaixo).
+                Assert.True(Math.Min(rect[0], rect[2]) < a.LeftPt + ox && Math.Max(rect[1], rect[3]) > a.TopPt + oy);
+                Assert.True(Math.Max(rect[0], rect[2]) > a.RightPt + ox && Math.Min(rect[1], rect[3]) < a.BottomPt + oy);
+            }
+            else
+            {
+                Assert.Equal(a.LeftPt + ox, Math.Min(rect[0], rect[2]), 0.01);
+                Assert.Equal(a.TopPt + oy, Math.Max(rect[1], rect[3]), 0.01);
+            }
             if (raw.GetAsArray(PdfName.QuadPoints) is { } qp)
             {
                 var f = qp.ToFloatArray();

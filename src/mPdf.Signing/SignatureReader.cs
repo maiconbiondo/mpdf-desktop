@@ -126,8 +126,10 @@ internal static class SignatureReader
 
         // Frame EXIBIDO (fix/markup-cropbox): relativo à origem da CropBox ∩ MediaBox, o frame em que o App
         // desenha o destaque — mesmo `PageFrame` da escrita (ApplyVisibleStamp) e de AnnotationData.
-        var (ox, oy) = PageFrame.DisplayedOrigin(page!);
-        return (pageIndex, new PdfQuad(rect.GetLeft() - ox, rect.GetBottom() - oy, rect.GetRight() - ox, rect.GetTop() - oy));
+        // Páginas giradas (Task 3): `DisplayFrame` leva o /Rect (espaço do usuário) ao frame exibido, o
+        // mesmo de `VisibleStampSpec.Rect`. Rotação 0 = `rel - origem`, como antes.
+        var userRect = new PdfQuad(rect.GetLeft(), rect.GetBottom(), rect.GetRight(), rect.GetTop());
+        return (pageIndex, PageFrame.Frame(page!).ToDisplayed(userRect));
     }
 
     /// P=2 (`FormsAndSignatures`) é o único nível que este motor grava (`PadesSigningEngine.Sign`) —

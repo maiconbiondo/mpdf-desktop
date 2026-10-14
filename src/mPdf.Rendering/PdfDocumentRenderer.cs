@@ -80,15 +80,22 @@ public sealed class PdfDocumentRenderer : IDisposable
             // tinta pra medir); glifos com tinta (mesmo finos, como '-') sempre vieram com altura > 0.
             // TextPage.Characters preserva o espaço mesmo assim (mantém a ordem/índices do PDF intactos
             // para os consumidores das Tasks 3-5); ver TextPageTests.GetTextPage_CharactersHaveSaneGeometry.
+            // Páginas giradas (2026-10-13, sonda em .superpowers/sdd/rotacao-sonda): em página com /Rotate o
+            // Docnet devolve as POSIÇÕES certas no frame exibido, mas com os cantos TROCADOS — 90° troca
+            // Left/Right ('U' L=75 R=62), 180° troca Left/Right E Bottom/Top, 270° troca Bottom/Top. O
+            // contrato de PdfCharacter é Left≤Right, Bottom≤Top: normaliza por min/max (rotação 0 já vem
+            // ordenada — valores idênticos). Sem isto a seleção perdia meio glifo nas pontas (90°) e a
+            // altura negativa (180/270) fazia todo glifo parecer "espaço" para a seleção/busca.
             var characters = new List<PdfCharacter>();
             foreach (var c in page.GetCharacters())
             {
+                double y1 = heightPt - c.Box.Bottom, y2 = heightPt - c.Box.Top;
                 characters.Add(new PdfCharacter(
                     c.Char,
-                    c.Box.Left,
-                    heightPt - c.Box.Bottom,
-                    c.Box.Right,
-                    heightPt - c.Box.Top));
+                    Math.Min(c.Box.Left, c.Box.Right),
+                    Math.Min(y1, y2),
+                    Math.Max(c.Box.Left, c.Box.Right),
+                    Math.Max(y1, y2)));
             }
             return new TextPage(pageIndex, characters);
         }

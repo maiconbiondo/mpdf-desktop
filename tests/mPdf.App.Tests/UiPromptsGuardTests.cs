@@ -23,7 +23,7 @@ file sealed class SpyFileDialogService(string? saveResult = null) : IFileDialogS
 file sealed class SpyAnnotationTextDialogService(string? result) : IAnnotationTextDialogService
 {
     public string? PromptForText(string title, string? initialText = null) => result;
-    public AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null) =>
+    public AnnotationTextResult? PromptForTextFormatted(string title, string? initialText = null, AnnotationTextResult? initialFormat = null) =>
         result is null ? null : new AnnotationTextResult(result, 12, false, false, "Helvetica", 0xFF000000);
 }
 

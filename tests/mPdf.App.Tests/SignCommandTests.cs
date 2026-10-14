@@ -113,7 +113,7 @@ internal sealed class FakeConfirmSaveBeforeSignService(bool result) : IConfirmSa
 /// Diálogo "Salvar como" FAKE (Task 2, Plano 7, fix CRÍTICO pós-revisão) — mesmo padrão de
 /// `FakeFileDialogService` em `MainViewModelTests.cs`/`OrganizerViewModelTests.cs`, mas SÓ implementa
 /// `PickPdfToSaveAs` de propósito (os outros 3 métodos de `IFileDialogService` não são usados por
-/// `Sign`/`TryRelocateBeforeSign` — devolver `null`/lançar neles deixaria claro se algum dia passassem a
+/// `Sign` — devolver `null`/lançar neles deixaria claro se algum dia passassem a
 /// ser chamados por engano). `saveAsResult = null` simula o usuário CANCELANDO o diálogo.
 file sealed class FakeSaveAsDialogService(string? saveAsResult, List<string>? callOrder = null) : IFileDialogService
 {
@@ -675,31 +675,47 @@ public class SignCommandTests : IDisposable
         }
     }
 
-    [Fact] // Carimbo em página GIRADA agora é SUPORTADO (StampRotation converte o retângulo EXIBIDO ->
-    // MediaBox no motor; o iText endireita a aparência). O gate de rotação que existia SÓ neste fluxo de
-    // assinatura foi removido — a colocação entra em Drawing normalmente, SEM o aviso "Página girada"
-    // (diferente das anotações genéricas, que continuam gateadas em outra versão).
-    public async Task BeginStampBoxPlacementAsync_RotatedPage_EntersDrawing_NoLongerBlocked()
+    [Theory] // Carimbo em página GIRADA (Fix F3/T1 — antes um teste com fake que só setava uma rotação que ninguém lia,
+    // num documento retrato): motor REAL de assinatura numa página com /Rotate de verdade. A caixa é desenhada em pt
+    // EXIBIDOS (o que a tela mostra) e o carimbo assinado fica exatamente nela (StampRect relido = caixa desenhada),
+    // sem o antigo aviso "Página girada".
+    [InlineData(0)]
+    [InlineData(90)]
+    [InlineData(180)]
+    [InlineData(270)]
+    public async Task Sign_WithStamp_PaginaGirada_CarimboNaCaixaDesenhadaNaTela(int rot)
     {
-        var (doc, editor, engine, dialog, _, errors, _, cert) = BuildForSigning();
-        using var d = doc;
-        using (cert)
-        {
-            editor.ReadAnnotationsResult = Array.Empty<AnnotationData>();
-            editor.PageRotationsResult = new[] { 90 };
-            await d.RefreshAnnotationsByPageAsync(); // primeiro o cache de rotação/anotações
+        var tmp = CopyFixtureToTemp();
+        if (rot != 0) File.WriteAllBytes(tmp, PdfEditorFactory.Create().RotatePages(File.ReadAllBytes(tmp), new[] { 0 }, rot));
+        using var cert = CreateEphemeralRsaCertificate();
+        var errors = new List<string>();
+        var engine = SigningEngineFactory.Create();
+        using var d = new DocumentViewModel(
+            DocumentSession.Open(tmp), editor: PdfEditorFactory.Create(), config: new AppConfig(NewConfigDir()),
+            notifyError: errors.Add, notifyInfo: _ => { },
+            signDialog: new FakeSignDialogService(new SignDialogResult(cert, "Motivo", "Local", ApplyDocMdp: false, PlaceStamp: true)),
+            signingEngine: engine,
+            confirmSaveBeforeSign: new FakeConfirmSaveBeforeSignService(true),
+            listSigningCertificates: () => new[] { FakeCertificateInfo(cert) },
+            pickPdfToSave: _ => _savePickerReturns,
+            writeAllBytes: (path, bytes) => _written.Add((path, bytes)),
+            openSavedDocument: path => { _openedAfterSign.Add(path); return Task.CompletedTask; });
+        double hp = d.Pages[0].HeightPt; // altura EXIBIDA
+        using (var r0 = new PdfDocumentRenderer(File.ReadAllBytes(tmp))) Assert.Equal(r0.GetPageSize(0).HeightPt, hp, 0);
 
-            dialog.Result = new SignDialogResult(cert, null, null, ApplyDocMdp: false, PlaceStamp: true);
-            await d.SignCommand.ExecuteAsync(null);
-            Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool);
+        await d.SignCommand.ExecuteAsync(null);
+        DrawBox(d, 100, hp - 300, 350, hp - 200);
+        Assert.Equal(StampPlacementPhase.Drawing, d.StampPlacementPhase);
+        await d.EndStampDrawAsync(); // soltar o mouse = assina na hora
 
-            await d.BeginStampBoxPlacementAsync(0, new PdfPoint(100, 100));
-
-            Assert.DoesNotContain(errors, e => e.Contains("Página girada"));
-            Assert.Equal(StampPlacementPhase.Drawing, d.StampPlacementPhase); // ENTROU em Drawing
-            Assert.Equal(AnnotationTool.SignatureStamp, d.ActiveTool);
-            Assert.False(d.IsSignedDocument); // commit só no Confirmar
-        }
+        Assert.Empty(errors);
+        var (_, assinado) = Assert.Single(_written);
+        var info = Assert.Single(engine.ReadSignatures(assinado));
+        Assert.True(info.IntegrityValid);
+        Assert.Equal(0, info.StampPageIndex);
+        var r = info.StampRect!.Value;
+        Assert.Equal(100, r.LeftPt, 0.5); Assert.Equal(hp - 300, r.BottomPt, 0.5);
+        Assert.Equal(350, r.RightPt, 0.5); Assert.Equal(hp - 200, r.TopPt, 0.5);
     }
 
     // ---- ConfirmSignatureStampAsync: confirma a caixa AJUSTADA -> motor recebe o rect FINAL ----------

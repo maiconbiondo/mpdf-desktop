@@ -12,6 +12,10 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Fix F3 (T5): [SkippableFact] para as folhas de evidência/captura de pins que só agem com uma env var
+         (mesmo pacote/padrão de mPdf.Signing.Tests e mPdf.App.Tests) - sem a env var o teste aparece como
+         PULADO, nunca como aprovado sem asserção. -->
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
     <!-- Rodada de fechamento final (Plano 3c): PackageReference DIRETA (não herdada da ProjectReference
          pra mPdf.Editing abaixo, que continua com PrivateAssets=compile — ver comentário dela) só pra
          HasSignaturesNestedKidsTests.cs construir, EM MEMÓRIA, um AcroForm/Fields malformado de
